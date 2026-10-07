@@ -919,7 +919,7 @@ func cmdTools(rest: ArrayList<String>, ctx: CliContext): Int64 {
     return 0
 }
 
-let SKILL_FRONTMATTER = "---\nname: deepgit\ndescription: 用 moonGit 引擎管理本地 git 项目群的进度：查现状、记进度、浅/深更新文档、git 操作、里程碑。适用于任何关于本地项目状态、分支进度、项目文档维护的问题。\n---\n\n"
+let SKILL_FRONTMATTER = "---\nname: moongit\ndescription: 用 moonGit 引擎管理本地 git 项目群的进度：查现状、记进度、浅/深更新文档、git 操作、里程碑。适用于任何关于本地项目状态、分支进度、项目文档维护的问题。\n---\n\n"
 
 func skillMarkdown(): String {
     let engine = currentExecutable()
@@ -929,7 +929,7 @@ func skillMarkdown(): String {
     // 数字跟着列表走，就不会再漂。
     let ways = ArrayList<String>()
     ways.add("**MCP 服务器**（推荐，工具化接入）。宿主配置：\n   ```json\n   "
-        + "{\"mcpServers\": {\"deepgit\": {\"command\": \"" + engine + "\", \"args\": [\"mcp\"]}}}\n   ```\n   "
+        + "{\"mcpServers\": {\"moongit\": {\"command\": \"" + engine + "\", \"args\": [\"mcp\"]}}}\n   ```\n   "
         + "工具：list_projects / get_project_context / get_project_status / get_dashboard / get_project_docs / "
         + "get_journal / run_shallow_update / run_deep_update / run_track / git_op / list_milestones / "
         + "milestone_add / milestone_action / add_project")
@@ -967,7 +967,7 @@ func cmdSkill(rest: ArrayList<String>, ctx: CliContext): Int64 {
             var dir = ""
             match (flagValue(rest, "--dir")) {
                 case Some(v) => dir = expandHome(v)
-                case None => dir = expandHome("~/.zcode/skills/deepgit")
+                case None => dir = expandHome("~/.zcode/skills/moongit")
             }
             ensureDir(dir)
             let file = dir + "/SKILL.md"
