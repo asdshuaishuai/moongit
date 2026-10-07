@@ -196,7 +196,7 @@ public func main2(argv: ArrayList<String>): Int64 {
         case "skill" => return cmdSkill(rest, ctx)
         case "report" => return cmdReport(rest, ctx)
         case _ =>
-            Log.error("未知命令：${command}")
+            Log.error(T("Unknown command: ${command}", "未知命令：${command}"))
             printHelp()
             return 2
     }
@@ -266,7 +266,7 @@ func validateKnownFlags(args: ArrayList<String>): Unit {
             case None => ()
         }
         if (!KNOWN_FLAGS.contains(name)) {
-            throw DgError.usage("未知 flag：${a}（moongit --help 查看支持的参数；值以 - 开头时用 --flag=值 形式）")
+            throw DgError.usage(T("Unknown flag: ${a} (run moongit --help for supported options; when a value starts with -, use --flag=value)", "未知 flag：${a}（moongit --help 查看支持的参数；值以 - 开头时用 --flag=值 形式）"))
         }
     }
 }
@@ -293,10 +293,10 @@ func validateValueFlags(args: ArrayList<String>): Unit {
         }
         if (isValueFlag) {
             if (i + 1 >= args.size) {
-                throw DgError.usage("${a} 缺少取值（值确实以 - 开头时用 ${a}=值 形式）")
+                throw DgError.usage(T("${a} is missing a value (if the value itself starts with -, use ${a}=value)", "${a} 缺少取值（值确实以 - 开头时用 ${a}=值 形式）"))
             }
             if (args[i + 1].startsWith("--")) {
-                throw DgError.usage("${a} 缺少取值（下一个参数是 flag：${args[i + 1]}；若确为取值请用 ${a}=${args[i + 1]} 形式）")
+                throw DgError.usage(T("${a} is missing a value (the next argument is a flag: ${args[i + 1]}; if it really is the value, use ${a}=${args[i + 1]})", "${a} 缺少取值（下一个参数是 flag：${args[i + 1]}；若确为取值请用 ${a}=${args[i + 1]} 形式）"))
             }
         }
         i += 1
@@ -306,7 +306,7 @@ func validateValueFlags(args: ArrayList<String>): Unit {
 func cmdGit(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let refs = positionalsOnly(rest, VALUE_FLAGS)
     if (refs.size == 0) {
-        throw DgError.usage("用法：moongit git <pull|push|commit|stash|unstash|fetch> [项目] [--message M]")
+        throw DgError.usage(T("Usage: moongit git <pull|push|commit|stash|unstash|fetch> [project] [--message M]", "用法：moongit git <pull|push|commit|stash|unstash|fetch> [项目] [--message M]"))
     }
     let op = refs[0]
     var message = ""
@@ -346,13 +346,13 @@ func cmdGit(rest: ArrayList<String>, ctx: CliContext): Int64 {
                 gitResults.add(o)
             } else if (r.ok) {
                 if (!ctx.quiet) {
-                    Log.ok("${p.name}：${op} 完成")
+                    Log.ok(T("${p.name}: ${op} done", "${p.name}：${op} 完成"))
                     if (!r.output.isEmpty()) {
                         printOut(r.output)
                     }
                 }
             } else {
-                Log.error("${p.name}：${op} 失败")
+                Log.error(T("${p.name}: ${op} failed", "${p.name}：${op} 失败"))
                 if (!r.output.isEmpty()) {
                     printOut(r.output)
                 }
@@ -407,7 +407,7 @@ func effectiveMilestoneStatus(project: ProjectEntry, name: String, requested: St
 func cmdMilestone(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let refs = positionalsOnly(rest, VALUE_FLAGS)
     if (refs.size == 0) {
-        throw DgError.usage("用法：moongit milestone <add|list|done|drop|remove> [项目] [名称] [--tag T] [--date YYYY-MM-DD] [--desc S]")
+        throw DgError.usage(T("Usage: moongit milestone <add|list|done|drop|remove> [project] [name] [--tag T] [--date YYYY-MM-DD] [--desc S]", "用法：moongit milestone <add|list|done|drop|remove> [项目] [名称] [--tag T] [--date YYYY-MM-DD] [--desc S]"))
     }
     // ⚠️ #196：各子命令原来只查「至少 3 个」，多出来的位置参数被静默吞掉
     // （`moongit milestone add alpha v1 extra` → 「✓ 已创建」rc=0，extra 蒸发）。
@@ -418,7 +418,7 @@ func cmdMilestone(rest: ArrayList<String>, ctx: CliContext): Int64 {
     match (action) {
         case "add" =>
             if (refs.size < 3) {
-                throw DgError.usage("用法：moongit milestone add <项目> <名称> [--tag T] [--date YYYY-MM-DD] [--desc S]")
+                throw DgError.usage(T("Usage: moongit milestone add <project> <name> [--tag T] [--date YYYY-MM-DD] [--desc S]", "用法：moongit milestone add <项目> <名称> [--tag T] [--date YYYY-MM-DD] [--desc S]"))
             }
             let p = requireProject(refs[1])
             let name = refs[2]
@@ -443,9 +443,9 @@ func cmdMilestone(rest: ArrayList<String>, ctx: CliContext): Int64 {
                 printOut(Json.pretty(o))
             } else {
                 if (created) {
-                    Log.ok("${p.name}：里程碑「${name}」已创建")
+                    Log.ok(T("${p.name}: milestone ${name} created", "${p.name}：里程碑「${name}」已创建"))
                 } else {
-                    Log.warn("${p.name}：里程碑「${name}」已存在")
+                    Log.warn(T("${p.name}: milestone ${name} already exists", "${p.name}：里程碑「${name}」已存在"))
                 }
             }
             return 0
@@ -508,7 +508,7 @@ func cmdMilestone(rest: ArrayList<String>, ctx: CliContext): Int64 {
             if (!emptyLine.isEmpty()) {
                 printOut(emptyLine)
                 if (msLabel != "ok") {
-                    Log.error("milestones.json 读不出来（已留 .corrupt 副本）。写操作会被拒绝，先恢复或确认后删除该文件。")
+                    Log.error(T("milestones.json is unreadable (a .corrupt copy has been kept). Writes are rejected; restore the file, or delete it after confirming.", "milestones.json 读不出来（已留 .corrupt 副本）。写操作会被拒绝，先恢复或确认后删除该文件。"))
                 }
                 return emptyRc
             }
@@ -516,19 +516,19 @@ func cmdMilestone(rest: ArrayList<String>, ctx: CliContext): Int64 {
                 printOut(milestoneLine(it))
             }
             if (excludedDisabled > 0) {
-                Log.info("${excludedDisabled} 条里程碑属于已停用项目，未列出（与 dashboard 同口径）。")
+                Log.info(T("${excludedDisabled} milestones belong to disabled projects and are not listed (same rule as dashboard).", "${excludedDisabled} 条里程碑属于已停用项目，未列出（与 dashboard 同口径）。"))
             }
             if (!orphans.isEmpty()) {
-                Log.warn("${orphans.size} 条里程碑指向已取消注册的项目，列不出来（数据仍在 milestones.json 里）：")
+                Log.warn(T("${orphans.size} milestones point to deregistered projects and cannot be listed (data still in milestones.json):", "${orphans.size} 条里程碑指向已取消注册的项目，列不出来（数据仍在 milestones.json 里）："))
                 for (m in orphans) {
                     Log.info("  ${m.name}（projectId=${m.projectId}）")
                 }
-                Log.info("  重新注册同一路径即可恢复显示；确认要删就用 moongit milestone remove <项目> <里程碑>")
+                Log.info(T("  Re-register the same path to show them again; to delete for good, run moongit milestone remove <project> <milestone>", "  重新注册同一路径即可恢复显示；确认要删就用 moongit milestone remove <项目> <里程碑>"))
             }
             return 0
         case "done" | "drop" | "reopen" =>
             if (refs.size < 3) {
-                throw DgError.usage("用法：moongit milestone ${action} <项目> <名称>")
+                throw DgError.usage(T("Usage: moongit milestone ${action} <project> <name>", "用法：moongit milestone ${action} <项目> <名称>"))
             }
             let p = requireProject(refs[1])
             let status = match (action) {
@@ -538,9 +538,9 @@ func cmdMilestone(rest: ArrayList<String>, ctx: CliContext): Int64 {
             }
             if (!setMilestoneStatus(p.id, refs[2], status)) {
                 if (ctx.json) {
-                    printOut(Json.pretty(errJson("MILESTONE_NOT_FOUND", "未找到里程碑：${refs[2]}")))
+                    printOut(Json.pretty(errJson("MILESTONE_NOT_FOUND", T("Milestone not found: ${refs[2]}", "未找到里程碑：${refs[2]}"))))
                 } else {
-                    Log.error("${p.name}：未找到里程碑「${refs[2]}」")
+                    Log.error(T("${p.name}: milestone not found: ${refs[2]}", "${p.name}：未找到里程碑「${refs[2]}」"))
                 }
                 return 1
             }
@@ -561,7 +561,7 @@ func cmdMilestone(rest: ArrayList<String>, ctx: CliContext): Int64 {
             if (effective == status) {
                 // 叙述层：--quiet 门控它是对的
                 if (!ctx.quiet) {
-                    Log.ok("${p.name}：里程碑「${refs[2]}」→ ${status}")
+                    Log.ok(T("${p.name}: milestone ${refs[2]} -> ${status}", "${p.name}：里程碑「${refs[2]}」→ ${status}"))
                 }
             } else {
                 // ⚠️ 这一支不能被 --quiet 吞掉。
@@ -572,19 +572,19 @@ func cmdMilestone(rest: ArrayList<String>, ctx: CliContext): Int64 {
                 // 这不是日志安静，是谎报结果。
                 // 告警留在告警通道（Log.warn 本身也不再受 quiet 门控），
                 // 让「--quiet 下仍要如实告知数据/环境有问题」成为全局一致的行为。
-                Log.warn("${p.name}：已写入 ${status}，但「${refs[2]}」当前生效状态仍是 ${effective}（同名 tag 已存在，按「tag 达成即自动完成」规则判定）")
+                Log.warn(T("${p.name}: wrote ${status}, but ${refs[2]} remains effectively ${effective} (a same-name tag exists; the tag-reached-auto-completes rule applies)", "${p.name}：已写入 ${status}，但「${refs[2]}」当前生效状态仍是 ${effective}（同名 tag 已存在，按「tag 达成即自动完成」规则判定）"))
             }
             return 0
         case "remove" =>
             if (refs.size < 3) {
-                throw DgError.usage("用法：moongit milestone remove <项目> <名称>")
+                throw DgError.usage(T("Usage: moongit milestone remove <project> <name>", "用法：moongit milestone remove <项目> <名称>"))
             }
             let p = requireProject(refs[1])
             if (!removeMilestone(p.id, refs[2])) {
                 if (ctx.json) {
-                    printOut(Json.pretty(errJson("MILESTONE_NOT_FOUND", "未找到里程碑：${refs[2]}")))
+                    printOut(Json.pretty(errJson("MILESTONE_NOT_FOUND", T("Milestone not found: ${refs[2]}", "未找到里程碑：${refs[2]}"))))
                 } else {
-                    Log.error("${p.name}：未找到里程碑「${refs[2]}」")
+                    Log.error(T("${p.name}: milestone not found: ${refs[2]}", "${p.name}：未找到里程碑「${refs[2]}」"))
                 }
                 return 1
             }
@@ -597,11 +597,11 @@ func cmdMilestone(rest: ArrayList<String>, ctx: CliContext): Int64 {
                 return 0
             }
             if (!ctx.quiet) {
-                Log.ok("${p.name}：里程碑「${refs[2]}」已删除")
+                Log.ok(T("${p.name}: milestone ${refs[2]} deleted", "${p.name}：里程碑「${refs[2]}」已删除"))
             }
             return 0
         case _ =>
-            throw DgError.usage("未知 milestone 子命令：${action}")
+            throw DgError.usage(T("Unknown milestone subcommand: ${action}", "未知 milestone 子命令：${action}"))
     }
 }
 
@@ -695,7 +695,7 @@ func cmdReport(rest: ArrayList<String>, ctx: CliContext): Int64 {
     // report 一次只出一份报告，第二个项目名以前被静默忽略：
     // 用户以为导出的是两个项目的全景，实际只有第一个，报告里也不会有任何提示。
     if (refs.size > 1) {
-        throw DgError.usage("report 最多接受一个项目名（收到 ${refs.size} 个：${joinStrings(refs, " ")}）")
+        throw DgError.usage(T("report accepts at most one project name (got ${refs.size}: ${joinStrings(refs, " ")})", "report 最多接受一个项目名（收到 ${refs.size} 个：${joinStrings(refs, " ")}）"))
     }
     var targets = ArrayList<ProjectEntry>()
     if (refs.size > 0) {
@@ -708,7 +708,7 @@ func cmdReport(rest: ArrayList<String>, ctx: CliContext): Int64 {
         }
     }
     if (targets.size == 0) {
-        Log.error("没有已注册项目，先运行 moongit scan")
+        Log.error(T("No registered projects; run moongit scan first", "没有已注册项目，先运行 moongit scan"))
         return 1
     }
 
@@ -740,7 +740,7 @@ func cmdReport(rest: ArrayList<String>, ctx: CliContext): Int64 {
         Json.set(o, "bytes", Json.of(md.size))
         printOut(Json.pretty(o))
     } else {
-        Log.ok("报告已生成：${outPath}（${targets.size} 个项目）")
+        Log.ok(T("Report written: ${outPath} (${targets.size} projects)", "报告已生成：${outPath}（${targets.size} 个项目）"))
     }
     // 全部采集失败时不能 exit 0：报告写着「0 个项目」却报成功，调用方无从分辨
     var okCount: Int64 = 0
@@ -780,7 +780,7 @@ func namedTargets(refs: ArrayList<String>): ArrayList<ProjectEntry> {
 /// 走 `namedTargets` 循环，不该用这个。
 func rejectExtraPositionals(action: String, refs: ArrayList<String>, max: Int64): Unit {
     if (refs.size > max) {
-        throw DgError.usage("${action} 最多接受 ${max} 个位置参数，收到 ${refs.size} 个：${joinStrings(refs, " ")}")
+        throw DgError.usage(T("${action} accepts at most ${max} positional arguments, got ${refs.size}: ${joinStrings(refs, " ")}", "${action} 最多接受 ${max} 个位置参数，收到 ${refs.size} 个：${joinStrings(refs, " ")}"))
     }
 }
 
@@ -866,7 +866,7 @@ func cmdContext(rest: ArrayList<String>, ctx: CliContext): Int64 {
     // 契约：项目不存在必须以非 0 退出，而不是把错误文本塞进 context 字段后返回 exit 0
     // （自动化消费者只能靠字符串匹配才能发现失败）。多余项目名也不再被静默忽略。
     if (refs.size > 1) {
-        throw DgError.usage("context 最多接受一个项目名（收到 ${refs.size} 个）")
+        throw DgError.usage(T("context accepts at most one project name (got ${refs.size})", "context 最多接受一个项目名（收到 ${refs.size} 个）"))
     }
     if (refs.size == 1) {
         requireProject(refs[0])
@@ -877,7 +877,7 @@ func cmdContext(rest: ArrayList<String>, ctx: CliContext): Int64 {
             try {
                 budget = Int64.parse(v)
             } catch (e: Exception) {
-                throw DgError.usage("--budget 需要整数：${v}")
+                throw DgError.usage(T("--budget expects an integer: ${v}", "--budget 需要整数：${v}"))
             }
             budget = clampAgentBudget(budget)
         case None => ()
@@ -978,11 +978,11 @@ func cmdSkill(rest: ArrayList<String>, ctx: CliContext): Int64 {
                 Json.set(o, "bytes", Json.of(md.size))
                 printOut(Json.pretty(o))
             } else {
-                Log.ok("Skill 已安装：${file}")
+                Log.ok(T("Skill installed: ${file}", "Skill 已安装：${file}"))
             }
             return 0
         case _ =>
-            throw DgError.usage("用法：moongit skill <print|install> [--dir D]")
+            throw DgError.usage(T("Usage: moongit skill <print|install> [--dir D]", "用法：moongit skill <print|install> [--dir D]"))
     }
 }
 
@@ -1155,15 +1155,15 @@ func cmdDashboard(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let projs = Json.getOr(dash, "projects")
     printOut(dashboardProjectLine(projs))
     if (Json.intAt(projs, "failed", 0) > 0 && Json.intAt(projs, "total", 0) == 0) {
-        Log.error("全部项目都读取失败，下面所有统计都是空的。逐个排查：moongit status <项目名>")
+        Log.error(T("Every project failed to read; all statistics below are empty. Debug one by one: moongit status <project>", "全部项目都读取失败，下面所有统计都是空的。逐个排查：moongit status <项目名>"))
     }
     let work = Json.getOr(dash, "work")
-    printOut("工作面：分支 ${Json.intAt(work, "branches", 0)} · 待合入分支 ${Json.intAt(work, "mergeCandidates", 0)} · 未跟踪文件 ${Json.intAt(work, "untrackedFiles", 0)} · stash ${Json.intAt(work, "stashes", 0)}")
+    printOut(T("Working surface: branches ${Json.intAt(work, "branches", 0)} · merge candidates ${Json.intAt(work, "mergeCandidates", 0)} · untracked files ${Json.intAt(work, "untrackedFiles", 0)} · stashes ${Json.intAt(work, "stashes", 0)}", "工作面：分支 ${Json.intAt(work, "branches", 0)} · 待合入分支 ${Json.intAt(work, "mergeCandidates", 0)} · 未跟踪文件 ${Json.intAt(work, "untrackedFiles", 0)} · stash ${Json.intAt(work, "stashes", 0)}"))
     let ms = Json.getOr(dash, "milestones")
     let counts = Json.getOr(ms, "counts")
     printOut(dashboardMilestoneLine(counts))
     if (Json.boolAt(counts, "degraded", false)) {
-        Log.error("milestones.json 读不出来（已留 .corrupt 副本）。写操作会被拒绝，先恢复或确认后删除该文件。")
+        Log.error(T("milestones.json is unreadable (a .corrupt copy has been kept). Writes are rejected; restore the file, or delete it after confirming.", "milestones.json 读不出来（已留 .corrupt 副本）。写操作会被拒绝，先恢复或确认后删除该文件。"))
     }
     let items = Json.arrAt(ms, "items")
     if (items.size > 0) {
@@ -1171,7 +1171,7 @@ func cmdDashboard(rest: ArrayList<String>, ctx: CliContext): Int64 {
         var shown: Int64 = 0
         for (it in items) {
             if (shown >= 8) {
-                printOut("  … 共 ${items.size} 条，完整列表：moongit milestone list")
+                printOut(T("  ... ${items.size} in total; full list: moongit milestone list", "  … 共 ${items.size} 条，完整列表：moongit milestone list"))
                 break
             }
             printOut("  ${milestoneLine(it)}")
@@ -1196,14 +1196,14 @@ func cmdDashboard(rest: ArrayList<String>, ctx: CliContext): Int64 {
                 parts.add("${Json.strAt(l, "language", "")} ${Json.intAt(l, "count", 0)}")
                 n += 1
             }
-            printOut("语言分布：${joinStrings(parts, " · ")}")
+            printOut(T("Languages: ${joinStrings(parts, " · ")}", "语言分布：${joinStrings(parts, " · ")}"))
             // 两层截断，两个分母。判定抽成纯函数是因为内联在 printOut 里
             // 改错了不会有任何测试变红 —— 上一版就是内联的。
             for (note in dashboardLanguageNotes(dash, n)) {
                 printOut(note)
             }
         } else {
-            printOut("语言分布：（未采集到任何项目）")
+            printOut(T("Languages: (nothing collected from any project)", "语言分布：（未采集到任何项目）"))
             for (note in dashboardLanguageNotes(dash, 0)) {
                 printOut(note)
             }
@@ -1223,6 +1223,51 @@ func cmdDashboard(rest: ArrayList<String>, ctx: CliContext): Int64 {
 }
 
 func printHelp(): Unit {
+    if (CHROME_ENGLISH) {
+        printOut("moonGit Engine - git-based local project progress engine")
+        printOut("")
+        printOut("Usage: moongit <command> [args] [--json] [-q] [-v]")
+        printOut("")
+        printOut("Commands:")
+        printOut("  list                     List registered projects with a one-line status")
+        printOut("  add <path> [--name N]    Register a project")
+        printOut("  remove <project> [--purge]  Deregister (--purge also deletes progress data)")
+        printOut("  scan [root...] [--depth N]  Discover and register projects")
+        printOut("  status [project]         Show progress status (writes nothing)")
+        printOut("  track [project]          Progress snapshot: record only, never touch docs (for hooks)")
+        printOut("  update [project] [--docs S]  Shallow update: record branch progress + refresh managed doc sections (S = all|readme|agent, default all)")
+        printOut("  deep [project] [--scope S]   Deep update: rewrite overview/architecture/commands/history")
+        printOut("  journal [project] [--branch B]  View the progress log")
+        printOut("  git <pull|push|commit|stash|unstash|fetch> [project] [--message M]")
+        printOut("  hook <install|uninstall|status> [project]  Manage the post-commit hook")
+        printOut("  milestone <add|list|done|drop|remove> ...  Milestone management")
+        printOut("  dashboard                Cross-project aggregate dashboard (activity/milestones/languages)")
+        printOut("  context [project] [--budget N]  Emit the agent context pack (markdown; budget = char budget)")
+        printOut("  docs [project]           Print project README/AGENTS/CLAUDE verbatim (--json)")
+        printOut("  tools                    Print the agent tool manifest (JSON)")
+        printOut("  mcp                      Run as an MCP server (stdio JSON-RPC; for Claude and other agent hosts)")
+        printOut("  skill <print|install>    Print/install the agent Skill pack (--dir for the target directory)")
+        printOut("  report [project] [--out F]  Export a Markdown progress report")
+        printOut("  config <list|get|set> [k] [v]  Configuration (AI preset, etc.)")
+        printOut("  verify [project]         Verify doc integrity (user content untouched)")
+        printOut("  doctor                   Environment self-check")
+        printOut("")
+        printOut("Options:")
+        printOut("  --json                   Machine-readable output")
+        printOut("  -q, --quiet              Quiet progress output (warnings and errors still go to stderr)")
+        printOut("  -v, --verbose            Verbose logging")
+        printOut("")
+        printOut("Examples:")
+        printOut("  moongit scan ~/dev --depth 3        # scan and register a project group")
+        printOut("  moongit status                      # status of all projects")
+        printOut("  moongit update moonGit              # shallow-update one project")
+        printOut("  moongit deep --scope readme         # manually trigger a README deep update")
+        printOut("  moongit hook install                # install the post-commit hook")
+        printOut("  moongit milestone add myapp v1.0 --tag v1.0.0 --date 2026-12-01")
+        printOut("  moongit dashboard                   # group-wide overview")
+        printOut("  moongit report --out ~/Desktop/progress.md  # export a report")
+        return
+    }
     printOut("moonGit Engine — git-based local project progress engine")
     printOut("")
     printOut("用法：moongit <命令> [参数] [--json] [-q] [-v]")
@@ -1290,7 +1335,7 @@ func resolveTargets(rest: ArrayList<String>, allowAll: Bool): ArrayList<ProjectE
     let cwd = normalizePath(expandHome(getCwd()))
     match (findProject(cwd)) {
         case Some(p) => out.add(p)
-        case None => throw DgError.notFound("当前目录不属于任何已注册项目（可用 `moongit add .` 注册）")
+        case None => throw DgError.notFound(T("Current directory is not part of any registered project (register it with `moongit add .`)", "当前目录不属于任何已注册项目（可用 `moongit add .` 注册）"))
     }
     return out
 }
@@ -1317,7 +1362,7 @@ func requireWorkableTargets(targets: ArrayList<ProjectEntry>): Unit {
     // 走到这里必然是 allowAll 分支，所以「为空」只有两种成因，且必须分开说
     let reg = loadRegistry()
     if (reg.projects.isEmpty()) {
-        throw DgError.notFound("尚未注册任何项目，没有可处理的内容；先运行 `moongit scan <根目录>` 或 `moongit add <路径>`")
+        throw DgError.notFound(T("No projects registered yet; nothing to process. Run `moongit scan <root>` or `moongit add <path>` first", "尚未注册任何项目，没有可处理的内容；先运行 `moongit scan <根目录>` 或 `moongit add <路径>`"))
     }
     // 全部被停用：同样是「没有活可干」，但成因不同。
     // 笼统说「尚未注册」会让用户去跑一遍 scan，发现还是不行。
@@ -1327,9 +1372,9 @@ func requireWorkableTargets(targets: ArrayList<ProjectEntry>): Unit {
     // 唯一能置 true 的途径是手改 registry.json。给一个不存在的命令，
     // 是「静默降级成事实性谎言」的另一种形态：不是没说，是说错了。
     throw DgError.notFound(
-        "${reg.projects.size} 个项目全部处于 disabled 状态，没有可处理的项目；" +
-        "该字段只能手工编辑 ${deepgitPath(["registry.json"])} 里的 disabled 来清除" +
-        "（引擎没有 enable/disable 子命令）")
+        T("${reg.projects.size} projects are all disabled; nothing to process. ", "${reg.projects.size} 个项目全部处于 disabled 状态，没有可处理的项目；") +
+        T("Clear the disabled field by hand-editing ${deepgitPath(["registry.json"])}", "该字段只能手工编辑 ${deepgitPath(["registry.json"])} 里的 disabled 来清除") +
+        T("(the engine has no enable/disable subcommand)", "（引擎没有 enable/disable 子命令）"))
 }
 
 /// dashboard 文本路径的语言分布截断提示。**纯函数**。
@@ -1437,7 +1482,7 @@ func cmdList(rest: ArrayList<String>, ctx: CliContext): Int64 {
         return 0
     }
     if (reg.projects.size == 0) {
-        Log.info("尚未注册任何项目。运行 `moongit scan <根目录>` 或 `moongit add <路径>`。")
+        Log.info(T("No projects registered yet. Run `moongit scan <root>` or `moongit add <path>`.", "尚未注册任何项目。运行 `moongit scan <根目录>` 或 `moongit add <路径>`。"))
         return 0
     }
     let rows = ArrayList<Array<String>>()
@@ -1448,7 +1493,7 @@ func cmdList(rest: ArrayList<String>, ctx: CliContext): Int64 {
         }
         rows.add([p.name, p.kind, prettyPath(p.path, 42, ), listRowHeadline(p, config)])
     }
-    printOut(renderTable(["项目", "类型", "路径", "现状"], rows.toArray()))
+    printOut(renderTable([T("Project", "项目"), T("Type", "类型"), T("Path", "路径"), T("Headline", "现状")], rows.toArray()))
     Log.info("")
     Log.info(listSummaryLine(reg.projects.size, disabledCount))
     return 0
@@ -1457,7 +1502,7 @@ func cmdList(rest: ArrayList<String>, ctx: CliContext): Int64 {
 func cmdAdd(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let refs = positionalsOnly(rest, VALUE_FLAGS)
     if (refs.size == 0) {
-        throw DgError.usage("用法：moongit add <路径> [--name 名称]")
+        throw DgError.usage(T("Usage: moongit add <path> [--name NAME]", "用法：moongit add <路径> [--name 名称]"))
     }
     // ⚠️ #196：原来多出来的位置参数被静默丢弃（`moongit add /p n1 n2` → rc=0）。
     // 项目名走的是 `--name`，第二个位置参数**没有**别的含义 ——
@@ -1473,12 +1518,12 @@ func cmdAdd(rest: ArrayList<String>, ctx: CliContext): Int64 {
     if (ctx.json) {
         printOut(Json.pretty(entry.toJson()))
     } else if (added) {
-        Log.ok("已注册：${entry.name}（${entry.kind}）→ ${entry.path}")
+        Log.ok(T("Registered: ${entry.name} (${entry.kind}) -> ${entry.path}", "已注册：${entry.name}（${entry.kind}）→ ${entry.path}"))
         if (!entry.remote.isEmpty()) {
-            Log.info("  远端：${entry.remote}")
+            Log.info(T("  Remote: ${entry.remote}", "  远端：${entry.remote}"))
         }
     } else {
-        Log.info("项目已存在：${entry.name}（${entry.path}）")
+        Log.info(T("Project already exists: ${entry.name} (${entry.path})", "项目已存在：${entry.name}（${entry.path}）"))
     }
     return 0
 }
@@ -1486,7 +1531,7 @@ func cmdAdd(rest: ArrayList<String>, ctx: CliContext): Int64 {
 func cmdRemove(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let refs = positionalsOnly(rest, VALUE_FLAGS)
     if (refs.size == 0) {
-        throw DgError.usage("用法：moongit remove <项目...> [--purge]")
+        throw DgError.usage(T("Usage: moongit remove <project...> [--purge]", "用法：moongit remove <项目...> [--purge]"))
     }
     let purge = hasFlag(rest, "--purge")
     // ⚠️⚠️ #196：原来只处理 `refs[0]`，其余项目名静默丢弃、退出码 0。
@@ -1515,13 +1560,13 @@ func cmdRemove(rest: ArrayList<String>, ctx: CliContext): Int64 {
         if (ctx.json) {
             results.add(removed.toJson())
         } else {
-            Log.ok("已取消注册：${removed.name}${if (purge) { "（进度数据已删除）" } else { "" }}")
+            Log.ok(T("Deregistered: ${removed.name}${if (purge) { "(progress data deleted)" } else { "" }}", "已取消注册：${removed.name}${if (purge) { "（进度数据已删除）" } else { "" }}"))
             if (orphanCandidates > 0) {
                 // 方向：宁可多提醒一次。里程碑还在盘上，命令却再也列不出它们，
                 // 不说的话用户会以为数据被删了而放弃找回。
-                Log.warn("${orphanCandidates} 条里程碑现在指向一个已取消注册的项目，不再出现在 milestone list 里。")
-                Log.info("  数据仍在 ${deepgitPath(["milestones.json"])} 里没丢；重新注册同一路径即可恢复显示。")
-                Log.info("  想彻底删掉它们：moongit milestone remove <项目> <里程碑>（需要先重新注册该项目）")
+                Log.warn(T("${orphanCandidates} milestones now point to a deregistered project and no longer appear in milestone list.", "${orphanCandidates} 条里程碑现在指向一个已取消注册的项目，不再出现在 milestone list 里。"))
+                Log.info(T("  The data is not lost; it is still in ${deepgitPath(["milestones.json"])}. Re-register the same path to show them again.", "  数据仍在 ${deepgitPath(["milestones.json"])} 里没丢；重新注册同一路径即可恢复显示。"))
+                Log.info(T("  To delete them for good: moongit milestone remove <project> <milestone> (re-register the project first)", "  想彻底删掉它们：moongit milestone remove <项目> <里程碑>（需要先重新注册该项目）"))
             }
         }
     }
@@ -1644,7 +1689,7 @@ func cmdScan(rest: ArrayList<String>, ctx: CliContext): Int64 {
             try {
                 depth = Int64.parse(v)
             } catch (e: Exception) {
-                throw DgError.usage("--depth 需要整数")
+                throw DgError.usage(T("--depth expects an integer", "--depth 需要整数"))
             }
         case None => ()
     }
@@ -1653,14 +1698,14 @@ func cmdScan(rest: ArrayList<String>, ctx: CliContext): Int64 {
     // 永远不是想找仓库的人会提的要求。
     // 与 `journal --limit 0/-1`、`update.backupKeep < 0` 同一处置：直接报错。
     if (depth < 1) {
-        throw DgError.usage("--depth 至少为 1（收到 ${depth}）：小于 1 等于一个子目录都不看，只会得到一句误导性的「未发现项目」")
+        throw DgError.usage(T("--depth must be at least 1 (got ${depth}): below 1 visits no subdirectory at all and only yields a misleading no-projects-found line", "--depth 至少为 1（收到 ${depth}）：小于 1 等于一个子目录都不看，只会得到一句误导性的「未发现项目」"))
     }
     let includeNonGit = !hasFlag(rest, "--git-only")
     let roots = positionalsOnly(rest, VALUE_FLAGS)
     if (roots.size == 0) {
         let config = loadConfig()
         if (config.roots.size == 0) {
-            throw DgError.usage("用法：moongit scan <根目录...> [--depth N]\n（可在配置里设 roots 作为默认扫描根：moongit config set roots a,b）")
+            throw DgError.usage(T("Usage: moongit scan <root...> [--depth N]\n(Set roots in the config as default scan roots: moongit config set roots a,b)", "用法：moongit scan <根目录...> [--depth N]\n（可在配置里设 roots 作为默认扫描根：moongit config set roots a,b）"))
         }
         for (r in config.roots) {
             roots.add(r)
@@ -1671,13 +1716,13 @@ func cmdScan(rest: ArrayList<String>, ctx: CliContext): Int64 {
     for (r in roots) {
         let p = resolvePath(r, cwd)
         if (!isDirectoryPath(p)) {
-            Log.warn("跳过不存在的目录：${p}")
+            Log.warn(T("Skipping non-existent directory: ${p}", "跳过不存在的目录：${p}"))
             continue
         }
         resolvedRoots.add(p)
     }
     if (resolvedRoots.size == 0) {
-        throw DgError.usage("没有可扫描的有效目录")
+        throw DgError.usage(T("No valid directories to scan", "没有可扫描的有效目录"))
     }
 
     Log.step("扫描 ${resolvedRoots.size} 个根目录（深度 ${depth}）…")
@@ -1699,11 +1744,11 @@ func cmdScan(rest: ArrayList<String>, ctx: CliContext): Int64 {
     // 实测把某个子树 chmod 000，终端只打印「✓ 发现 1 个项目」，
     // 而实际上有一整棵子树没被读到，文本读起来像句完整结论。
     if (result.unreadable.size > 0) {
-        Log.warn("有 ${result.unreadable.size} 个目录**读不出来**（无权限或 I/O 错误），本次未覆盖它们：")
+        Log.warn(T("${result.unreadable.size} directories are unreadable (permission or I/O error) and were not covered this run:", "有 ${result.unreadable.size} 个目录**读不出来**（无权限或 I/O 错误），本次未覆盖它们："))
         for (u in result.unreadable) {
             Log.warn("  · ${u}")
         }
-        Log.warn("扫描覆盖程度：${scanCoverage(result.truncated, result.unreadable.size, result.depthCapped)} —— 上面列出的项目不是全部。")
+        Log.warn(T("Scan coverage: ${scanCoverage(result.truncated, result.unreadable.size, result.depthCapped)} - the projects listed above are not the full set.", "扫描覆盖程度：${scanCoverage(result.truncated, result.unreadable.size, result.depthCapped)} —— 上面列出的项目不是全部。"))
     }
 
     if (result.candidates.size == 0) {
@@ -1725,23 +1770,23 @@ func cmdScan(rest: ArrayList<String>, ctx: CliContext): Int64 {
             } else {
                 "扫描被截断（目录过多）"
             }
-            Log.warn("${why}：上面「未发现项目」只代表已访问的 ${result.dirsVisited} 个目录里没有，请增加 --depth 或分根扫描")
+            Log.warn(T("${why}: no-projects-found above only means none among the ${result.dirsVisited} directories visited; increase --depth or scan roots separately", "${why}：上面「未发现项目」只代表已访问的 ${result.dirsVisited} 个目录里没有，请增加 --depth 或分根扫描"))
             return 0
         }
-        Log.info("未发现项目（已访问 ${result.dirsVisited} 个目录）")
+        Log.info(T("No projects found (visited ${result.dirsVisited} directories)", "未发现项目（已访问 ${result.dirsVisited} 个目录）"))
         return 0
     }
     let rows = ArrayList<Array<String>>()
     for (c in result.candidates) {
         rows.add([c.name, c.kind, prettyPath(c.path, 46), if (c.remote.isEmpty()) { "-" } else { c.remote }])
     }
-    printOut(renderTable(["项目", "类型", "路径", "远端"], rows.toArray()))
+    printOut(renderTable([T("Project", "项目"), T("Type", "类型"), T("Path", "路径"), T("Remote", "远端")], rows.toArray()))
     Log.info("")
-    Log.ok("发现 ${result.candidates.size} 个项目：新增 ${added}，已存在 ${existing}")
+    Log.ok(T("Found ${result.candidates.size} projects: ${added} added, ${existing} already registered", "发现 ${result.candidates.size} 个项目：新增 ${added}，已存在 ${existing}"))
     if (scanIncomplete(result.truncated, result.depthCapped)) {
         // 找到了项目不代表看全了：更深的目录里可能还有别的仓库。
         // 原来这里也只接了 truncated，深度上限同样静默。
-        Log.warn("扫描覆盖程度：${scanCoverage(result.truncated, result.unreadable.size, result.depthCapped)} —— 上面列出的项目不是全部，可增加 --depth 或分根扫描")
+        Log.warn(T("Scan coverage: ${scanCoverage(result.truncated, result.unreadable.size, result.depthCapped)} - the projects listed above are not the full set; increase --depth or scan roots separately", "扫描覆盖程度：${scanCoverage(result.truncated, result.unreadable.size, result.depthCapped)} —— 上面列出的项目不是全部，可增加 --depth 或分根扫描"))
     }
     return 0
 }
@@ -1769,7 +1814,7 @@ func cmdStatus(rest: ArrayList<String>, ctx: CliContext): Int64 {
         return groupExitCode(Json.intAt(sum, "projectCount", 0), Json.intAt(sum, "listedProjects", 0))
     }
     if (targets.size == 0) {
-        Log.info("尚未注册任何项目。")
+        Log.info(T("No projects registered yet.", "尚未注册任何项目。"))
         return 0
     }
     if (targets.size == 1) {
@@ -1792,7 +1837,7 @@ func cmdStatus(rest: ArrayList<String>, ctx: CliContext): Int64 {
             headline,
         ])
     }
-    printOut(renderTable(["项目", "类型", "当前分支", "现状"], rows.toArray()))
+    printOut(renderTable([T("Project", "项目"), T("Type", "类型"), T("Current branch", "当前分支"), T("Headline", "现状")], rows.toArray()))
     let summary = groupSummary(statuses, config)
     // 采集失败的项目也要在表头说清楚。原来说「共 N 个项目」而 N 只数成功项，
     // 表格却列了全部条目 —— 数字对不上，坏掉的项目就这么从视野里消失了。
@@ -1814,9 +1859,9 @@ func cmdStatus(rest: ArrayList<String>, ctx: CliContext): Int64 {
         branchNote = branchNote + (if (branchNote.isEmpty()) { "" } else { "；" }) +
             "${branchUnknown} 个项目分支数读不出来，未计入"
     }
-    Log.info("共 ${Json.intAt(summary, "listedProjects", 0)} 个项目${failedNote} · ${Json.intAt(summary, "branchCount", 0)} 个分支${branchNote} · 活跃 ${Json.intAt(summary, "activeProjects", 0)} · 停滞 ${Json.intAt(summary, "staleProjects", 0)}")
+    Log.info(T("${Json.intAt(summary, "listedProjects", 0)} projects in total${failedNote} · ${Json.intAt(summary, "branchCount", 0)} branches${branchNote} · active ${Json.intAt(summary, "activeProjects", 0)} · stale ${Json.intAt(summary, "staleProjects", 0)}", "共 ${Json.intAt(summary, "listedProjects", 0)} 个项目${failedNote} · ${Json.intAt(summary, "branchCount", 0)} 个分支${branchNote} · 活跃 ${Json.intAt(summary, "activeProjects", 0)} · 停滞 ${Json.intAt(summary, "staleProjects", 0)}"))
     if (failed > 0 && Json.intAt(summary, "projectCount", 0) == 0) {
-        Log.error("全部项目都读取失败，没有生成任何事实。逐个排查：moongit status <项目名>")
+        Log.error(T("Every project failed to read; no facts were produced. Debug one by one: moongit status <project>", "全部项目都读取失败，没有生成任何事实。逐个排查：moongit status <项目名>"))
     }
     return groupExitCode(Json.intAt(summary, "projectCount", 0), Json.intAt(summary, "listedProjects", 0))
 }
@@ -1824,12 +1869,12 @@ func cmdStatus(rest: ArrayList<String>, ctx: CliContext): Int64 {
 func printSingleStatus(project: ProjectEntry, config: Config): Int64 {
     let status = projectStatus(project, config, 8)
     let zh = !isEnglish(config.language)
-    printOut("${Json.strAt(status, "name", "")}  ${if (Json.strAt(status, "kind", "") == "git") { "（git）" } else { "（非 git）" }}")
-    printOut("路径：${Json.strAt(status, "path", "")}")
+    printOut(T("${Json.strAt(status, "name", "")}  ${if (Json.strAt(status, "kind", "") == "git") { "(git)" } else { "(non-git)" }}", "${Json.strAt(status, "name", "")}  ${if (Json.strAt(status, "kind", "") == "git") { "（git）" } else { "（非 git）" }}"))
+    printOut(T("Path: ${Json.strAt(status, "path", "")}", "路径：${Json.strAt(status, "path", "")}"))
     if (Json.strAt(status, "remote", "").size > 0) {
-        printOut("远端：${Json.strAt(status, "remote", "")}")
+        printOut(T("Remote: ${Json.strAt(status, "remote", "")}", "远端：${Json.strAt(status, "remote", "")}"))
     }
-    printOut("现状：${Json.strAt(status, "headline", "")}")
+    printOut(T("Headline: ${Json.strAt(status, "headline", "")}", "现状：${Json.strAt(status, "headline", "")}"))
     printOut("")
     let branches = Json.arrAt(status, "branches")
     if (branches.size > 0) {
@@ -1872,24 +1917,24 @@ func printSingleStatus(project: ProjectEntry, config: Config): Int64 {
                 truncate(oneLine(Json.strAt(b, "summary", "")), 44, "…"),
             ])
         }
-        printOut(renderTable(["分支", "状态", "HEAD", "最近提交", "标记", "摘要"], rows.toArray()))
+        printOut(renderTable([T("Branch", "分支"), T("Status", "状态"), "HEAD", T("Last commit", "最近提交"), T("Tag", "标记"), T("Summary", "摘要")], rows.toArray()))
     } else {
-        printOut(if (zh) { "（暂无进度记录，运行 `moongit update` 生成）" } else { "(no progress yet)" })
+        printOut(if (zh) { T("(no progress records yet; run `moongit update` to generate)", "（暂无进度记录，运行 `moongit update` 生成）") } else { "(no progress yet)" })
     }
 
     let progressMeta = Json.getOr(status, "progress")
     printOut("")
     let lastUpdate = Json.strAt(progressMeta, "lastUpdateAt", "")
     let lastDeep = Json.strAt(progressMeta, "lastDeepAt", "")
-    printOut("进度更新：${if (lastUpdate.size > 0) { formatDateTime(lastUpdate) } else { "从未" }} · 深度更新：${if (lastDeep.size > 0) { formatDateTime(lastDeep) } else { "从未" }}")
+    printOut(T("Shallow update: ${if (lastUpdate.size > 0) { formatDateTime(lastUpdate) } else { "never" }} · Deep update: ${if (lastDeep.size > 0) { formatDateTime(lastDeep) } else { "never" }}", "进度更新：${if (lastUpdate.size > 0) { formatDateTime(lastUpdate) } else { "从未" }} · 深度更新：${if (lastDeep.size > 0) { formatDateTime(lastDeep) } else { "从未" }}"))
     if (Json.intAt(status, "userDirtyCount", 0) > 0) {
-        printOut("工作区：${Json.intAt(status, "userDirtyCount", 0)} 处未提交改动（不含 moonGit 托管文档）")
+        printOut(T("Working tree: ${Json.intAt(status, "userDirtyCount", 0)} uncommitted changes (moonGit-managed docs excluded)", "工作区：${Json.intAt(status, "userDirtyCount", 0)} 处未提交改动（不含 moonGit 托管文档）"))
     }
 
     let journal = Json.arrAt(status, "journal")
     if (journal.size > 0) {
         printOut("")
-        printOut(if (zh) { "最近进度" } else { "Recent" })
+        printOut(if (zh) { T("Recent progress", "最近进度") } else { "Recent" })
         var i: Int64 = 0
         for (e in journal) {
             if (i >= 5) {
@@ -1901,11 +1946,11 @@ func printSingleStatus(project: ProjectEntry, config: Config): Int64 {
         // 截断必须写出来。只打 5 条就收工，用户会以为「这个项目最近就这些」。
         // JSON 路径已有 journalTruncated 字段，这里是文本路径的对应披露。
         if (Json.boolAt(status, "journalTruncated", false)) {
-            printOut("- … 仅显示最近 ${Json.intAt(status, "journalLimit", 5)} 条，完整历史：moongit journal ${Json.strAt(status, "name", "<项目>")} --limit N")
+            printOut(T("- ... showing the latest ${Json.intAt(status, "journalLimit", 5)} entries; full history: moongit journal ${Json.strAt(status, "name", "<project>")} --limit N", "- … 仅显示最近 ${Json.intAt(status, "journalLimit", 5)} 条，完整历史：moongit journal ${Json.strAt(status, "name", "<项目>")} --limit N"))
         }
         // 坏行也必须说：entries 少了内容却不说原因，调用方会以为「最近没更新过」
         if (Json.intAt(status, "journalUnparsableLines", 0) > 0) {
-            printOut("- ⚠ 有 ${Json.intAt(status, "journalUnparsableLines", 0)} 行进度日志无法解析，已跳过")
+            printOut(T("- ⚠ ${Json.intAt(status, "journalUnparsableLines", 0)} progress log lines could not be parsed and were skipped", "- ⚠ 有 ${Json.intAt(status, "journalUnparsableLines", 0)} 行进度日志无法解析，已跳过"))
         }
     }
     match (Json.get(status, "overall")) {
@@ -1913,7 +1958,7 @@ func printSingleStatus(project: ProjectEntry, config: Config): Int64 {
             let notes = Json.strArrAt(overall, "notes")
             if (notes.size > 0) {
                 printOut("")
-                printOut(if (zh) { "需要注意" } else { "Attention" })
+                printOut(if (zh) { T("Needs attention", "需要注意") } else { "Attention" })
                 for (n in notes) {
                     printOut("- ${n}")
                 }
@@ -1948,7 +1993,7 @@ func cmdTrack(rest: ArrayList<String>, ctx: CliContext): Int64 {
                 } else {
                     "${result.commitCount} 个提交"
                 }
-                Log.ok("已记录 ${p.name}：${result.branchCount} 个分支${branchScopeNote(result.branchCount, result.repoBranchCount, !isEnglish(config.language))}，${commitNote}")
+                Log.ok(T("Recorded ${p.name}: ${result.branchCount} branches${branchScopeNote(result.branchCount, result.repoBranchCount, !isEnglish(config.language))}, ${commitNote}", "已记录 ${p.name}：${result.branchCount} 个分支${branchScopeNote(result.branchCount, result.repoBranchCount, !isEnglish(config.language))}，${commitNote}"))
             }
         } catch (e: Exception) {
             failed = true
@@ -2000,16 +2045,16 @@ func cmdUpdate(rest: ArrayList<String>, ctx: CliContext): Int64 {
                 } else {
                     "${result.commitCount} 个提交"
                 }
-                Log.ok("${result.projectName}：${result.branchCount} 个分支${branchScopeNote(result.branchCount, result.repoBranchCount, !isEnglish(config.language))}，${commitNote2}（摘要来源：${providerLabel(result.provider)}）")
+                Log.ok(T("${result.projectName}: ${result.branchCount} branches${branchScopeNote(result.branchCount, result.repoBranchCount, !isEnglish(config.language))}, ${commitNote2} (summary by: ${providerLabel(result.provider)})", "${result.projectName}：${result.branchCount} 个分支${branchScopeNote(result.branchCount, result.repoBranchCount, !isEnglish(config.language))}，${commitNote2}（摘要来源：${providerLabel(result.provider)}）"))
                 for ((file, changed, created, _, backup) in result.docChanges) {
                     if (changed) {
-                        Log.info("  · ${file}${if (created) { "（新建）" } else { "" }}")
+                        Log.info(T("  · ${file}${if (created) { " (new)" } else { "" }}", "  · ${file}${if (created) { "（新建）" } else { "" }}"))
                         // 改了用户的文件就**必须说备份在哪**（缺陷 #210）。
                         // 原来 res.backup 在 flow 里就被丢掉了，引擎每轮都留一份、
                         // 按 backupKeep 裁剪，用户却从不知道它存在。
                         // 没有备份时一个字都不许说：新建文件本来就没有旧版本。
                         if (!backup.isEmpty()) {
-                            Log.info("    备份：${backup}")
+                            Log.info(T("    Backups: ${backup}", "    备份：${backup}"))
                         }
                     }
                 }
@@ -2039,7 +2084,7 @@ func cmdDeep(rest: ArrayList<String>, ctx: CliContext): Int64 {
         case None => ()
     }
     if (scope != "all" && scope != "readme" && scope != "agent") {
-        throw DgError.usage("--scope 只能是 all | readme | agent")
+        throw DgError.usage(T("--scope must be all | readme | agent", "--scope 只能是 all | readme | agent"))
     }
     let dryRun = hasFlag(rest, "--dry-run")
     var failed = false
@@ -2055,16 +2100,16 @@ func cmdDeep(rest: ArrayList<String>, ctx: CliContext): Int64 {
                 results.add(deepResultToJson(result))
             } else {
                 Log.info("")
-                Log.ok("${result.projectName} 深度更新完成（摘要来源：${providerLabel(result.provider)}）")
+                Log.ok(T("${result.projectName} deep update done (summary by: ${providerLabel(result.provider)})", "${result.projectName} 深度更新完成（摘要来源：${providerLabel(result.provider)}）"))
                 for ((file, changed, created, _, backup) in result.docChanges) {
-                    Log.info("  · ${file}${if (created) { "（新建）" } else if (changed) { "" } else { "（无变化）" }}")
+                    Log.info(T("  · ${file}${if (created) { " (new)" } else if (changed) { "" } else { " (no change)" }}", "  · ${file}${if (created) { "（新建）" } else if (changed) { "" } else { "（无变化）" }}"))
                     if (!backup.isEmpty()) {
-                        Log.info("    备份：${backup}")
+                        Log.info(T("    Backups: ${backup}", "    备份：${backup}"))
                     }
                 }
                 if (result.highlights.size > 0) {
                     Log.info("")
-                    Log.info("关键结论：")
+                    Log.info(T("Key takeaways:", "关键结论："))
                     for (h in result.highlights) {
                         Log.info("  - ${h}")
                     }
@@ -2192,7 +2237,7 @@ func cmdJournal(rest: ArrayList<String>, ctx: CliContext): Int64 {
             // 与「这个项目真的没有记录」无法区分。
             limit = parseIntStrict(v, "--limit")
             if (limit <= 0) {
-                throw DgError.usage("--limit 需要正整数：${v}")
+                throw DgError.usage(T("--limit expects a positive integer: ${v}", "--limit 需要正整数：${v}"))
             }
         case None => ()
     }
@@ -2263,7 +2308,7 @@ func cmdJournal(rest: ArrayList<String>, ctx: CliContext): Int64 {
             }
             continue
         }
-        printOut("# ${p.name} 进度日志${if (branch.size > 0) { "（分支 ${branch}）" } else { "" }}")
+        printOut(T("# ${p.name} progress log${if (branch.size > 0) { " (branch ${branch})" } else { "" }}", "# ${p.name} 进度日志${if (branch.size > 0) { "（分支 ${branch}）" } else { "" }}"))
         printOut("")
         if (filtered.size == 0) {
             // 窗口用完仍无匹配：绝不能说「暂无记录」——
@@ -2271,9 +2316,9 @@ func cmdJournal(rest: ArrayList<String>, ctx: CliContext): Int64 {
             // 反过来，窗口没耗尽（= 扫到了文件头）时说「暂无记录」才是实话。
             let emptyNote = journalWindowNoteText(branch, limit, 0, windowExhausted, "--limit")
             if (emptyNote.size > 0) {
-                printOut("（${emptyNote}，或去掉 --branch 查看全量）")
+                printOut(T("(${emptyNote}; drop --branch for the full log)", "（${emptyNote}，或去掉 --branch 查看全量）"))
             } else {
-                printOut("（暂无记录）")
+                printOut(T("(no records)", "（暂无记录）"))
             }
             continue
         }
@@ -2286,12 +2331,12 @@ func cmdJournal(rest: ArrayList<String>, ctx: CliContext): Int64 {
             printOut("## ${formatDateTime(Json.strAt(e, "at", ""))} · `${Json.strAt(e, "branch", "-")}` · ${mode}")
             let commits = Json.intAt(e, "commitCount", 0)
             if (commits > 0) {
-                printOut("- 涉及 ${commits} 个提交 · 摘要来源：${providerLabel(Json.strAt(e, "provider", ""))}")
+                printOut(T("- ${commits} commits involved · summary by: ${providerLabel(Json.strAt(e, "provider", ""))}", "- 涉及 ${commits} 个提交 · 摘要来源：${providerLabel(Json.strAt(e, "provider", ""))}"))
             }
             let summary = Json.strAt(e, "summary", "")
             if (summary.size > 0) {
                 printOut("")
-                printOut("**摘要**：${oneLine(summary)}")
+                printOut(T("**Summary**: ${oneLine(summary)}", "**摘要**：${oneLine(summary)}"))
             }
             let hl = Json.strArrAt(e, "highlights")
             if (hl.size > 0) {
@@ -2371,7 +2416,7 @@ func cmdJournal(rest: ArrayList<String>, ctx: CliContext): Int64 {
 func cmdHook(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let sub = positionalsOnly(rest, VALUE_FLAGS)
     if (sub.size == 0) {
-        throw DgError.usage("用法：moongit hook <install|uninstall|status> [项目]")
+        throw DgError.usage(T("Usage: moongit hook <install|uninstall|status> [project]", "用法：moongit hook <install|uninstall|status> [项目]"))
     }
     let action = sub[0]
     // 去掉动作词本身，resolveTargets 只应看到项目引用
@@ -2392,7 +2437,7 @@ func cmdHook(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let hookResults = ArrayList<JsonValue>()
     for (p in targets) {
         if (p.kind != "git") {
-            Log.warn("${p.name} 不是 git 仓库，跳过")
+            Log.warn(T("${p.name} is not a git repository; skipped", "${p.name} 不是 git 仓库，跳过"))
             // 文本模式走 stderr 就够了；--json 下 stdout 什么都不写的话，
             // 调用方连「这个项目被跳过了」都不知道，会以为压根没注册过。
             if (ctx.json) {
@@ -2422,7 +2467,7 @@ func cmdHook(rest: ArrayList<String>, ctx: CliContext): Int64 {
                     } else {
                         for (hn in HOOK_KINDS) {
                             let res = installHookFor(p.path, engine, hn)
-                            Log.ok("${p.name}：已安装 ${hn} 钩子 → ${res.file}")
+                            Log.ok(T("${p.name}: installed ${hn} hook -> ${res.file}", "${p.name}：已安装 ${hn} 钩子 → ${res.file}"))
                         }
                     }
                 case "uninstall" =>
@@ -2440,7 +2485,7 @@ func cmdHook(rest: ArrayList<String>, ctx: CliContext): Int64 {
                         for (hn in HOOK_KINDS) {
                             let res = uninstallHookFor(p.path, hn)
                             if (res.replaced) {
-                                Log.ok("${p.name}：已卸载 ${hn} 钩子块")
+                                Log.ok(T("${p.name}: removed ${hn} hook block(s)", "${p.name}：已卸载 ${hn} 钩子块"))
                             }
                         }
                     }
@@ -2467,12 +2512,12 @@ func cmdHook(rest: ArrayList<String>, ctx: CliContext): Int64 {
                         printOut("${p.name}：${joinStrings(states, " · ")}")
                         let logPath = hookLogPathFor(p.path)
                         if (fileExists(logPath) && fileNonEmpty(logPath)) {
-                            printOut("  后台告警日志：${logPath}")
-                            printOut("    钩子在后台运行、stderr 重定向到这里，告警不会出现在终端")
+                            printOut(T("  Background warning log: ${logPath}", "  后台告警日志：${logPath}"))
+                            printOut(T("    Hooks run in the background with stderr redirected here; warnings never appear in the terminal", "    钩子在后台运行、stderr 重定向到这里，告警不会出现在终端"))
                         }
                     }
                 case _ =>
-                    throw DgError.usage("未知 hook 子命令：${action}")
+                    throw DgError.usage(T("Unknown hook subcommand: ${action}", "未知 hook 子命令：${action}"))
             }
         } catch (e: Exception) {
             failed = true
@@ -2509,16 +2554,16 @@ func cmdConfig(rest: ArrayList<String>, ctx: CliContext): Int64 {
             printOut(Json.pretty(configToJson(cfg)))
             return 0
         }
-        printOut("语言：${cfg.language}")
-        printOut("扫描根：${if (cfg.roots.size == 0) { "（未设置）" } else { joinStrings(cfg.roots, ", ") } }")
-        printOut("文档：${joinStrings(cfg.docs, ", ")}")
-        printOut("分支上限：${cfg.maxShallowBranches}")
-        printOut("AI：由客户端层负责（deepDolphin.app 设置），引擎保持 AI 无关")
+        printOut(T("Language: ${cfg.language}", "语言：${cfg.language}"))
+        printOut(T("Scan roots: ${if (cfg.roots.size == 0) { "(not set)" } else { joinStrings(cfg.roots, ", ") } }", "扫描根：${if (cfg.roots.size == 0) { "（未设置）" } else { joinStrings(cfg.roots, ", ") } }"))
+        printOut(T("Docs: ${joinStrings(cfg.docs, ", ")}", "文档：${joinStrings(cfg.docs, ", ")}"))
+        printOut(T("Branch limit: ${cfg.maxShallowBranches}", "分支上限：${cfg.maxShallowBranches}"))
+        printOut(T("AI: handled by the client layer (deepDolphin.app settings); the engine stays AI-agnostic", "AI：由客户端层负责（deepDolphin.app 设置），引擎保持 AI 无关"))
         return 0
     }
     if (sub[0] == "get") {
         if (sub.size < 2) {
-            throw DgError.usage("用法：moongit config get <键>")
+            throw DgError.usage(T("Usage: moongit config get <key>", "用法：moongit config get <键>"))
         }
         let key = sub[1]
         // ⚠️ #194：未知键**必须报错**，不能返回 null + rc=0。
@@ -2539,16 +2584,16 @@ func cmdConfig(rest: ArrayList<String>, ctx: CliContext): Int64 {
     }
     if (sub[0] == "set") {
         if (sub.size < 3) {
-            throw DgError.usage("用法：moongit config set <键> <值>")
+            throw DgError.usage(T("Usage: moongit config set <key> <value>", "用法：moongit config set <键> <值>"))
         }
         let key = sub[1]
         let value = sub[2]
         let updated = configSetValue(cfg, key, value)
         saveConfig(updated)
-        Log.ok("已设置 ${key} = ${value}")
+        Log.ok(T("Set ${key} = ${value}", "已设置 ${key} = ${value}"))
         return 0
     }
-    throw DgError.usage("未知 config 子命令：${sub[0]}")
+    throw DgError.usage(T("Unknown config subcommand: ${sub[0]}", "未知 config 子命令：${sub[0]}"))
 }
 
 /// 引擎认得的配置键。**读与写的唯一来源**。
@@ -2593,7 +2638,7 @@ func configGetValue(cfg: Config, key: String): JsonValue {
         case "roots" => return jsonStrArray(cfg.roots)
         // ⚠️ 未知键抛错，与 configSetValue 同一判据、同一退出码。
         // 原来这里是 `Json.null()` —— 见 cmdConfig 的注释。
-        case _ => throw DgError.usage("未知配置键：${key}（可用：${joinStrings(configKnownKeys(), ", ")}）")
+        case _ => throw DgError.usage(T("Unknown config key: ${key} (available: ${joinStrings(configKnownKeys(), ", ")})", "未知配置键：${key}（可用：${joinStrings(configKnownKeys(), ", ")}）"))
     }
 }
 
@@ -2641,7 +2686,7 @@ func configSetValue(cfg: Config, key: String, value: String): Config {
                 }
             }
             cfg.roots = arr
-        case _ => throw DgError.usage("未知配置键：${key}（可用：${joinStrings(configKnownKeys(), ", ")}）")
+        case _ => throw DgError.usage(T("Unknown config key: ${key} (available: ${joinStrings(configKnownKeys(), ", ")})", "未知配置键：${key}（可用：${joinStrings(configKnownKeys(), ", ")}）"))
     }
     return cfg
 }
@@ -2661,7 +2706,7 @@ func parseIntStrict(s: String, key: String): Int64 {
     try {
         return Int64.parse(s.trimAscii())
     } catch (e: Exception) {
-        throw DgError.usage("${key} 需要整数：${s}")
+        throw DgError.usage(T("${key} expects an integer: ${s}", "${key} 需要整数：${s}"))
     }
 }
 
@@ -2791,7 +2836,7 @@ func cmdVerify(rest: ArrayList<String>, ctx: CliContext): Int64 {
             if (all.size == 0) {
                 // listDir() 吞掉读取异常（无权限、被占用）返回空列表 ——
                 // 连元数据都列不出来 = 目录读不动，与「只有元数据」是两回事。
-                Log.warn("备份目录存在但读取不到内容，已跳过校验：${p.name}/${docName}")
+                Log.warn(T("Backup directory exists but is unreadable; verification skipped: ${p.name}/${docName}", "备份目录存在但读取不到内容，已跳过校验：${p.name}/${docName}"))
                 continue
             }
             let latestOpt = latestRealBackup(entry.path.toString())
@@ -2867,20 +2912,20 @@ func cmdVerify(rest: ArrayList<String>, ctx: CliContext): Int64 {
         Log.warn(note)
         return 0
     }
-    printOut(renderTable(["项目", "文档", "结果", "说明"], rows.toArray()))
+    printOut(renderTable([T("Project", "项目"), T("Doc", "文档"), T("Result", "结果"), T("Note", "说明")], rows.toArray()))
     Log.info("")
     if (undeterminedCount > 0) {
-        Log.warn("${undeterminedCount} 份文档无法判定（读不到备份、没有写入前快照或标记结构异常）—— 这些不计入通过")
+        Log.warn(T("${undeterminedCount} docs could not be determined (backup unreadable, no pre-write snapshot, or malformed markers) - not counted as passed", "${undeterminedCount} 份文档无法判定（读不到备份、没有写入前快照或标记结构异常）—— 这些不计入通过"))
     }
     if (missing > 0) {
-        Log.error("${missing} 份文档已被删除（备份仍在，可恢复）")
+        Log.error(T("${missing} docs were deleted (backups remain and can be restored)", "${missing} 份文档已被删除（备份仍在，可恢复）"))
     }
     if (failures > 0) {
-        Log.error("${failures} 份文档存在非托管内容改动（可用备份恢复）")
+        Log.error(T("${failures} docs have non-managed content changes (restorable from backups)", "${failures} 份文档存在非托管内容改动（可用备份恢复）"))
         return 1
     }
     if (passed > 0) {
-        Log.ok("校验通过：${passed} 份文档的用户内容均未被改动")
+        Log.ok(T("Verification passed: user content in ${passed} docs is untouched", "校验通过：${passed} 份文档的用户内容均未被改动"))
     }
     return if (missing > 0) { 1 } else { 0 }
 }
@@ -3032,7 +3077,7 @@ func cmdDoctor(rest: ArrayList<String>, ctx: CliContext): Int64 {
         printOut(Json.pretty(o))
         return if (problems > 0) { 1 } else { 0 }
     }
-    printOut(renderTable(["检查项", "结果", "详情"], checks.toArray()))
+    printOut(renderTable([T("Check", "检查项"), T("Result", "结果"), T("Detail", "详情")], checks.toArray()))
     return if (problems > 0) { 1 } else { 0 }
 }
 
