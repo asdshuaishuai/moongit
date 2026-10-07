@@ -175,47 +175,78 @@ public func buildArch(graph: CodeGraph): ArchData {
 public func layoutArch(data: ArchData): Unit {
     let nodeH: Float64 = 64.0
     let nodeWMin: Float64 = 132.0
-    let colGap: Float64 = 96.0
-    let rowGap: Float64 = 36.0
-    let margin: Float64 = 56.0
-    // 每层的模块按名字排（确定性），逐列堆叠
+    let colGap: Float64 = 110.0
+    let rowGap: Float64 = 40.0
+    let margin: Float64 = 64.0
+    // 先按层收集并量好尺寸（确定性：列内按模块名排）
+    var colMods = HashMap<Int64, ArrayList<ArchModule>>()
+    var colW = HashMap<Int64, Float64>()
+    var colH = HashMap<Int64, Float64>()
     var col = 0
     while (col < LAYER_COUNT) {
-        let colMods = ArrayList<ArchModule>()
+        let list = ArrayList<ArchModule>()
         for (m in data.modules) {
-            if (m.layer == col) { colMods.add(m) }
+            if (m.layer == col) { list.add(m) }
         }
-        insertionSortBy(colMods, { a, b => a.id < b.id })
+        insertionSortBy(list, { a, b => a.id < b.id })
         var maxW: Float64 = nodeWMin
-        var y = margin
-        for (m in colMods) {
-            // 宽度随标签长度伸缩；canvas 端按这个盒子画
-            let label = m.id
-            let est = 40.0 + Float64(label.toArray().size) * 8.4
-            m.w = if (est < nodeWMin) { nodeWMin } else { if (est > 260.0) { 260.0 } else { est } }
+        var h: Float64 = 0.0
+        for (m in list) {
+            let est = 44.0 + Float64(m.id.toArray().size) * 8.4
+            m.w = if (est < nodeWMin) { nodeWMin } else { if (est > 264.0) { 264.0 } else { est } }
             m.h = nodeH
             if (m.w > maxW) { maxW = m.w }
+            h += nodeH + rowGap
+        }
+        if (list.size > 0) { h -= rowGap }
+        colMods[col] = list
+        colW[col] = maxW
+        colH[col] = h
+        col += 1
+    }
+    // 全图统一内容高度 ⇒ 每列垂直居中；x 单遍顺序累加（列定位只此一处，不再二次平移）
+    var maxH: Float64 = 0.0
+    col = 0
+    while (col < LAYER_COUNT) {
+        match (colH.get(col)) {
+            case Some(h) => if (h > maxH) { maxH = h }
+            case None => ()
+        }
+        col += 1
+    }
+    var xCursor = margin
+    col = 0
+    while (col < LAYER_COUNT) {
+        var list: ArrayList<ArchModule>
+        match (colMods.get(col)) {
+            case Some(l) => list = l
+            case None => list = ArrayList<ArchModule>()
+        }
+        if (list.size == 0) {
+            col += 1
+            continue
+        }
+        var ch: Float64 = 0.0
+        match (colH.get(col)) {
+            case Some(h) => ch = h
+            case None => ()
+        }
+        var y = margin + (maxH - ch) / 2.0
+        for (m in list) {
+            m.x = xCursor
             m.y = y
             y += nodeH + rowGap
         }
-        var x = margin
-        var ci = 0
-        while (ci < col) {
-            x += colWidthOf(data, ci) + colGap
-            ci += 1
+        var cw: Float64 = nodeWMin
+        match (colW.get(col)) {
+            case Some(w) => cw = w
+            case None => ()
         }
-        for (m in colMods) { m.x = x }
+        xCursor += cw + colGap
         col += 1
     }
 }
 
-func colWidthOf(data: ArchData, layer: Int64): Float64 {
-    var maxW: Float64 = 132.0
-    for (m in data.modules) {
-        if (m.layer == layer && m.w > maxW) { maxW = m.w }
-    }
-    return maxW
-}
 
 // MARK: - JSON
 

@@ -28,10 +28,28 @@ public func overviewJson(graph: CodeGraph): JsonValue {
             }
         }
     }
+    // 符号密度 top5：agent 找「这个仓库的核在哪」先看这里
+    let byFile = ArrayList<FileStat>()
+    for (f in graph.files) {
+        byFile.add(FileStat(f.relPath, Int64(f.symbols.size), f.lines))
+    }
+    insertionSortBy(byFile, { a, b => if (a.syms != b.syms) { a.syms > b.syms } else { a.path < b.path } })
+    let top = ArrayList<JsonValue>()
+    var ti = 0
+    for (item in byFile) {
+        if (ti >= 5 || item.syms == 0) { break }
+        let d = Json.obj()
+        Json.set(d, "path", Json.of(item.path))
+        Json.set(d, "symbols", Json.of(item.syms))
+        Json.set(d, "lines", Json.of(item.lines))
+        top.add(d)
+        ti += 1
+    }
     let o = Json.obj()
     Json.set(o, "root", Json.of(graph.root))
     Json.set(o, "files", Json.of(Int64(graph.files.size)))
     Json.set(o, "symbols", Json.of(symbols))
+    Json.set(o, "topFiles", JArr(top))
     Json.set(o, "imports", Json.of(Int64(graph.importEdges.size)))
     Json.set(o, "referenceEdges", Json.of(Int64(graph.refEdges.size)))
     Json.set(o, "truncated", Json.of(graph.truncated))
@@ -79,6 +97,13 @@ public func overviewText(graph: CodeGraph): String {
     }
     sb.append("  语言  ${langLine}\n")
     sb.append("  种类  ${kindLine}\n")
+    let top = Json.arrAt(o, "topFiles")
+    if (top.size > 0) {
+        sb.append("  符号密度 Top：\n")
+        for (d in top) {
+            sb.append("    ${Json.intAt(d, "symbols", 0)} 符号/${Json.intAt(d, "lines", 0)} 行  ${Json.strAt(d, "path", "")}\n")
+        }
+    }
     sb.append("下一步：graph tree 看关系树 · graph arch 出架构图 · graph impact <符号> 看影响面\n")
     return sb.toString()
 }
@@ -130,12 +155,63 @@ public func fullGraphJson(graph: CodeGraph): JsonValue {
 
 // MARK: - 关系树
 
-/// ASCII 关系树：目录 → 文件 → 符号。maxDepth 限制目录深度。
+/// 三元计数（文件/符号/行）。仓颉元组没有 `.0` 索引，具名字段即文档。
+public struct Stat3 {
+    public var files: Int64
+    public var syms: Int64
+    public var lines: Int64
+    public init(f: Int64, s: Int64, l: Int64) { files = f; syms = s; lines = l }
+}
+
+/// 符号密度排序条目。
+public struct FileStat {
+    public let path: String
+    public let syms: Int64
+    public let lines: Int64
+    public init(p: String, s: Int64, l: Int64) { path = p; syms = s; lines = l }
+}
+
+/// 子树聚合统计：dir 前缀 → (文件, 符号, 行)。目录行的汇总注记用。
+func subtreeStats(graph: CodeGraph): HashMap<String, Stat3> {
+    let m = HashMap<String, Stat3>()
+    for (file in graph.files) {
+        let segs = file.relPath.split("/")
+        var acc = 0
+        var i = 0
+        while (i < segs.size - 1) {
+            acc = if (i == 0) { segs[i].size } else { acc + 1 + segs[i].size }
+            let dir = String.fromUtf8(file.relPath.toArray()[0..acc])
+            match (m.get(dir)) {
+                case Some(old) => m[dir] = Stat3(old.files + 1, old.syms + Int64(file.symbols.size), old.lines + file.lines)
+                case None => m[dir] = Stat3(1, Int64(file.symbols.size), file.lines)
+            }
+            i += 1
+        }
+    }
+    return m
+}
+
+func totalSymbols(graph: CodeGraph): Int64 {
+    var n: Int64 = 0
+    for (f in graph.files) { n += Int64(f.symbols.size) }
+    return n
+}
+
+/// ASCII 关系树：目录 → 文件 → 符号；目录行带**子树汇总**，深度截断处披露。
 public func treeText(graph: CodeGraph, maxDepth: Int64): String {
     let sb = StringBuilder()
-    sb.append("${graph.root}\n")
-    renderDir(graph, "", 1, maxDepth, "", sb)
+    sb.append("${graph.root}  (${Int64(graph.files.size)} 文件 · ${totalSymbols(graph)} 符号 · ${sumLines(graph)} 行)\n")
+    renderDir(graph, "", 1, maxDepth, "", subtreeStats(graph), sb)
+    if (graph.truncated) {
+        sb.append("⚠ 文件数达到上限 ${GRAPH_MAX_FILES}，以上不是全量\n")
+    }
     return sb.toString()
+}
+
+func sumLines(graph: CodeGraph): Int64 {
+    var n: Int64 = 0
+    for (f in graph.files) { n += f.lines }
+    return n
 }
 
 let TREE_PIPE = "│  "
@@ -149,8 +225,8 @@ enum TreeItem {
 }
 
 func renderDir(graph: CodeGraph, dir: String, depth: Int64, maxDepth: Int64,
-               prefix: String, sb: StringBuilder): Unit {
-    if (depth > maxDepth) { return }
+               prefix: String, stats: HashMap<String, Stat3>,
+               sb: StringBuilder): Unit {
     let relPrefix = if (dir.isEmpty()) { "" } else { dir + "/" }
     let items = ArrayList<TreeItem>()
     let seenDirs = ArrayList<String>()
@@ -174,12 +250,23 @@ func renderDir(graph: CodeGraph, dir: String, depth: Int64, maxDepth: Int64,
         let connector = if (i == n - 1) { TREE_LAST } else { TREE_TEE }
         let childPrefix = if (i == n - 1) { prefix + "   " } else { prefix + TREE_PIPE }
         match (item) {
-case TDir(name, full) =>
-                                sb.append("${prefix}${connector}${name}/\n")
-                                renderDir(graph, full, depth + 1, maxDepth, childPrefix, sb)
-case TFile(f) =>
-                                sb.append("${prefix}${connector}${lastSeg(f.relPath)}  (${f.lang}, ${f.lines} 行)\n")
-                                renderSymbols(f, childPrefix, sb)
+            case TDir(name, full) =>
+                // 目录行带**子树汇总**——只有目录名时，读者无从判断哪一块是重心
+                var note = ""
+                match (stats.get(full)) {
+                    case Some(st) => note = "  (${st.files} 文件 · ${st.syms} 符号 · ${st.lines} 行)"
+                    case None => ()
+                }
+                sb.append("${prefix}${connector}${name}/${note}\n")
+                if (depth + 1 > maxDepth) {
+                    // 截断必须说出来，不能让子树静默消失
+                    sb.append("${childPrefix}   … 深度截断（提高 --depth 展开）\n")
+                } else {
+                    renderDir(graph, full, depth + 1, maxDepth, childPrefix, stats, sb)
+                }
+            case TFile(f) =>
+                sb.append("${prefix}${connector}${lastSeg(f.relPath)}  (${f.lang}, ${f.lines} 行, ${Int64(f.symbols.size)} 符号)\n")
+                renderSymbols(f, childPrefix, sb)
         }
         i += 1
     }
