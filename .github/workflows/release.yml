@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Cangjie SDK
+        run: |
+          curl -fsSL "https://cangjie-lang.cn/packages/1.0.5/cangjie-sdk-mac-aarch64-1.0.5.tar.gz" -o /tmp/cj.tar.gz
+          mkdir -p $HOME/.local/share/cangjie/1.0.5
+          tar xzf /tmp/cj.tar.gz -C $HOME/.local/share/cangjie/1.0.5 --strip-components=1
+          echo "$HOME/.local/share/cangjie/1.0.5/bin" >> $GITHUB_PATH
+          echo "CANGJIE_HOME=$HOME/.local/share/cangjie/1.0.5" >> $GITHUB_ENV
+      - name: Build
+        run: |
+          source $CANGJIE_HOME/envsetup.sh
+          cjpm build
+          cp target/release/bin/moongit moongit-cli
+      - name: Package
+        run: |
+          chmod +x moongit-cli
+          tar czf moongit-${{ github.ref_name }}-darwin-arm64.tar.gz moongit-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: moongit-darwin-arm64
+          path: moongit-*-darwin-arm64.tar.gz
+
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Cangjie SDK
+        run: |
+          curl -fsSL "https://cangjie-lang.cn/packages/1.0.5/cangjie-sdk-linux-x64-1.0.5.tar.gz" -o /tmp/cj.tar.gz
+          mkdir -p $HOME/.local/share/cangjie/1.0.5
+          tar xzf /tmp/cj.tar.gz -C $HOME/.local/share/cangjie/1.0.5 --strip-components=1
+          echo "$HOME/.local/share/cangjie/1.0.5/bin" >> $GITHUB_PATH
+          echo "CANGJIE_HOME=$HOME/.local/share/cangjie/1.0.5" >> $GITHUB_ENV
+      - name: Build
+        run: |
+          source $CANGJIE_HOME/envsetup.sh
+          cjpm build
+          cp target/release/bin/moongit moongit-cli
+      - name: Package
+        run: |
+          chmod +x moongit-cli
+          tar czf moongit-${{ github.ref_name }}-linux-x64.tar.gz moongit-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: moongit-linux-x64
+          path: moongit-*-linux-x64.tar.gz
+
+  release:
+    needs: [build-macos, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: moongit-*/moongit-*.tar.gz
+          generate_release_notes: true
