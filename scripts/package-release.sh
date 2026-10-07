@@ -8,7 +8,7 @@ case "$PLATFORM" in
   x86_64)        PLATFORM="linux-x64" ;;
   *)             PLATFORM="$PLATFORM" ;;
 esac
-BIN="target/release/bin/moongit"
+BIN="target/release/bin/main"
 [ -f "$BIN" ] || { echo "先 cjpm build"; exit 1; }
 OUT="moongit-v${VERSION}-${PLATFORM}.tar.gz"
 cp "$BIN" moongit-cli
