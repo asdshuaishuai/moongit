@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>moonGit Engine — git 历史即进度</title>
+<style>
+:root{--bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--border:#30363d;--fg:#e6edf3;--dim:#8b949e;--accent:#58a6ff;--green:#3fb950;--purple:#bc8cff;--orange:#d29922;--mono:'SF Mono',SFMono-Regular,Consolas,monospace}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:16px/1.7 -apple-system,'PingFang SC','Noto Sans SC',sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+.mono{font-family:var(--mono)}
+.container{max-width:960px;margin:0 auto;padding:0 24px}
+/* nav */
+nav{display:flex;align-items:center;justify-content:space-between;padding:16px 0;border-bottom:1px solid var(--border)}
+nav .logo{font-weight:700;font-size:18px}
+nav .logo span{color:var(--accent)}
+nav .links{display:flex;gap:24px;font-size:14px}
+/* hero */
+.hero{text-align:center;padding:80px 0 60px}
+.hero h1{font-size:48px;font-weight:800;letter-spacing:-1px;line-height:1.2}
+.hero h1 em{font-style:normal;color:var(--accent)}
+.hero p{font-size:20px;color:var(--dim);max-width:640px;margin:16px auto 0}
+.hero .tags{display:flex;gap:8px;justify-content:center;margin-top:20px;flex-wrap:wrap}
+.tag{font-size:12px;padding:4px 12px;border-radius:99px;border:1px solid var(--border);color:var(--dim)}
+.tag b{color:var(--green)}
+/* terminal */
+.term{background:var(--bg2);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin:48px auto;max-width:720px;text-align:left}
+.term-bar{background:var(--bg3);padding:8px 14px;display:flex;gap:6px;align-items:center}
+.term-bar .dot{width:12px;height:12px;border-radius:50%}
+.term-bar .d1{background:#ff5f57}.term-bar .d2{background:#febc2e}.term-bar .d3{background:#28c840}
+.term-bar span{margin-left:8px;font-size:12px;color:var(--dim);font-family:var(--mono)}
+.term-body{padding:16px 20px;font-family:var(--mono);font-size:13px;line-height:1.8}
+.term-body .p{color:var(--green)}
+.term-body .c{color:var(--dim)}
+.term-body .o{color:var(--fg)}
+/* section */
+section{padding:60px 0}
+section h2{font-size:28px;font-weight:700;margin-bottom:8px}
+section .sub{color:var(--dim);margin-bottom:32px;font-size:16px}
+/* grid */
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:24px}
+.card .icon{font-size:28px;margin-bottom:12px}
+.card h3{font-size:16px;font-weight:600;margin-bottom:6px}
+.card p{font-size:14px;color:var(--dim);line-height:1.6}
+/* code block */
+.code{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:16px 20px;font-family:var(--mono);font-size:13px;line-height:1.8;overflow-x:auto;white-space:pre;text-align:left}
+.code .k{color:var(--purple)}
+.code .s{color:var(--green)}
+.code .c{color:var(--dim)}
+/* table */
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{text-align:left;padding:8px 12px;border-bottom:1px solid var(--border);color:var(--dim);font-weight:500}
+td{padding:8px 12px;border-bottom:1px solid var(--border)}
+/* platform */
+.platforms{display:flex;gap:12px;flex-wrap:wrap;margin-top:16px}
+.plat{display:flex;align-items:center;gap:8px;padding:8px 16px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;font-size:14px}
+.plat .ok{color:var(--green)}.plat .soon{color:var(--dim)}
+/* install */
+.install{display:flex;gap:12px;flex-wrap:wrap;margin-top:24px}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:10px 24px;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer;transition:opacity .2s}
+.btn:hover{opacity:.85}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-ghost{background:transparent;color:var(--fg);border:1px solid var(--border)}
+/* footer */
+footer{border-top:1px solid var(--border);padding:32px 0;text-align:center;color:var(--dim);font-size:13px}
+footer a{color:var(--dim)}
+/* arch */
+.arch{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:24px 0;font-size:14px}
+.arch .box{padding:16px;border-radius:10px;border:1px solid var(--border)}
+.arch .box h4{margin-bottom:8px;font-size:14px}
+.arch .box p{color:var(--dim);font-size:13px}
+.arch .ai{border-color:var(--purple);background:var(--purple).1}
+.arch .core{border-color:var(--accent);background:rgba(88,166,255,.08)}
+@media(max-width:640px){
+.hero h1{font-size:32px}
+.hero p{font-size:16px}
+.arch{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<div class="container">
+<nav>
+  <div class="logo">🌙 <span>moonGit</span> Engine</div>
+  <div class="links">
+    <a href="#features">功能</a>
+    <a href="#install">安装</a>
+    <a href="#agent">Agent</a>
+    <a href="https://github.com/asdshuaishuai/moongit">GitHub ↗</a>
+  </div>
+</nav>
+</div>
+
+<div class="container">
+<div class="hero">
+  <h1>git 历史即进度<br><em>AI 无关</em>的确定性引擎</h1>
+  <p>moonGit 用 git 自己的历史回答两个问题：这个分支做到哪了？README 是否还准？<br>它不调用任何 LLM——它为 agent 提供所需的一切。</p>
+  <div class="tags">
+    <span class="tag"><b>●</b> 仓颉语言</span>
+    <span class="tag">零第三方依赖</span>
+    <span class="tag">CLI + MCP + HTTP</span>
+    <span class="tag">AI 无关</span>
+  </div>
+  <div class="install">
+    <a class="btn btn-primary" href="https://github.com/asdshuaishuai/moongit/releases">下载 Release</a>
+    <a class="btn btn-ghost" href="https://github.com/asdshuaishuai/moongit">GitHub</a>
+  </div>
+</div>
+</div>
+
+<div class="container">
+<div class="term">
+  <div class="term-bar"><div class="dot d1"></div><div class="dot d2"></div><div class="dot d3"></div><span>terminal</span></div>
+  <div class="term-body">
+<div class="p">$</div> <span class="c"># 看全部项目现状</span><br>
+<div class="p">$</div> moongit status<br>
+<span class="o">deepDesign  main: 活跃 · 2 处未提交</span><br>
+<span class="o">deepGit     main: 活跃 · 43 处未提交</span><br>
+<span class="o">deepOffice  main: 闲置 · 15 处未提交</span><br>
+<br>
+<div class="p">$</div> <span class="c"># 记录进度 + 刷新文档托管区域</span><br>
+<div class="p">$</div> moongit update<br>
+<span class="c"># ✓ README.md 托管区域已刷新（其余逐字节保留）</span><br>
+<br>
+<div class="p">$</div> <span class="c"># AI agent 上下文包</span><br>
+<div class="p">$</div> moongit context --budget 8000 --json<br>
+  </div>
+</div>
+</div>
+
+<div class="container">
+<section id="features">
+  <h2>核心能力</h2>
+  <p class="sub">三行代码管理项目群，不依赖任何 LLM</p>
+  <div class="grid">
+    <div class="card"><div class="icon">📊</div><h3>进度记录（按分支）</h3><p>每个分支做到哪、停滞多久、是否已合并。Conventional Commits 自动分类，工程脉搏一目了然。</p></div>
+    <div class="card"><div class="icon">📝</div><h3>浅更新文档</h3><p>把各分支进度写进 README / AGENTS / CLAUDE 的托管区域。非托管内容逐字节保留。</p></div>
+    <div class="card"><div class="icon">🏗️</div><h3>深度更新</h3><p>基于全量历史重写 overview / architecture / commands / history 四大章节。</p></div>
+    <div class="card"><div class="icon">🌿</div><h3>Git 集成</h3><p>worktree / stash / untracked / merge-base 全感知。面板级白名单操作（pull / push / commit），零破坏性。</p></div>
+    <div class="card"><div class="icon">🚩</div><h3>里程碑</h3><p>绑定 git tag 自动判定达成。目标日期逾期计算。跨项目聚合仪表盘。</p></div>
+    <div class="card"><div class="icon">🤖</div><h3>Agent 三件套</h3><p>CLI --json / MCP 服务器（15 工具）/ Skill 教学包。任何 AI agent 均可接入，引擎不感知 AI。</p></div>
+  </div>
+</section>
+
+<section id="arch">
+  <h2>架构</h2>
+  <p class="sub">AI 无关内核 + 上层 AI 实现分离（deepDesign 模式）</p>
+  <div class="arch">
+    <div class="box" style="border-color:#bc8cff">
+      <h4>🤖 AI 层（deepDolphin 等客户端）</h4>
+      <p>models.dev 目录选型 · ai-sdk 风格通道 · 原生 tool_calls · 提示词组装 · 密钥存储（本机钥匙串）</p>
+    </div>
+    <div class="box" style="border-color:#58a6ff">
+      <h4>⚙️ moonGit Engine（本仓库）</h4>
+      <p>git 采集 · 进度库 · 文档托管写入 · 规则引擎 · CLI --json · MCP 服务器 · HTTP API</p>
+    </div>
+  </div>
+  <p style="color:var(--dim);font-size:14px;margin-top:8px">唯一耦合面 = HTTP / CLI 的 JSON 键名。引擎不感知任何客户端，客户端不做任何业务计算。</p>
+</section>
+
+<section id="install">
+  <h2>安装</h2>
+  <p class="sub">macOS ARM64 · Linux x64（更多平台规划中）</p>
+  <div class="code"><span class="c"># 从 Release 下载</span>
+curl -fsSL <span class="s">"https://github.com/asdshuaishuai/moongit/releases/latest/download/moongit-darwin-arm64.tar.gz"</span> -o moongit.tar.gz
+tar xzf moongit.tar.gz
+mv moongit-cli ~/.local/bin/moongit && chmod +x ~/.local/bin/moongit
+
+<span class="c"># 注册项目群</span>
+moongit scan ~/dev --depth 4
+
+<span class="c"># 看现状</span>
+moongit status</div>
+  <p style="margin-top:16px;color:var(--dim);font-size:14px">完整安装请用 <span class="mono">sh scripts/install.sh</span>（自动处理 macOS 26+ SDK 兼容、安装到 PATH、可选钩子）。</p>
+</section>
+
+<section id="agent">
+  <h2>Agent 接入</h2>
+  <p class="sub">CLI / MCP / Skill 三件套，同源同权</p>
+  <table>
+    <tr><th>方式</th><th>用途</th><th>接入</th></tr>
+    <tr><td><b>CLI</b></td><td>一次性问答、脚本</td><td><span class="mono">moongit status --json</span></td></tr>
+    <tr><td><b>MCP</b></td><td>工具化接入（推荐）</td><td><span class="mono">moongit mcp</span>（stdio JSON-RPC，15 工具）</td></tr>
+    <tr><td><b>Skill</b></td><td>编码类 agent 教学</td><td><span class="mono">moongit skill install</span></td></tr>
+    <tr><td><b>HTTP</b></td><td>本地服务</td><td><span class="mono">moongit serve</span> → <span class="mono">GET /api/*</span></td></tr>
+  </table>
+  <p style="margin-top:16px;color:var(--dim);font-size:14px">任何 MCP 宿主（Claude、其它 agent）一行接入；引擎只提供事实与动作，判断与表达由 agent 完成。</p>
+</section>
+
+<section>
+  <h2>红线</h2>
+  <div class="grid">
+    <div class="card"><h3>🔒 git 操作白名单</h3><p>pull / push / commit / stash / unstash / fetch。没有 reset / clean / force-push。</p></div>
+    <div class="card"><h3>📝 托管区域写入</h3><p>只改写 moonGit 标记的区域，用户内容逐字节保留，写入前自动备份。</p></div>
+    <div class="card"><h3>🔒 AI 无关</h3><p>引擎零 LLM 调用、零密钥存储。AI 层在客户端，密钥在钥匙串。</p></div>
+  </div>
+</section>
+</div>
+
+<footer>
+<div class="container">
+  <p>moonGit Engine · 仓颉语言 · 零第三方依赖 · <a href="https://github.com/asdshuaishuai/moongit">GitHub</a> · <a href="https://github.com/asdshuaishuai/deepDolphin">deepDolphin 客户端</a></p>
+</div>
+</footer>
+</body>
+</html>
