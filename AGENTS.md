@@ -196,7 +196,8 @@ moonGit/target/release/bin/main status
 ## 架构边界（依赖方向严格单向，改前必看）
 
 ```
-util → kernel → ai → flow → cli
+util → (kernel | graph) → ai → flow → cli
+       (graph 只依赖 util：词法级代码图谱，不碰 git/进度库)
        (↑ ai 只依赖 kernel/util，绝不反向依赖 flow)
 ```
 

@@ -15,6 +15,7 @@ import std.env.*
 import std.unittest.*
 import std.unittest.testmacro.*
 import moongit.flow.*
+import moongit.graph.*
 import moongit.kernel.*
 import moongit.util.*
 
@@ -86,6 +87,12 @@ public func mcpToolList(): JsonValue {
     arr.add(mcpTool("milestone_add", "新增里程碑（tag 存在即自动达成）", mcpSchemaObject([("project", "string", "项目名或 ID"), ("name", "string", "里程碑名"), ("tag", "string", "绑定 tag"), ("target_date", "string", "YYYY-MM-DD"), ("description", "string", "描述")], ["project", "name"])))
     arr.add(mcpTool("milestone_action", "里程碑状态操作", mcpSchemaObject([("project", "string", "项目名或 ID"), ("name", "string", "里程碑名"), ("action", "string", "done|open|drop|remove")], ["project", "name", "action"])))
     arr.add(mcpTool("add_project", "注册一个项目目录", mcpSchemaObject([("path", "string", "项目绝对路径"), ("name", "string", "项目名（缺省取目录名）")], ["path"])))
+    // ── CodeGraph：代码图谱（仓颉引擎的确定性词法分析，零依赖）──
+    arr.add(mcpTool("codegraph_overview", "代码图谱概览：文件/符号/引用边统计，按语言与符号种类分桶", mcpSchemaObject([("name", "string", "项目名或 ID")], ["name"])))
+    arr.add(mcpTool("codegraph_tree", "索引关系树：目录→文件→符号（JSON 形态为全量图：文件事实 + import 边 + 引用边）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("depth", "integer", "目录深度，默认 6")], ["name"])))
+    arr.add(mcpTool("codegraph_symbol", "符号定位：定义处 + 词法引用文件", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"])))
+    arr.add(mcpTool("codegraph_impact", "影响面分析：符号定义 + 引用文件 + 受影响符号（词法文件级粒度，非语义调用图）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"])))
+    arr.add(mcpTool("codegraph_arch", "技术架构图：模块聚合 + 分层判定。format=html（Canvas 交互图，单文件零依赖）/ mermaid / dot / json", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "html|mermaid|dot|json，默认 html")], ["name"])))
     let o = Json.obj()
     Json.set(o, "tools", JArr(arr))
     return o
@@ -261,6 +268,58 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                         return mcpOk(buildAgentContext(reg.projects, config, "project", getStr("name"), n))
                     case None =>
                         return mcpErr("budget 需要整数")
+                }
+            case "codegraph_overview" =>
+                let p = mcpRequireProject(getStr("name"))
+                let g = buildGraph(p.path)
+                mcpOk(Json.pretty(overviewJson(g)))
+            case "codegraph_tree" =>
+                let p = mcpRequireProject(getStr("name"))
+                let g = buildGraph(p.path)
+                var depth: Int64 = 6
+                match (strictIntArg("depth")) {
+                    case Some(d) =>
+                        depth = if (d < 1) { 1 } else { if (d > 24) { 24 } else { d } }
+                    case None => ()
+                }
+                mcpOk(Json.pretty(fullGraphJson(g)))
+            case "codegraph_symbol" =>
+                let p = mcpRequireProject(getStr("name"))
+                let sym = getStr("symbol")
+                if (sym.isEmpty()) { return mcpErr("symbol is required") }
+                let g = buildGraph(p.path)
+                let o = symbolJson(g, sym)
+                if (Json.arrAt(o, "defs").size == 0) {
+                    return mcpErr("symbol not found: ${sym} (lexical index covers supported source languages only)")
+                }
+                mcpOk(Json.pretty(o))
+            case "codegraph_impact" =>
+                let p = mcpRequireProject(getStr("name"))
+                let sym = getStr("symbol")
+                if (sym.isEmpty()) { return mcpErr("symbol is required") }
+                let g = buildGraph(p.path)
+                match (impactOf(g, sym)) {
+                    case Some(res) => mcpOk(Json.pretty(impactJson(res)))
+                    case None => mcpErr("symbol not found: ${sym}")
+                }
+            case "codegraph_arch" =>
+                let p = mcpRequireProject(getStr("name"))
+                var format = "html"
+                let f = getStr("format")
+                if (!f.isEmpty()) { format = f }
+                let g = buildGraph(p.path)
+                let arch = buildArch(g)
+                layoutArch(arch)
+                if (format == "mermaid") {
+                    mcpOk(archMermaid(arch, false))
+                } else if (format == "dot") {
+                    mcpOk(archDot(arch, false))
+                } else if (format == "json") {
+                    mcpOk(Json.pretty(archJson(arch, false)))
+                } else if (format == "html") {
+                    mcpOk(archCanvasHtml(arch, false))
+                } else {
+                    mcpErr("format accepts html | mermaid | dot | json (got: ${format})")
                 }
             case "get_project_status" =>
                 let p = mcpRequireProject(getStr("name"))
@@ -671,6 +730,15 @@ private func mcpHandleBatch(items: ArrayList<JsonValue>): Option<JsonValue> {
 }
 
 /// MCP 主循环（stdio：单行 JSON 进 / 单行 JSON 出）
+/// MCP 响应出口：**必须逐行 flush** ——
+/// printOut 底层的 println 在管道（非 tty）下是块缓冲，
+/// 宿主会一直等不到响应直到进程退出，协议等于死锁。
+/// MCP 是请求-响应式的长会话，flush 是协议的一部分，不是优化。
+func mcpEmit(line: String): Unit {
+    printOut(line)
+    Console.stdOut.flush()
+}
+
 public func mcpRun(): Int64 {
     Log.setQuiet(true)
     while (true) {
@@ -685,7 +753,7 @@ public func mcpRun(): Int64 {
                 match (reqOpt) {
                     case Some(req) =>
                         match (mcpHandle(req)) {
-                            case Some(resp) => printOut(Json.compact(resp))
+                            case Some(resp) => mcpEmit(Json.compact(resp))
                             case None => ()
                         }
                     case None =>
@@ -696,7 +764,7 @@ public func mcpRun(): Int64 {
                         Json.set(o, "jsonrpc", Json.of("2.0"))
                         Json.set(o, "id", Json.null())
                         Json.set(o, "error", errObj)
-                        printOut(Json.compact(o))
+                        mcpEmit(Json.compact(o))
                 }
             case None => break  // EOF
         }

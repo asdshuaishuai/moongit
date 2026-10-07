@@ -543,6 +543,11 @@ public func agentToolsManifest(): JsonValue {
     addTool("git_commit", "提交项目的全部未提交改动。params: name, message", "name,message")
     addTool("git_pull_push", "对项目执行 git pull（--ff-only）或 push。params: name, op(pull|push)", "name,op")
     addTool("milestone_done", "把里程碑标记为达成。params: project, name", "project,name")
+    addTool("codegraph_overview", "代码图谱概览（文件/符号/引用边统计）。params: name", "name")
+    addTool("codegraph_tree", "索引关系树 / 全量图 JSON（文件+import边+引用边）。params: name", "name")
+    addTool("codegraph_symbol", "符号定位：定义处 + 词法引用。params: name, symbol", "name,symbol")
+    addTool("codegraph_impact", "影响面：改这个符号会波及哪些文件与符号（词法文件级粒度）。params: name, symbol", "name,symbol")
+    addTool("codegraph_arch", "技术架构图：模块分层依赖（Canvas 交互 HTML / mermaid / dot / json）。params: name, format", "name,format")
 
     let o = Json.obj()
     Json.set(o, "tools", JArr(arr))

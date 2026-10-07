@@ -5,6 +5,7 @@ import std.collection.*
 import std.convert.*
 import std.env.*
 import moongit.flow.*
+import moongit.graph.*
 import moongit.kernel.*
 import moongit.util.*
 
@@ -195,6 +196,7 @@ public func main2(argv: ArrayList<String>): Int64 {
         case "tools" => return cmdTools(rest, ctx)
         case "skill" => return cmdSkill(rest, ctx)
         case "report" => return cmdReport(rest, ctx)
+        case "graph" => return cmdGraph(rest, ctx)
         case _ =>
             Log.error(T("Unknown command: ${command}", "未知命令：${command}"))
             printHelp()
@@ -215,7 +217,7 @@ let HOOK_KINDS: Array<String> = ["post-commit", "post-merge"]
 let VALUE_FLAGS: Array<String> = [
     "--name", "--depth", "--docs", "--scope", "--branch", "--port",
     "--source", "--tag", "--date", "--desc", "--out", "--message", "--budget",
-    "--dir", "--limit", "--note", "--host",
+    "--dir", "--limit", "--note", "--host", "--format",
 ]
 
 /// 全部 CLI flag 白名单：全局 + 带值 + 布尔。
@@ -233,7 +235,7 @@ let KNOWN_FLAGS: Array<String> = [
     // 带值（与 VALUE_FLAGS 一致）
     "--name", "--depth", "--docs", "--scope", "--branch", "--port",
     "--source", "--tag", "--date", "--desc", "--out", "--message", "--budget",
-    "--dir", "--limit", "--note", "--host",
+    "--dir", "--limit", "--note", "--host", "--format",
     // 布尔
     "--dry-run", "--git-only", "--open", "--purge",
 ]
@@ -914,6 +916,158 @@ func cmdContext(rest: ArrayList<String>, ctx: CliContext): Int64 {
     return groupExitCode(okCount2, listed2)
 }
 
+// ------------------------------ 代码图谱（CodeGraph） ------------------------------
+
+/// `moongit graph` —— 代码图谱：符号索引 + 关系树 + 影响面 + 技术架构图。
+///
+/// 【为什么引擎做这个】codegraph 类产品的核心能力（符号索引、关系树、影响面）
+/// 本质是「确定性事实」，正是引擎的职责边界：agent 要理解一个陌生仓库时，
+/// 与其让它自己 cat 几十个文件，不如给它一张结构化的图。
+/// 词法级粒度如实写进输出（不是语义调用图），不包装。
+///
+/// 子命令：overview（默认）/ tree / symbol <名> / impact <名> / arch。
+/// arch 支持 --format html（Canvas 交互架构图，默认）/ mermaid / dot / json。
+func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
+    let subs = ["overview", "tree", "symbol", "impact", "arch"]
+    var sub = "overview"
+    let args = ArrayList<String>()
+    if (rest.size > 0 && subs.contains(rest[0])) {
+        sub = rest[0]
+        var i: Int64 = 1
+        while (i < rest.size) {
+            args.add(rest[i])
+            i += 1
+        }
+    } else {
+        for (a in rest) { args.add(a) }
+    }
+
+    let refs = positionalsOnly(args, VALUE_FLAGS)
+    let config = loadConfig()
+    let en = isEnglish(config.language)
+
+    // 项目解析：symbol / impact 的第二个位置参数是**符号名**，
+    // 不能把它塞给 resolveTargets（未注册的符号名会被当成「找不到项目」砸掉）。
+    // 项目解析：symbol / impact 的第二个位置参数是**符号名**，
+    // 不能把它塞给 resolveTargets（未注册的符号名会被当成「找不到项目」砸掉）。
+    // 返回 (项目, 符号名)；符号名只在 symbol/impact 下非 None。
+    func resolveGraphProject(): (ProjectEntry, Option<String>) {
+        if ((sub == "symbol" || sub == "impact") && refs.size >= 1) {
+            if (refs.size >= 2) {
+                return (requireProject(refs[0]), Some(refs[1]))
+            }
+            // 只给符号名：项目从 cwd 推断（与 status 同一条路）
+            let cwd = normalizePath(expandHome(getCwd()))
+            match (findProject(cwd)) {
+                case Some(entry) => return (entry, Some(refs[0]))
+                case None => throw DgError.notFound(T(
+                    "Current directory is not a registered project; pass <project> <symbol>",
+                    "当前目录不属于任何已注册项目；请传 <项目> <符号名>"))
+            }
+        }
+        let targets = resolveTargets(args, false)
+        if (targets.size != 1) {
+            throw DgError.usage(T(
+                "Usage: moongit graph <overview|tree|symbol|impact|arch> [project] [...]; exactly one project required (got ${targets.size})",
+                "用法：moongit graph <overview|tree|symbol|impact|arch> [项目] [...]；恰好一个项目（收到 ${targets.size} 个）"))
+        }
+        return (targets[0], None)
+    }
+    let (p, symbolArg) = resolveGraphProject()
+    let graph = buildGraph(p.path)
+
+    match (sub) {
+        case "overview" =>
+            if (ctx.json) {
+                printOut(Json.pretty(overviewJson(graph)))
+            } else {
+                printOut(overviewText(graph))
+            }
+        case "tree" =>
+            var depth: Int64 = 6
+            match (flagValue(args, "--depth")) {
+                case Some(v) => depth = Int64.parse(v.trimAscii())
+                case None => ()
+            }
+            if (ctx.json) {
+                printOut(Json.pretty(fullGraphJson(graph)))
+            } else {
+                printOut(treeText(graph, depth))
+            }
+        case "symbol" =>
+            let name = match (symbolArg) {
+                case Some(n) => n
+                case None => throw DgError.usage(T(
+                    "Usage: moongit graph symbol <project> <symbol> (or run inside the project and pass <symbol>)",
+                    "用法：moongit graph symbol <项目> <符号名>（或在项目目录内只传 <符号名>）"))
+            }
+            if (ctx.json) {
+                printOut(Json.pretty(symbolJson(graph, name)))
+            } else {
+                printOut(symbolText(graph, name))
+            }
+        case "impact" =>
+            let name = match (symbolArg) {
+                case Some(n) => n
+                case None => throw DgError.usage(T(
+                    "Usage: moongit graph impact <project> <symbol>",
+                    "用法：moongit graph impact <项目> <符号名>"))
+            }
+            match (impactOf(graph, name)) {
+                case Some(res) =>
+                    if (ctx.json) {
+                        printOut(Json.pretty(impactJson(res)))
+                    } else {
+                        printOut(impactText(res))
+                    }
+                case None =>
+                    if (ctx.json) {
+                        printOut(Json.pretty(Json.obj()))
+                    } else {
+                        printOut(T(
+                            "Symbol not found: ${name} (lexical index covers supported source languages only)",
+                            "未找到符号：${name}（词法索引只覆盖支持的源码语言）"))
+                    }
+                    return 1
+            }
+        case "arch" =>
+            let arch = buildArch(graph)
+            layoutArch(arch)
+            var format = "html"
+            match (flagValue(args, "--format")) {
+                case Some(v) => format = v.trimAscii()
+                case None => ()
+            }
+            var payload = ""
+            if (format == "mermaid") {
+                payload = archMermaid(arch, en)
+            } else if (format == "dot") {
+                payload = archDot(arch, en)
+            } else if (format == "json") {
+                payload = Json.pretty(archJson(arch, en))
+            } else if (format == "html") {
+                payload = archCanvasHtml(arch, en)
+            } else {
+                throw DgError.usage(T(
+                    "--format accepts html | mermaid | dot | json (got: ${format})",
+                    "--format 只支持 html | mermaid | dot | json（收到：${format}）"))
+            }
+            match (flagValue(args, "--out")) {
+                case Some(outPath) =>
+                    writeFileAtomic(outPath, payload)
+                    Log.ok(T(
+                        "Written: ${outPath} (${payload.toArray().size} bytes)",
+                        "已写出：${outPath}（${payload.toArray().size} 字节）"))
+                case None => printOut(payload)
+            }
+        case _ =>
+            throw DgError.usage(T(
+                "Unknown graph subcommand (use overview|tree|symbol|impact|arch)",
+                "未知 graph 子命令（可用 overview|tree|symbol|impact|arch）"))
+    }
+    return 0
+}
+
 func cmdTools(rest: ArrayList<String>, ctx: CliContext): Int64 {
     printOut(Json.pretty(agentToolsManifest()))
     return 0
@@ -932,7 +1086,8 @@ func skillMarkdown(): String {
         + "{\"mcpServers\": {\"moongit\": {\"command\": \"" + engine + "\", \"args\": [\"mcp\"]}}}\n   ```\n   "
         + "工具：list_projects / get_project_context / get_project_status / get_dashboard / get_project_docs / "
         + "get_journal / run_shallow_update / run_deep_update / run_track / git_op / list_milestones / "
-        + "milestone_add / milestone_action / add_project")
+        + "milestone_add / milestone_action / add_project / "
+        + "codegraph_overview / codegraph_tree / codegraph_symbol / codegraph_impact / codegraph_arch")
     ways.add("**CLI**（一次性问答/脚本）：`" + engine + " status --json`、`context [项目] --budget N`、`tools`、"
         + "`journal <项目>`、`dashboard --json`")
     let sb = StringBuilder()
@@ -1248,6 +1403,9 @@ func printHelp(): Unit {
         printOut("  mcp                      Run as an MCP server (stdio JSON-RPC; for Claude and other agent hosts)")
         printOut("  skill <print|install>    Print/install the agent Skill pack (--dir for the target directory)")
         printOut("  report [project] [--out F]  Export a Markdown progress report")
+        printOut("  graph [overview|tree|symbol|impact|arch] [project]")
+        printOut("                           Code graph: symbol index / relationship tree / impact /")
+        printOut("                           interactive architecture canvas (--format html|mermaid|dot|json)")
         printOut("  config <list|get|set> [k] [v]  Configuration (AI preset, etc.)")
         printOut("  verify [project]         Verify doc integrity (user content untouched)")
         printOut("  doctor                   Environment self-check")
@@ -1292,6 +1450,9 @@ func printHelp(): Unit {
     printOut("  mcp                      以 MCP 服务器运行（stdio JSON-RPC；供 Claude 等 agent 宿主接入）")
     printOut("  skill <print|install>    输出/安装 agent Skill 教学包（--dir 指定目录）")
     printOut("  report [项目] [--out F]  导出 Markdown 进度报告")
+    printOut("  graph [overview|tree|symbol|impact|arch] [项目]")
+    printOut("                           代码图谱：符号索引/关系树/影响面/技术架构图")
+    printOut("                           （arch 用 --format html|mermaid|dot|json，html 为 Canvas 交互图）")
     printOut("  config <list|get|set> [k] [v]  配置（AI 预设等）")
     printOut("  verify [项目]            校验文档完整性（用户内容是否被改动）")
     printOut("  doctor                   环境自检")
