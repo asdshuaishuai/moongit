@@ -167,5 +167,23 @@ open(p, "w", encoding="utf-8").write(s)
 PY
 check "NC5 词法路径不报深嵌套/魔法数" testLexicalDeepNestingAndMagic src/graph/confidence_detect.cj "$b"
 
+# ── NC6 · 分数退回「与规模相关」的旧公式（100 − 惩罚/√文件数）──
+b="$(md5_of src/graph/confidence.cj)"
+python3 - <<'PY'
+p = "src/graph/confidence.cj"
+s = open(p, encoding="utf-8").read()
+old = '''    let density = Float64(penalty) / Float64(n)
+    let s = CONF_SCORE_SCALE
+    var score = Int64(100.0 * s / (s + density))'''
+new = '''    var g = Float64(n) / 2.0
+    if (g < 1.0) { g = 1.0 }
+    var it = 0
+    while (it < 8) { g = (g + Float64(n) / g) / 2.0; it += 1 }
+    var score = 100 - Int64(Float64(penalty) / g)'''
+assert old in s, "NC6 锚点失配"
+open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
+PY
+check "NC6 分数退回规模相关公式" testScoreIsSizeInvariantAndMonotone src/graph/confidence.cj "$b"
+
 echo "== 负控结束；失败项：$FAILS =="
 [ "$FAILS" = "0" ]

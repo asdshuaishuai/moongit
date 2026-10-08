@@ -42,7 +42,8 @@ public func confidenceJson(r: ConfidenceReport): JsonValue {
     Json.set(o, "files", Json.of(r.filesAnalyzed))
     // 语义边界恒发：分数是结构级度量，不是正确性证明
     Json.set(o, "semantics", Json.of(
-        "score 是结构性疑点的汇总（0..100），不是正确性证明；"
+        "score = 100·S/(S+每文件疑点权重)（S=${Int64(CONF_SCORE_SCALE)}，与仓库规模无关），"
+        + "是结构性疑点的汇总（0..100），不是正确性证明；"
         + "信号为词法+语法树级事实，不包含运行时行为与业务语义"))
     return o
 }

@@ -271,17 +271,14 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
         return flawId(ka) < flawId(kb)
     })
 
-    // 分数：100 − Σ权重，下限 0。文件数归一：大仓库少量疑点不该把分压死，
-    // 但也不该按比例稀释掉定性信号 —— 用 sqrt 型的温和归一（除以文件数平方根）。
+    // 分数：由「惩罚总量」与「文件数」算的**密度分**（见 confidenceScore）。
+    // ⚠️ 旧公式 `100 − 惩罚/√文件数` 与仓库规模相关：惩罚随文件数线性增长、
+    // 而 √ 增长更慢 ⇒ 大仓库必然趋近 0（实测 276 文件的仓库、每文件仅 4.3 点却只得 28 分；
+    // 而另一处每文件 15 点的仓库也是 0 —— 同一个分数说不出谁更差）。
     var penalty: Int64 = 0
     for (f in findings) { penalty += flawWeight(f.kind) }
     let nFiles = Int64(graph.files.size)
-    var normalized: Float64 = Float64(penalty)
-    if (nFiles > 1) {
-        normalized = Float64(penalty) / sqrtApprox(Float64(nFiles))
-    }
-    var score = 100 - Int64(normalized)
-    if (score < 0) { score = 0 }
+    let score = confidenceScore(penalty, nFiles)
 
     return ConfidenceReport(graph.root, score, findings, astUsed,
                             astNote + truncatedNote, nFiles, byKind)
@@ -309,15 +306,20 @@ func findingLess(a: Finding, b: Finding): Bool {
     return a.symbol < b.symbol
 }
 
-/// 整数平方根的温和近似（牛顿迭代 8 轮，够用且确定）
-func sqrtApprox(x: Float64): Float64 {
-    if (x <= 0.0) { return 1.0 }
-    var g = x / 2.0
-    if (g < 1.0) { g = 1.0 }
-    var i = 0
-    while (i < 8) {
-        g = (g + x / g) / 2.0
-        i += 1
-    }
-    return g
+/// 分数标度。`density = 惩罚 / 文件数`（平均每文件的疑点权重），
+/// `score = 100 · S / (S + density)`：density=S 时得 50 分。
+/// **与仓库规模无关**是刻意设计（旧的 `100 − 惩罚/√文件数` 在文件多时必然压到 0）。
+public let CONF_SCORE_SCALE: Float64 = 20.0
+
+/// 由「惩罚总量」与「文件数」算 0..100 的置信度分数。
+/// 抽成**纯函数**是为了让「规模不变性」可被单测（见 graph_test）——
+/// 内联在 analyzeConfidence 里就只能靠端到端样本，而样本很难覆盖规模轴。
+public func confidenceScore(penalty: Int64, files: Int64): Int64 {
+    let n = if (files < 1) { 1 } else { files }
+    let density = Float64(penalty) / Float64(n)
+    let s = CONF_SCORE_SCALE
+    var score = Int64(100.0 * s / (s + density))
+    if (score > 100) { score = 100 }
+    if (score < 0) { score = 0 }
+    return score
 }

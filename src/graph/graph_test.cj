@@ -413,3 +413,17 @@ func testFindingsOrderIsTotalAndDeterministic(): Unit {
     @Assert(flawId(a[0].kind) == "deep-nesting")
 }
 
+@Test
+func testScoreIsSizeInvariantAndMonotone(): Unit {
+    // 关键性质：**与仓库规模无关**。同样的「每文件密度」，文件数乘 10 不该把分压下去。
+    // 旧公式 `100 − 惩罚/√文件数` 恰在此处失败（惩罚随文件数线性长、√ 长更慢）。
+    @Assert(confidenceScore(20, 1) == confidenceScore(200, 10))
+    @Assert(confidenceScore(60, 3) == confidenceScore(600, 30))
+    // 无惩罚 = 满分；极稀疏仍高分；极密趋近 0
+    @Assert(confidenceScore(0, 50) == 100)
+    @Assert(confidenceScore(1, 1000) >= 95)
+    @Assert(confidenceScore(100000, 1) == 0)
+    // 单调：惩罚越多分越低
+    @Assert(confidenceScore(50, 10) > confidenceScore(150, 10))
+}
+
