@@ -169,6 +169,7 @@ func main() { fmt.Println("hi") }
     @Assert(gnames.contains("func:main"))
 }
 
+
 @Test
 func testScanPythonFromImport(): Unit {
     let py = "from flow.update import runUpdate\nimport os\n\nclass App:\n    def start(self):\n        return 1\n"

@@ -483,14 +483,17 @@ public func scanSource(content: String): SourceFacts {
     for (raw in content.lazySplit("\n")) {
         lineNo += 1
         lineCount = lineNo
-        // stripCode 同时剥注释与字符串字面量（含跨行状态）——见函数头的三个坑
-        let (t, nextState) = stripCode(raw, strState)
-        strState = nextState
-        let imp = scanImportLine(t.trimAscii())
+        // ⚠️ import 检测用**原始行**：import 是行锚定语句，go 的 import "fmt"
+        // 会被 stripCode 剥成裸 "import" 而丢失模块名。行首判定保证
+        // 字符串里的 "import x"（非行首）不会误报。
+        let imp = scanImportLine(raw.trimAscii())
         if (!imp.isEmpty() && !seenImports.contains(imp)) {
             seenImports.add(imp)
             imports.add(imp)
         }
+        // stripCode 同时剥注释与字符串字面量（含跨行状态）——见函数头的三个坑
+        let (t, nextState) = stripCode(raw, strState)
+        strState = nextState
         if (blankLine(t)) { continue }
         // 前置过滤：不含声明关键词的行免去 tokenize 的整行分配
         if (!mayDeclare(t)) {
