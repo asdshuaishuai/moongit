@@ -86,6 +86,43 @@ public class ArchModule {
     }
 }
 
+/// 下钻子图里的文件节点。外部模块以**单个虚拟节点**出现
+/// （id 形如 "@module:util"）——跨模块依赖不消失，只降级成一个端口。
+public struct DrillNode {
+    public let id: String          // 文件 relPath，或 "@module:<模块名>"
+    public let label: String       // 显示名（文件取 basename，外部取模块名）
+    public let lang: String        // 虚拟节点 = "module"
+    public let lines: Int64
+    public let symbols: Int64
+    public let external: Bool
+    public var x: Float64 = 0.0
+    public var y: Float64 = 0.0
+    public var w: Float64 = 0.0
+    public var h: Float64 = 0.0
+
+    public init(id: String, label: String, lang: String, lines: Int64, symbols: Int64, external: Bool) {
+        this.id = id
+        this.label = label
+        this.lang = lang
+        this.lines = lines
+        this.symbols = symbols
+        this.external = external
+    }
+}
+
+/// 一个模块的文件级子图。
+public struct DrillGraph {
+    public let moduleId: String
+    public let nodes: ArrayList<DrillNode>
+    public let edges: ArrayList<(String, String, Int64)>   // 文件(或虚拟) → 文件(或虚拟)
+
+    public init(moduleId: String, nodes: ArrayList<DrillNode>, edges: ArrayList<(String, String, Int64)>) {
+        this.moduleId = moduleId
+        this.nodes = nodes
+        this.edges = edges
+    }
+}
+
 public class ArchData {
     public let modules: ArrayList<ArchModule>
     public let edges: ArrayList<(String, String, Int64)>   // fromModule, toModule, weight
@@ -93,15 +130,19 @@ public class ArchData {
     public let totalSymbols: Int64
     public let totalLines: Int64
     public let truncated: Bool
+    /// 每模块的文件级下钻子图（引擎算好布局，Canvas 只负责画）
+    public let drilldown: ArrayList<DrillGraph>
 
     public init(modules: ArrayList<ArchModule>, edges: ArrayList<(String, String, Int64)>,
-                totalFiles: Int64, totalSymbols: Int64, totalLines: Int64, truncated: Bool) {
+                totalFiles: Int64, totalSymbols: Int64, totalLines: Int64, truncated: Bool,
+                drilldown: ArrayList<DrillGraph>) {
         this.modules = modules
         this.edges = edges
         this.totalFiles = totalFiles
         this.totalSymbols = totalSymbols
         this.totalLines = totalLines
         this.truncated = truncated
+        this.drilldown = drilldown
     }
 }
 
@@ -167,7 +208,157 @@ public func buildArch(graph: CodeGraph): ArchData {
         totalSymbols += m.symbols
         totalLines += m.lines
     }
-    return ArchData(list, edges, totalFiles, totalSymbols, totalLines, graph.truncated)
+    let drill = buildDrilldown(graph, list)
+    return ArchData(list, edges, totalFiles, totalSymbols, totalLines, graph.truncated, drill)
+}
+
+// MARK: - 下钻子图（模块 → 文件级）
+
+/// 为每个模块构建文件级子图：
+///   节点 = 模块内文件 + 有依赖往来的外部模块（虚拟节点）
+///   边   = 文件级 import/reference（跨模块的指向虚拟节点）
+/// 布局：内部文件按目录聚类网格排列，外部虚拟节点靠右一列——确定性，可对账。
+func buildDrilldown(graph: CodeGraph, modules: ArrayList<ArchModule>): ArrayList<DrillGraph> {
+    let out = ArrayList<DrillGraph>()
+    for (m in modules) {
+        let nodes = ArrayList<DrillNode>()
+        let byId = HashMap<String, DrillNode>()
+        // 内部文件
+        for (f in graph.files) {
+            if (moduleOfPath(f.relPath) != m.id) { continue }
+            let segs = f.relPath.split("/")
+            let base = segs[segs.size - 1]
+            let n = DrillNode(f.relPath, base, f.lang, f.lines, Int64(f.symbols.size), false)
+            nodes.add(n)
+            byId[f.relPath] = n
+        }
+        // 外部往来模块 → 虚拟节点
+        let extMods = ArrayList<String>()
+        for ((from, to, _) in graph.refEdges) {
+            let fa = moduleOfPath(from)
+            let fb = moduleOfPath(to)
+            if (fa == m.id && fb != m.id && !extMods.contains(fb)) { extMods.add(fb) }
+            if (fb == m.id && fa != m.id && !extMods.contains(fa)) { extMods.add(fa) }
+        }
+        for ((from, to) in graph.importEdges) {
+            let fa = moduleOfPath(from)
+            let fb = moduleOfPath(to)
+            if (fa == m.id && fb != m.id && !extMods.contains(fb)) { extMods.add(fb) }
+            if (fb == m.id && fa != m.id && !extMods.contains(fa)) { extMods.add(fa) }
+        }
+        insertionSortBy(extMods, { a, b => a < b })
+        for (x in extMods) {
+            let n = DrillNode("@module:${x}", x, "module", 0, 0, true)
+            nodes.add(n)
+            byId[n.id] = n
+        }
+        // 边：文件级，两端都在子图节点集里（跨模块的落在外部虚拟节点上）
+        let edges = ArrayList<(String, String, Int64)>()
+        for ((from, to, w) in graph.refEdges) {
+            let fa = moduleOfPath(from)
+            let fb = moduleOfPath(to)
+            if (fa != m.id && fb != m.id) { continue }
+            var a = from
+            var b = to
+            if (fa != m.id) { a = "@module:${fa}" }
+            if (fb != m.id) { b = "@module:${fb}" }
+            if (byId.get(a).isSome() && byId.get(b).isSome() && a != b) {
+                edges.add((a, b, w))
+            }
+        }
+        for ((from, to) in graph.importEdges) {
+            let fa = moduleOfPath(from)
+            let fb = moduleOfPath(to)
+            if (fa != m.id && fb != m.id) { continue }
+            var a = from
+            var b = to
+            if (fa != m.id) { a = "@module:${fa}" }
+            if (fb != m.id) { b = "@module:${fb}" }
+            if (byId.get(a).isSome() && byId.get(b).isSome() && a != b) {
+                edges.add((a, b, 1))
+            }
+        }
+        layoutDrill(nodes, m.id)
+        out.add(DrillGraph(m.id, nodes, edges))
+    }
+    return out
+}
+
+/// 文件子图布局：目录聚类 → 列网格；外部虚拟节点靠右独立列。
+/// 确定性：行/列序都来自排序后的 id。
+func layoutDrill(nodes: ArrayList<DrillNode>, moduleId: String): Unit {
+    let w: Float64 = 208.0
+    let h: Float64 = 46.0
+    let gx: Float64 = 26.0
+    let gy: Float64 = 22.0
+    let margin: Float64 = 56.0
+    let internalNodes = ArrayList<DrillNode>()
+    let externalNodes = ArrayList<DrillNode>()
+    for (n in nodes) {
+        if (n.external) { externalNodes.add(n) } else { internalNodes.add(n) }
+    }
+    insertionSortBy(internalNodes, { a, b => a.id < b.id })
+    insertionSortBy(externalNodes, { a, b => a.id < b.id })
+    // 网格 4 列（列数随规模自适应：≤8 个单列居中排）
+    var cols: Int64 = 4
+    if (Int64(internalNodes.size) <= 8) { cols = 2 }
+    if (Int64(internalNodes.size) <= 3) { cols = 1 }
+    var row: Float64 = 0.0
+    var col: Int64 = 0
+    // struct 是值类型：下标取出 → 改 → 写回
+    var i: Int64 = 0
+    while (i < Int64(internalNodes.size)) {
+        var n = internalNodes[i]
+        n.w = w
+        n.h = h
+        n.x = margin + Float64(col) * (w + gx)
+        n.y = margin + row * (h + gy)
+        internalNodes[i] = n
+        col += 1
+        if (col >= cols) {
+            col = 0
+            row += 1.0
+        }
+        i += 1
+    }
+    // 外部列：与内部区同顶部
+    var extX = margin + Float64(cols) * (w + gx) + 60.0
+    var ey: Float64 = margin
+    i = 0
+    while (i < Int64(externalNodes.size)) {
+        var n = externalNodes[i]
+        n.w = w
+        n.h = h
+        n.x = extX
+        n.y = ey
+        externalNodes[i] = n
+        ey += h + gy
+        i += 1
+    }
+    // 布局写回总表（nodes 里的元素同样按 id 回填）
+    var k: Int64 = 0
+    while (k < Int64(nodes.size)) {
+        var n = nodes[k]
+        match (byIdLike(internalNodes, n.id)) {
+            case Some(fixed) => n = fixed
+            case None => ()
+        }
+        match (byIdLike(externalNodes, n.id)) {
+            case Some(fixed) => n = fixed
+            case None => ()
+        }
+        nodes[k] = n
+        k += 1
+    }
+}
+
+func byIdLike(list: ArrayList<DrillNode>, id: String): Option<DrillNode> {
+    var i: Int64 = 0
+    while (i < Int64(list.size)) {
+        if (list[i].id == id) { return Some(list[i]) }
+        i += 1
+    }
+    return None
 }
 
 // MARK: - 布局（确定性：层为列，列内按模块名排）
@@ -286,10 +477,41 @@ public func archJson(data: ArchData, en: Bool): JsonValue {
         Json.set(o, "weight", Json.of(w))
         es.add(o)
     }
+    let dd = Json.obj()
+    for (dg in data.drilldown) {
+        let sub = Json.obj()
+        let ns = ArrayList<JsonValue>()
+        for (n in dg.nodes) {
+            let no = Json.obj()
+            Json.set(no, "id", Json.of(n.id))
+            Json.set(no, "label", Json.of(n.label))
+            Json.set(no, "lang", Json.of(n.lang))
+            Json.set(no, "lines", Json.of(n.lines))
+            Json.set(no, "symbols", Json.of(n.symbols))
+            Json.set(no, "external", Json.of(n.external))
+            Json.set(no, "x", Json.of(n.x))
+            Json.set(no, "y", Json.of(n.y))
+            Json.set(no, "w", Json.of(n.w))
+            Json.set(no, "h", Json.of(n.h))
+            ns.add(no)
+        }
+        Json.set(sub, "nodes", JArr(ns))
+        let es2 = ArrayList<JsonValue>()
+        for ((a, b, w) in dg.edges) {
+            let eo = Json.obj()
+            Json.set(eo, "from", Json.of(a))
+            Json.set(eo, "to", Json.of(b))
+            Json.set(eo, "weight", Json.of(w))
+            es2.add(eo)
+        }
+        Json.set(sub, "edges", JArr(es2))
+        Json.set(dd, dg.moduleId, sub)
+    }
     let o = Json.obj()
     Json.set(o, "modules", JArr(ms))
     Json.set(o, "edges", JArr(es))
     Json.set(o, "layers", JArr(layerList))
+    Json.set(o, "drilldown", dd)
     Json.set(o, "totalFiles", Json.of(data.totalFiles))
     Json.set(o, "totalSymbols", Json.of(data.totalSymbols))
     Json.set(o, "totalLines", Json.of(data.totalLines))
