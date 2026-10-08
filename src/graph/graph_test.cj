@@ -251,6 +251,18 @@ case Some(res) =>
         let fp = Json.getOr(Json.getOr(scene, "panels"), "module:util:util/text.cj")
         @Assert(Json.arrAt(fp, "in").size > 0 || Json.arrAt(fp, "out").size > 0)
 
+        // scene 每个视图必须**恒发** `edgesDropped`（截断要披露；0 也要发）
+        match (Json.getOr(scene, "views")) {
+            case JObj(vm) =>
+                var viewCount: Int64 = 0
+                for ((_, vv) in vm) {
+                    @Assert(Json.has(vv, "edgesDropped"))
+                    viewCount += 1
+                }
+                @Assert(viewCount > 0)
+            case _ => @Assert(false)
+        }
+
         // i18n：英文模式（cli 按 config.language 传 en=true）下内嵌 JS 不得出现中文 ——
         // 原实现把 MODULEW / ROOTW 硬编码成「外部模块」「架构总览」。
         let htmlEn = archCanvasHtml(arch, true)
@@ -528,5 +540,27 @@ func testStripCodeFastPathMatchesFullScan(): Unit {
         @Assert(out == wantOut[i])
         @Assert(ns == wantSt[i])
     }
+}
+
+@Test
+func testSceneEdgesCapKeepsHeaviestAndDiscloses(): Unit {
+    // scene 每条边展开成形状+粒子，上万条会 OOM ⇒ 有上限。上限之外**按权重降序**保留
+    // （留最重的依赖），并报出丢弃数（截断必须披露，不能静默）。
+    let e = ArrayList<(String, String, Int64)>()
+    e.add(("a", "b", 1))
+    e.add(("c", "d", 9))
+    e.add(("e", "f", 5))
+    e.add(("g", "h", 9))
+    e.add(("i", "j", 2))
+    let (kept, dropped) = sceneEdges(e, 2)
+    @Assert(Int64(kept.size) == 2)
+    @Assert(dropped == 3)
+    // 权重降序；并列按 from↑
+    @Assert(kept[0][2] == 9 && kept[0][0] == "c")
+    @Assert(kept[1][2] == 9 && kept[1][0] == "g")
+    // 未超限：全留、丢弃 0
+    let (k2, d2) = sceneEdges(e, 10)
+    @Assert(Int64(k2.size) == 5)
+    @Assert(d2 == 0)
 }
 

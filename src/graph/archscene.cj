@@ -81,6 +81,31 @@ func themeJson(): JsonValue {
 
 // MARK: - 视图构建（一个视图 = 一份 shapes/particles/hits/panels）
 
+/// 单视图最多导出的边数。
+/// scene 的每条边会展开成「渐变形状 + 流动粒子」两组对象 —— 上万条边在小堆上会直接
+/// `OutOfMemoryError`（实测 deepGit / deepOrca / deepDolphin 的 `--format scene` 全部崩）。
+/// 上限之外按**权重降序**保留（留最重的依赖 —— 有原则的截断，不是按遍历顺序砍），
+/// 并在视图里**恒发** `edgesDropped`（同不变量 33：截断必须披露）。
+public let SCENE_MAX_EDGES_PER_VIEW: Int64 = 600
+
+/// 取视图要导出的边：按 (权重↓, from↑, to↑) 排序后截断到 max 条。返回 (保留, 丢弃数)。
+func sceneEdges(edges: ArrayList<(String, String, Int64)>, max: Int64): (ArrayList<(String, String, Int64)>, Int64) {
+    let sorted = ArrayList<(String, String, Int64)>()
+    for (e in edges) { sorted.add(e) }
+    insertionSortBy(sorted, { a, b =>
+        if (a[2] != b[2]) { return a[2] > b[2] }
+        if (a[0] != b[0]) { return a[0] < b[0] }
+        return a[1] < b[1]
+    })
+    let kept = ArrayList<(String, String, Int64)>()
+    var i: Int64 = 0
+    while (i < Int64(sorted.size) && i < max) {
+        kept.add(sorted[i])
+        i += 1
+    }
+    return (kept, Int64(sorted.size) - Int64(kept.size))
+}
+
 /// 视图构建的中间态：攒 shapes/particles/hits，最后装配成 view JSON。
 class SceneView {
     let id: String
@@ -97,6 +122,8 @@ class SceneView {
     var by0: Float64 = 0.0
     var bx1: Float64 = 0.0
     var by1: Float64 = 0.0
+    /// 因上限而未导出的边数（恒发；>0 时驱动应告知「图不完整」）
+    var dropped: Int64 = 0
 
     init(id: String, label: String, parent: String) {
         this.id = id
@@ -202,8 +229,10 @@ public func buildArchScene(data: ArchData, en: Bool): JsonValue {
         }
         col += 1
     }
-    // 边（渐变 + 箭头 + 生长动画声明）
-    for ((a, b, w) in data.edges) {
+    // 边（渐变 + 箭头 + 生长动画声明）。受 SCENE_MAX_EDGES_PER_VIEW 限制并披露丢弃数。
+    let (archEdges, archDropped) = sceneEdges(data.edges, SCENE_MAX_EDGES_PER_VIEW)
+    arch.dropped = archDropped
+    for ((a, b, w) in archEdges) {
         match ((findModule(sorted, a), findModule(sorted, b))) {
             case (Some(am), Some(bm)) =>
         let x1 = am.x + am.w
@@ -393,7 +422,9 @@ public func buildArchScene(data: ArchData, en: Bool): JsonValue {
             Json.set(sub, "node", Json.of(n.id))
             v.addShape(sub)
         }
-        for ((a, b, w) in dg.edges) {
+        let (dgEdges, dgDropped) = sceneEdges(dg.edges, SCENE_MAX_EDGES_PER_VIEW)
+        v.dropped = dgDropped
+        for ((a, b, w) in dgEdges) {
             match ((drillFind(dg.nodes, a), drillFind(dg.nodes, b))) {
                 case (Some(an), Some(bn)) =>
             let x1 = an.x + an.w
@@ -555,6 +586,8 @@ func sceneViewJson(v: SceneView): JsonValue {
     Json.set(o, "shapes", JArr(v.shapes))
     Json.set(o, "particles", JArr(v.particles))
     Json.set(o, "hits", JArr(v.hits))
+    // 恒发：因上限未导出的边数（0 = 完整）—— 驱动可以据此提示「图不完整」
+    Json.set(o, "edgesDropped", Json.of(v.dropped))
     return o
 }
 

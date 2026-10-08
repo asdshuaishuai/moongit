@@ -287,3 +287,9 @@ scripts/      install.sh / moongit.sh / build-minimal-sdk.sh / package-release.s
   （魔法数等）数量仍会压分，请以 `byKind` 分类明细为准，不要只看 headline 分数。
   孤儿报告的处置口径：未使用的**私有**符号可安全删除（文件外不可能有人引用）；
   **公开**符号可能是预留给后续能力的 API，引擎只报告、不自动删除。
+- **`graph arch` 系列的内存边界**：`--format json | html | scene` 会把整个图谱**加上
+  每个模块的文件级下钻**都序列化出来，内存随仓库规模上涨，**超大仓库会 OOM**
+  （实测 868 文件的仓库三种格式都崩）；`--format dot | mermaid` 只出模块级依赖，始终轻量。
+  `scene` 对**单视图边数**有上限（`SCENE_MAX_EDGES_PER_VIEW`）：超限按权重降序保留
+  （留最重的依赖），并在每个视图里**恒发** `edgesDropped`（0 = 完整）—— 截断会披露，不会静默。
+  实测：常规仓库（≤560 边/视图）`edgesDropped` 全为 0，不受影响。

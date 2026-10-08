@@ -308,5 +308,17 @@ open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
 PY
 check "NC13 stripCode 快路径漏判引号" testStripCodeFastPathMatchesFullScan src/graph/extract.cj "$b"
 
+# ── NC14 · scene 边数上限失效（不再截断 ⇒ 大仓库仍会 OOM）──
+b="$(md5_of src/graph/archscene.cj)"
+python3 - <<'PY'
+p = "src/graph/archscene.cj"
+s = open(p, encoding="utf-8").read()
+old = "    while (i < Int64(sorted.size) && i < max) {"
+new = "    while (i < Int64(sorted.size)) {"
+assert old in s, "NC14 锚点失配"
+open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
+PY
+check "NC14 scene 上限失效" testSceneEdgesCapKeepsHeaviestAndDiscloses src/graph/archscene.cj "$b"
+
 echo "== 负控结束；失败项：$FAILS =="
 [ "$FAILS" = "0" ]
