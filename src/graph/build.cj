@@ -11,6 +11,7 @@ package moongit.graph
 
 import std.collection.*
 import std.convert.*
+import std.sort.*
 import moongit.util.*
 
 // MARK: - 上限与跳过规则
@@ -108,7 +109,7 @@ public func buildGraph(root: String): CodeGraph {
         let content = readFileText("${absDir}/${lastSeg(rel)}")
         match (content) {
             case Some(text) =>
-                if (Int64(text.toArray().size) > GRAPH_MAX_FILE_BYTES) {
+                if (Int64(text.size) > GRAPH_MAX_FILE_BYTES) {
                     continue   // 超大文件不是分析目标（生成物/打包产物）
                 }
                 let f = scanSource(text)
@@ -119,16 +120,42 @@ public func buildGraph(root: String): CodeGraph {
     insertionSortBy(facts, { a, b => a.relPath < b.relPath })
 
     // ── 文件 → 模块索引 + 文件级 import 解析 ──
+    // ⚠️ 性能审查 §2.1：原来是「每个 import × 扫描全部文件」的嵌套扫描
+    // （F×I×F，1000 文件仓库是百万级 pathContainsModule 调用，每次都要 split 路径）。
+    // 改为一次建索引：每个目录段与文件名去扩展后作为键，值 = 排序序下前两个命中
+    // ——「前两个」是为了复刻原「首个非自身命中」语义（首个恰是自己时取第二个）。
+    let moduleIndex = HashMap<String, ArrayList<String>>()
+    func indexKey(key: String, relPath: String): Unit {
+        if (key.isEmpty()) { return }
+        match (moduleIndex.get(key)) {
+            case Some(list) =>
+                if (list.size < 2) { list.add(relPath) }
+            case None =>
+                let list = ArrayList<String>()
+                list.add(relPath)
+                moduleIndex[key] = list
+        }
+    }
+    for (g in facts) {
+        for (seg in g.relPath.split("/")) { indexKey(seg, g.relPath) }
+        let name = lastSeg(g.relPath)
+        match (name.lastIndexOf(".")) {
+            case Some(dot) => if (dot > 0) { indexKey(name[0..dot], g.relPath) }
+            case None => ()
+        }
+    }
     let importEdges = ArrayList<(String, String)>()
     for (f in facts) {
         for (mod in f.imports) {
-            // 解析：路径中含该模块段的另一个文件（首个命中，按排序序确定）
-            for (g in facts) {
-                if (g.relPath == f.relPath) { continue }
-                if (pathContainsModule(g.relPath, mod)) {
-                    importEdges.add((f.relPath, g.relPath))
-                    break
-                }
+            match (moduleIndex.get(mod)) {
+                case Some(list) =>
+                    for (cand in list) {
+                        if (cand != f.relPath) {
+                            importEdges.add((f.relPath, cand))
+                            break
+                        }
+                    }
+                case None => ()
             }
         }
     }
@@ -148,42 +175,53 @@ public func buildGraph(root: String): CodeGraph {
             }
         }
     }
-    // 引用计数：pair → 命中的不同符号名集合大小
-    let pairNames = HashMap<String, HashSet<String>>()
+    // 引用计数：from 文件 → to 文件 → 命中的**不同**符号名个数。
+    //
+    // ⚠️ 性能审查 §5.1/§6.1：原来每个 token 命中都拼一次 "from|to" 字符串 key
+    // 再查全局 map（同行同 token 重复也重复拼）；tokenize 还逐行分配 ArrayList。
+    // 现在：逐文件 token 去重（token → HashSet，文件切换即丢），
+    // 计数用嵌套 map，字符串 key 只在外层文件对首次建立时出现。
+    let refCount = HashMap<String, HashMap<String, Int64>>()
     for (f in facts) {
         let content = readFileText("${root}/${f.relPath}")
         match (content) {
             case Some(text) =>
-                for (line in text.split("\n")) {
+                let seen = HashSet<String>()
+                for (line in text.lazySplit("\n")) {
                     let t = stripComment(line)
-                    if (t.trimAscii().isEmpty()) { continue }
-                    for (tok in tokenize(t)) {
+                    if (blankLine(t)) { continue }
+                    forEachToken(t) { tok =>
+                        // 同一文件里同一符号只计一次（复刻原 pairNames 的集合语义）
+                        if (seen.contains(tok)) { return }
+                        seen.add(tok)
                         match (defFiles.get(tok)) {
                             case Some(list) =>
                                 for (defFile in list) {
                                     if (defFile == f.relPath) { continue }
-                                    let key = "${f.relPath}|${defFile}"
-                                    match (pairNames.get(key)) {
-                                        case Some(set) =>
-                                            set.add(tok)
+                                    match (refCount.get(f.relPath)) {
+                                        case Some(inner) =>
+                                            match (inner.get(defFile)) {
+                                                case Some(v) => inner[defFile] = v + 1
+                                                case None => inner[defFile] = 1
+                                            }
                                         case None =>
-                                            let set = HashSet<String>()
-                                            set.add(tok)
-                                            pairNames[key] = set
+                                            let inner = HashMap<String, Int64>()
+                                            inner[defFile] = 1
+                                            refCount[f.relPath] = inner
                                     }
                                 }
                             case None => ()
                         }
                     }
-                                }
+                }
             case None => ()
         }
     }
+
     let refEdges = ArrayList<(String, String, Int64)>()
-    for ((key, set) in pairNames) {
-        let segs = key.split("|")
-        if (segs.size == 2) {
-            refEdges.add((segs[0], segs[1], Int64(set.size)))
+    for ((from, inner) in refCount) {
+        for ((to, count) in inner) {
+            refEdges.add((from, to, count))
         }
     }
 
@@ -210,20 +248,22 @@ func pathContainsModule(relPath: String, mod: String): Bool {
     }
 }
 
-// 泛型插入排序（比较器是闭包；facts 规模有限，O(n²) 无碍）
+// 泛型排序：**共享给全 graph 包**（render/arch 都在用）。
+//
+// ⚠️ 性能审查 §2.1：原实现是手写插入排序 O(n²) —— 对「每目录条目数有限」
+// 的假设成立，但对整仓文件列表（320 文件是 5 万次比较，4000 文件是千万级）
+// 不成立。仓颉标准库 std.sort.sort 是 O(n log n) 的稳定实现，直接换掉；
+// 包内唯一的排序入口保留在这一个函数里，语义（less 闭包）不变。
 func insertionSortBy<T>(list: ArrayList<T>, less: (T, T) -> Bool): Unit {
-    let n = Int64(list.size)
-    var i: Int64 = 1
-    while (i < n) {
-        var j = i
-        while (j > 0 && less(list[j], list[j - 1])) {
-            let t = list[j - 1]
-            list[j - 1] = list[j]
-            list[j] = t
-            j -= 1
+    sort(list, by: { a, b =>
+        if (less(a, b)) {
+            Ordering.LT
+        } else if (less(b, a)) {
+            Ordering.GT
+        } else {
+            Ordering.EQ
         }
-        i += 1
-    }
+    })
 }
 
 // MARK: - 影响面

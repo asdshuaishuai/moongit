@@ -5,6 +5,7 @@
 package moongit.graph
 
 import std.collection.*
+import std.sort.*
 import std.convert.*
 import moongit.util.*
 
@@ -173,6 +174,9 @@ public struct FileStat {
 
 /// 子树聚合统计：dir 前缀 → (文件, 符号, 行)。目录行的汇总注记用。
 func subtreeStats(graph: CodeGraph): HashMap<String, Stat3> {
+    // ⚠️ 性能审查 §5.2：原来每层前缀都 relPath.toArray() + fromUtf8Lossy
+    // （每文件 × 深度次数 × 一次整路径拷贝）。改为直接对 String 做字节切片——
+    // acc 停在 '/' 边界上，切出的前缀天然是完整 UTF-8 序列（安全Slice 的前提）。
     let m = HashMap<String, Stat3>()
     for (file in graph.files) {
         let segs = file.relPath.split("/")
@@ -180,7 +184,7 @@ func subtreeStats(graph: CodeGraph): HashMap<String, Stat3> {
         var i = 0
         while (i < segs.size - 1) {
             acc = if (i == 0) { segs[i].size } else { acc + 1 + segs[i].size }
-            let dir = String.fromUtf8(file.relPath.toArray()[0..acc])
+            let dir = file.relPath[0..acc]
             match (m.get(dir)) {
                 case Some(old) => m[dir] = Stat3(old.files + 1, old.syms + Int64(file.symbols.size), old.lines + file.lines)
                 case None => m[dir] = Stat3(1, Int64(file.symbols.size), file.lines)
@@ -189,6 +193,49 @@ func subtreeStats(graph: CodeGraph): HashMap<String, Stat3> {
         }
     }
     return m
+}
+
+/// 目录树节点：一次构建，渲染免二次全量扫描。
+class TreeDir {
+    let name: String
+    let full: String
+    let children: ArrayList<TreeDir> = ArrayList<TreeDir>()
+    let files: ArrayList<FileEntry> = ArrayList<FileEntry>()
+
+    init(name: String, full: String) {
+        this.name = name
+        this.full = full
+    }
+}
+
+/// 从文件列表一次构建目录树（O(F × 深度)）。
+/// ⚠️ 性能审查 §2.1：原 renderDir 对**每个目录**都全量扫 graph.files 找自己的
+/// 直接子项（O(D×F)；深树时 D 与 F 同阶 ⇒ 平方级）。
+func buildTree(graph: CodeGraph): TreeDir {
+    let root = TreeDir("", "")
+    let dirs = HashMap<String, TreeDir>()
+    dirs[""] = root
+    for (f in graph.files) {
+        let segs = f.relPath.split("/")
+        var parent = root
+        var acc = 0
+        var i = 0
+        while (i < segs.size - 1) {
+            acc = if (i == 0) { segs[i].size } else { acc + 1 + segs[i].size }
+            let full = f.relPath[0..acc]
+            match (dirs.get(full)) {
+                case Some(d) => parent = d
+                case None =>
+                    let d = TreeDir(segs[i], full)
+                    parent.children.add(d)
+                    dirs[full] = d
+                    parent = d
+            }
+            i += 1
+        }
+        parent.files.add(f)
+    }
+    return root
 }
 
 func totalSymbols(graph: CodeGraph): Int64 {
@@ -201,7 +248,7 @@ func totalSymbols(graph: CodeGraph): Int64 {
 public func treeText(graph: CodeGraph, maxDepth: Int64): String {
     let sb = StringBuilder()
     sb.append("${graph.root}  (${Int64(graph.files.size)} 文件 · ${totalSymbols(graph)} 符号 · ${sumLines(graph)} 行)\n")
-    renderDir(graph, "", 1, maxDepth, "", subtreeStats(graph), sb)
+    renderDir(graph, buildTree(graph), 1, maxDepth, "", subtreeStats(graph), sb)
     if (graph.truncated) {
         sb.append("⚠ 文件数达到上限 ${GRAPH_MAX_FILES}，以上不是全量\n")
     }
@@ -224,49 +271,55 @@ enum TreeItem {
     | TFile(FileEntry)
 }
 
-func renderDir(graph: CodeGraph, dir: String, depth: Int64, maxDepth: Int64,
+/// 树条目 + 排序键。**键必须复刻旧实现**（目录 key = 名 + "/"，文件 key = 完整
+/// relPath），否则输出序会变 —— 实测过：目录全在前 + 文件全在后是
+/// **另一个序**（Package.swift ↔ scripts/ 的先后会翻转）。契约是「同一仓库
+/// 两次构建逐字节一致」以及与旧版一致，保持原比较语义。
+struct TreeItem2 {
+    let key: String
+    let dir: Option<TreeDir>
+    let file: Option<FileEntry>
+
+    init(key: String, dir: Option<TreeDir>, file: Option<FileEntry>) {
+        this.key = key
+        this.dir = dir
+        this.file = file
+    }
+}
+
+func renderDir(graph: CodeGraph, node: TreeDir, depth: Int64, maxDepth: Int64,
                prefix: String, stats: HashMap<String, Stat3>,
                sb: StringBuilder): Unit {
-    let relPrefix = if (dir.isEmpty()) { "" } else { dir + "/" }
-    let items = ArrayList<TreeItem>()
-    let seenDirs = ArrayList<String>()
-    for (f in graph.files) {
-        if (!f.relPath.startsWith(relPrefix)) { continue }
-        let rest = if (dir.isEmpty()) { f.relPath } else { f.relPath[relPrefix.size..] }
-        if (rest.contains("/")) {
-            let seg = rest.split("/")[0]
-            if (!seenDirs.contains(seg)) {
-                seenDirs.add(seg)
-                items.add(TDir(seg, if (dir.isEmpty()) { seg } else { relPrefix + seg }))
-            }
-        } else {
-            items.add(TFile(f))
-        }
+    let items = ArrayList<TreeItem2>()
+    for (d in node.children) {
+        items.add(TreeItem2(d.name + "/", Some(d), None))
     }
-    insertionSortBy(items, { a, b => treeKey(a) < treeKey(b) })
+    for (f in node.files) {
+        items.add(TreeItem2(f.relPath, None, Some(f)))
+    }
+    sort(items, by: { a, b => a.key.compare(b.key) })
     let n = Int64(items.size)
     var i: Int64 = 0
     for (item in items) {
         let connector = if (i == n - 1) { TREE_LAST } else { TREE_TEE }
         let childPrefix = if (i == n - 1) { prefix + "   " } else { prefix + TREE_PIPE }
-        match (item) {
-            case TDir(name, full) =>
-                // 目录行带**子树汇总**——只有目录名时，读者无从判断哪一块是重心
+        match ((item.dir, item.file)) {
+            case (Some(d), _) =>
                 var note = ""
-                match (stats.get(full)) {
+                match (stats.get(d.full)) {
                     case Some(st) => note = "  (${st.files} 文件 · ${st.syms} 符号 · ${st.lines} 行)"
                     case None => ()
                 }
-                sb.append("${prefix}${connector}${name}/${note}\n")
+                sb.append("${prefix}${connector}${d.name}/${note}\n")
                 if (depth + 1 > maxDepth) {
-                    // 截断必须说出来，不能让子树静默消失
                     sb.append("${childPrefix}   … 深度截断（提高 --depth 展开）\n")
                 } else {
-                    renderDir(graph, full, depth + 1, maxDepth, childPrefix, stats, sb)
+                    renderDir(graph, d, depth + 1, maxDepth, childPrefix, stats, sb)
                 }
-            case TFile(f) =>
+            case (_, Some(f)) =>
                 sb.append("${prefix}${connector}${lastSeg(f.relPath)}  (${f.lang}, ${f.lines} 行, ${Int64(f.symbols.size)} 符号)\n")
                 renderSymbols(f, childPrefix, sb)
+            case _ => ()
         }
         i += 1
     }

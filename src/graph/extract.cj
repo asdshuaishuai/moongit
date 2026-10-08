@@ -75,13 +75,82 @@ func isIdentByte(b: UInt8): Bool {
     return (b >= 97 && b <= 122) || (b >= 65 && b <= 90) || (b >= 48 && b <= 57) || b == 95
 }
 
+/// 流式 token 遍历：**热路径专用**。tokenize 会为每行分配一个
+/// ArrayList + 每个标识符一个 String；遍历整棵仓库时那是每行一次的临时分配
+/// （性能审查 §5.1/§6.1 的「中间集合与循环内分配」）。
+/// 本函数只分配被消费的 token 字符串本身，不物化数组。
+public func forEachToken(line: String, action: (String) -> Unit): Unit {
+    var cur = ArrayList<UInt8>()
+    for (b in line) {
+        if (isIdentByte(b)) {
+            cur.add(b)
+        } else if (cur.size > 0) {
+            action(fromUtf8Lossy(cur.toArray()))
+            cur = ArrayList<UInt8>()
+        }
+    }
+    if (cur.size > 0) {
+        action(fromUtf8Lossy(cur.toArray()))
+    }
+}
+
+/// 声明关键词的字节表（模块级预计算一次；mayDeclare 热路径上零分配比较用）
+func declKeywordBytes(): Array<(UInt8, Array<UInt8>)> {
+    let words = ["func", "fn", "def", "function", "class", "struct", "interface",
+        "protocol", "trait", "enum", "extension", "impl", "type", "typealias", "typedef"]
+    let out = ArrayList<(UInt8, Array<UInt8>)>()
+    for (w in words) {
+        let b = w.toArray()
+        out.add((b[0], b))
+    }
+    return out.toArray()
+}
+
+let DECL_KEYWORDS: Array<(UInt8, Array<UInt8>)> = declKeywordBytes()
+
+/// 这一行**可能**含声明关键词（字节级词扫描，零分配）。
+/// scanSource 用它做前置过滤：绝大多数代码行直接跳过 tokenize，
+/// 把「每行一个 ArrayList」的分配压到只剩候选行。
+public func mayDeclare(line: String): Bool {
+    let n = Int64(line.size)
+    var i: Int64 = 0
+    while (i < n) {
+        var b0 = line[i]
+        if (b0 >= 65 && b0 <= 90) { b0 = b0 + 32 }
+        // 词首字节不匹配任何关键词的首字节 → 跳到词尾
+        var j = i
+        while (j < n && isIdentByte(line[j])) { j += 1 }
+        if (j > i) {
+            for ((first, kb) in DECL_KEYWORDS) {
+                if (first == b0 && kwMatchAt(line, i, j, kb)) {
+                    return true
+                }
+            }
+        }
+        i = if (j > i) { j } else { i + 1 }
+    }
+    return false
+}
+
+/// 比较 line[start..end)（大小写不敏感）是否等于关键词字节
+func kwMatchAt(line: String, start: Int64, end: Int64, kb: Array<UInt8>): Bool {
+    if (end - start != Int64(kb.size)) { return false }
+    var k: Int64 = 0
+    while (k < Int64(kb.size)) {
+        var b = line[start + k]
+        if (b >= 65 && b <= 90) { b = b + 32 }
+        if (b != kb[k]) { return false }
+        k += 1
+    }
+    return true
+}
+
 /// 把一行切成标识符 token 序列。字节级扫描：
 /// 非 ASCII 字节（中文注释等）天然是分隔符，不会被误认成标识符。
 public func tokenize(line: String): ArrayList<String> {
     let out = ArrayList<String>()
-    let bytes = line.toArray()
     var cur = ArrayList<UInt8>()
-    for (b in bytes) {
+    for (b in line) {
         if (isIdentByte(b)) {
             cur.add(b)
         } else {
@@ -100,21 +169,43 @@ public func tokenize(line: String): ArrayList<String> {
 /// 去掉行内注释（启发式：整行注释前缀 + `//` 截断）。
 /// 字符串里的 `//`（如 URL）会被误截 —— 词法级提取可接受的噪音，
 /// 换取的是零字符串状态机复杂度；误截的后果是**少**一个符号，不会编一个。
+///
+/// ⚠️ 性能审查 §5.2/§6.1：原实现上来就 `line.toArray()` ——
+/// 100k 行仓库 = 100k 次整行字节数组分配，而**绝大多数行没有注释**，
+/// 结果原样返回。现在零拷贝快路径：按字节索引扫描，未命中 `//` 时原样返回。
 func stripComment(line: String): String {
-    let t = line.trimAscii()
-    if (t.startsWith("//") || t.startsWith("#") || t.startsWith("/*")
-        || t.startsWith("*") || t.startsWith("--")) {
-        return ""
+    let n = Int64(line.size)
+    // 行首注释前缀（跳前导空白后判首个非空白字节）
+    var s: Int64 = 0
+    while (s < n) {
+        let b = line[s]
+        if (b != 32 && b != 9) { break }   // ' ' / '\t'
+        s += 1
     }
-    let bytes = line.toArray()
+    if (s < n) {
+        let b0 = line[s]
+        let b1: UInt8 = if (s + 1 < n) { line[s + 1] } else { 0 }
+        if (b0 == 47 && (b1 == 47 || b1 == 42)) { return "" }   // // 或 /*
+        if (b0 == 35 || b0 == 42) { return "" }                  // # 或 *
+        if (b0 == 45 && b1 == 45) { return "" }                  // --
+    }
+    // 行内 "//"（切片点落在 ASCII '/' 上，天然是合法 UTF-8 边界）
     var i: Int64 = 0
-    while (i + 1 < Int64(bytes.size)) {
-        if (bytes[i] == 47 && bytes[i + 1] == 47) {   // '/'
-            return fromUtf8Lossy(bytes[0..i])
+    while (i + 1 < n) {
+        if (line[i] == 47 && line[i + 1] == 47) {
+            return line[0..i]
         }
         i += 1
     }
     return line
+}
+
+/// 行是否全空白（零分配；替代 trimAscii().isEmpty() 的两次分配）
+func blankLine(line: String): Bool {
+    for (b in line) {
+        if (b != 32 && b != 9 && b != 13) { return false }
+    }
+    return true
 }
 
 /// token 是否像符号名（字母或下划线开头，非关键词/修饰符）。
@@ -274,11 +365,21 @@ public func scanSource(content: String): SourceFacts {
     let seenImports = HashSet<String>()
     var lineNo: Int64 = 0
     var lineCount: Int64 = 0
-    for (raw in content.split("\n")) {
+    // lazySplit：不物化全部行（split 会为整文件一次性分配全部行字符串）
+    for (raw in content.lazySplit("\n")) {
         lineNo += 1
         lineCount = lineNo
         let t = stripComment(raw)
-        if (t.trimAscii().isEmpty()) { continue }
+        if (blankLine(t)) { continue }
+        // 前置过滤：不含声明关键词的行免去 tokenize 的整行分配
+        if (!mayDeclare(t)) {
+            let imp0 = scanImportLine(t.trimAscii())
+            if (!imp0.isEmpty() && !seenImports.contains(imp0)) {
+                seenImports.add(imp0)
+                imports.add(imp0)
+            }
+            continue
+        }
         match (scanDeclLine(tokenize(t))) {
             case Some((kind, name)) =>
                 symbols.add(SymDecl(kind, name, lineNo))

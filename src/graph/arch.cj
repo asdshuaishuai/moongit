@@ -176,11 +176,22 @@ public func buildArch(graph: CodeGraph): ArchData {
         m.lines += f.lines
         if (!m.langs.contains(f.lang)) { m.langs.add(f.lang) }
     }
-    // 边：文件级（import + reference）按模块对聚合求和
+    // 边：文件级（import + reference）按模块对聚合求和。
+    // moduleOfPath 的 split 结果缓存（每条边两端各一次 ⇒ 2E 次 split → 每文件一次）
+    let modCache = HashMap<String, String>()
+    func modAt2(relPath: String): String {
+        match (modCache.get(relPath)) {
+            case Some(m) => return m
+            case None =>
+                let m = moduleOfPath(relPath)
+                modCache[relPath] = m
+                return m
+        }
+    }
     let weight = HashMap<String, Int64>()
     func bump(a: String, b: String, w: Int64): Unit {
-        let da = moduleOfPath(a)
-        let db = moduleOfPath(b)
+        let da = modAt2(a)
+        let db = modAt2(b)
         if (da == db) { return }
         let key = "${da}|${db}"
         match (weight.get(key)) {
@@ -219,13 +230,27 @@ public func buildArch(graph: CodeGraph): ArchData {
 ///   边   = 文件级 import/reference（跨模块的指向虚拟节点）
 /// 布局：内部文件按目录聚类网格排列，外部虚拟节点靠右一列——确定性，可对账。
 func buildDrilldown(graph: CodeGraph, modules: ArrayList<ArchModule>): ArrayList<DrillGraph> {
+    // ⚠️ 性能审查：moduleOfPath 内部要 split 路径；原实现对
+    // 「每模块 × 全量引用边 × 两端」逐次调用（M×2E 次 split，实测 6 模块
+    // ×11000 边 = 13 万次）。先一次性算好 relPath → 模块的映射，之后纯查表。
+    let modOf = HashMap<String, String>()
+    for (f in graph.files) { modOf[f.relPath] = moduleOfPath(f.relPath) }
+    func modAt(relPath: String): String {
+        match (modOf.get(relPath)) {
+            case Some(m) => return m
+            case None =>
+                let m = moduleOfPath(relPath)
+                modOf[relPath] = m
+                return m
+        }
+    }
     let out = ArrayList<DrillGraph>()
     for (m in modules) {
         let nodes = ArrayList<DrillNode>()
         let byId = HashMap<String, DrillNode>()
         // 内部文件
         for (f in graph.files) {
-            if (moduleOfPath(f.relPath) != m.id) { continue }
+            if (modAt(f.relPath) != m.id) { continue }
             let segs = f.relPath.split("/")
             let base = segs[segs.size - 1]
             let n = DrillNode(f.relPath, base, f.lang, f.lines, Int64(f.symbols.size), false)
@@ -235,14 +260,14 @@ func buildDrilldown(graph: CodeGraph, modules: ArrayList<ArchModule>): ArrayList
         // 外部往来模块 → 虚拟节点
         let extMods = ArrayList<String>()
         for ((from, to, _) in graph.refEdges) {
-            let fa = moduleOfPath(from)
-            let fb = moduleOfPath(to)
+            let fa = modAt(from)
+            let fb = modAt(to)
             if (fa == m.id && fb != m.id && !extMods.contains(fb)) { extMods.add(fb) }
             if (fb == m.id && fa != m.id && !extMods.contains(fa)) { extMods.add(fa) }
         }
         for ((from, to) in graph.importEdges) {
-            let fa = moduleOfPath(from)
-            let fb = moduleOfPath(to)
+            let fa = modAt(from)
+            let fb = modAt(to)
             if (fa == m.id && fb != m.id && !extMods.contains(fb)) { extMods.add(fb) }
             if (fb == m.id && fa != m.id && !extMods.contains(fa)) { extMods.add(fa) }
         }
@@ -255,8 +280,8 @@ func buildDrilldown(graph: CodeGraph, modules: ArrayList<ArchModule>): ArrayList
         // 边：文件级，两端都在子图节点集里（跨模块的落在外部虚拟节点上）
         let edges = ArrayList<(String, String, Int64)>()
         for ((from, to, w) in graph.refEdges) {
-            let fa = moduleOfPath(from)
-            let fb = moduleOfPath(to)
+            let fa = modAt(from)
+            let fb = modAt(to)
             if (fa != m.id && fb != m.id) { continue }
             var a = from
             var b = to
@@ -267,8 +292,8 @@ func buildDrilldown(graph: CodeGraph, modules: ArrayList<ArchModule>): ArrayList
             }
         }
         for ((from, to) in graph.importEdges) {
-            let fa = moduleOfPath(from)
-            let fb = moduleOfPath(to)
+            let fa = modAt(from)
+            let fb = modAt(to)
             if (fa != m.id && fb != m.id) { continue }
             var a = from
             var b = to
