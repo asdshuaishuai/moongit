@@ -464,3 +464,38 @@ func testArchMermaidNodeIdsAreInjective(): Unit {
     }
 }
 
+@Test
+func testAstDetectionIsOrderIndependent(): Unit {
+    // 限流（每文件每类 6 条）与重复体「报哪一条」都取决于**处理顺序** ——
+    // 而顺序来自外部 ast-grep 进程。检测必须对输入顺序不敏感（否则报哪几条是外部工具
+    // 的偶然顺序决定的，既不确定也无原则）。
+    let base = ArrayList<AstNode>()
+    var i: Int64 = 0
+    while (i < 8) {
+        base.add(AstNode("f.cj", 10 + i * 3, 12 + i * 3, "fn", "func f${i}() { }"))
+        i += 1
+    }
+    let reversed = ArrayList<AstNode>()
+    var k: Int64 = 7
+    while (k >= 0) {
+        reversed.add(base[k])
+        k -= 1
+    }
+    let fa = ArrayList<Finding>()
+    detectFromAst(base, fa)
+    let fb = ArrayList<Finding>()
+    detectFromAst(reversed, fb)
+    // 限流确实生效：8 条 stub 只留 6 条（否则下面「两者相等」会空转成恒真）
+    @Assert(Int64(fa.size) == 6)
+    @Assert(Int64(fb.size) == 6)
+    var j: Int64 = 0
+    while (j < Int64(fa.size)) {
+        @Assert(flawId(fa[j].kind) == flawId(fb[j].kind))
+        @Assert(fa[j].line == fb[j].line)
+        j += 1
+    }
+    // 按位置取前 6 条（行号 10,13,…,25）
+    @Assert(fa[0].line == 10)
+    @Assert(fa[5].line == 25)
+}
+

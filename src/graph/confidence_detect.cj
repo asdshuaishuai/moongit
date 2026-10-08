@@ -220,7 +220,21 @@ func containsTodo(line: String): Bool {
 
 // MARK: - ④ AST 节点信号（空体/长度/嵌套/魔法数/吞错）
 
+/// AST 节点按 (file, startLine, endLine, nodeRule) 排序。
+/// ⚠️ 必须：限流「每文件每类留哪 6 条」与重复体「报哪一条」都取决于**处理顺序**，
+/// 而顺序来自外部 `ast-grep` 进程 —— 不排序的话，报出来的那几条是**外部工具的偶然顺序**决定的
+/// （既不确定，也没有原则）。排序后按**代码位置**取前几条，可复现且符合直觉。
+func sortAstNodes(nodes: ArrayList<AstNode>): Unit {
+    insertionSortBy(nodes, { a, b =>
+        if (a.file != b.file) { return a.file < b.file }
+        if (a.startLine != b.startLine) { return a.startLine < b.startLine }
+        if (a.endLine != b.endLine) { return a.endLine < b.endLine }
+        return a.nodeRule < b.nodeRule
+    })
+}
+
 func detectFromAst(nodes: ArrayList<AstNode>, findings: ArrayList<Finding>): Unit {
+    sortAstNodes(nodes)
     let perFileKind = HashMap<String, Int64>()   // "file|kind" → count
     for (n in nodes) {
         let lines = n.endLine - n.startLine + 1
@@ -465,6 +479,7 @@ func swallowedReason(text: String): Option<String> {
 /// 完全相同的函数体（去注释/空白后逐字节相同，长度 ≥ 阈值）。
 /// AI 复制粘贴的高频形态；同一个 bug 会有 N 份。
 func detectDuplicateBodies(nodes: ArrayList<AstNode>, findings: ArrayList<Finding>): Unit {
+    sortAstNodes(nodes)
     let byHash = HashMap<String, ArrayList<AstNode>>()
     for (n in nodes) {
         if (n.nodeRule != "fn") { continue }

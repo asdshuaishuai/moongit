@@ -254,5 +254,20 @@ open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
 PY
 check "NC9 mermaid 节点 id 折叠" testArchMermaidNodeIdsAreInjective src/graph/arch.cj "$b"
 
+# ── NC10 · AST 检测退回「依赖输入顺序」（不排序）──
+b="$(md5_of src/graph/confidence_detect.cj)"
+python3 - <<'PY'
+p = "src/graph/confidence_detect.cj"
+s = open(p, encoding="utf-8").read()
+old = '''func detectFromAst(nodes: ArrayList<AstNode>, findings: ArrayList<Finding>): Unit {
+    sortAstNodes(nodes)
+    let perFileKind = HashMap<String, Int64>()   // "file|kind" → count'''
+new = '''func detectFromAst(nodes: ArrayList<AstNode>, findings: ArrayList<Finding>): Unit {
+    let perFileKind = HashMap<String, Int64>()   // "file|kind" → count'''
+assert old in s, "NC10 锚点失配"
+open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
+PY
+check "NC10 AST 检测依赖输入顺序" testAstDetectionIsOrderIndependent src/graph/confidence_detect.cj "$b"
+
 echo "== 负控结束；失败项：$FAILS =="
 [ "$FAILS" = "0" ]
