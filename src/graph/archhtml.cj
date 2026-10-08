@@ -341,8 +341,13 @@ func renderJs(en: Bool): String {
     sb.append("    cur().edges.forEach(function (e) { if (e.from === m.id) outs.push(e); if (e.to === m.id) ins.push(e); });\n")
     sb.append("    var h = '<h2>' + escapeHtml(m.label || m.id) + '</h2>';\n")
     sb.append("    if (isArch()) { var ln = DATA.layers[m.layer] ? DATA.layers[m.layer].name : m.layer; h += '<div class=\"meta\">' + LAYERW + ' L' + m.layer + ' · ' + ln + '</div>'; }\n")
-    sb.append("    else { h += '<div class=\"meta\">' + escapeHtml(m.lang) + (m.external ? '' : ' · L' + '》'.length + '</div>'); }\n")
-    sb.append("    h += '<div>' + m.files + ' ' + FILES + ' · ' + m.symbols + ' ' + SYMS + ' · ' + m.lines + ' ' + LINES + '</div>';\n")
+    // ⚠️ 两处实跑修：
+    //   ① 文件级子视图的节点是 **DrillNode（没有 `files` 字段）**，面板统计沿用
+    //      ArchModule 的字段会显示 "undefined 文件" ⇒ 统计必须按视图分支；
+    //   ② 原 meta 行拼了 `'》'.length` —— 那是恒等于 1 的**幻影字面量**（面板显示 "· L1"）。
+    sb.append("    else { h += '<div class=\"meta\">' + escapeHtml(m.lang) + '</div>'; }\n")
+    sb.append("    var stats = isArch() ? (m.files + ' ' + FILES + ' · ' + m.symbols + ' ' + SYMS + ' · ' + m.lines + ' ' + LINES) : (m.symbols + ' ' + SYMS + ' · ' + m.lines + ' ' + LINES);\n")
+    sb.append("    h += '<div>' + stats + '</div>';\n")
     sb.append("    if (m.langs) { h += '<div>'; m.langs.forEach(function (l) { h += '<span class=\"langtag\">' + escapeHtml(l) + '</span>'; }); h += '</div>'; }\n")
     sb.append("    h += '<h3>' + OUT + '</h3>';\n")
     sb.append("    if (outs.length === 0) h += '<div class=\"meta\">' + NONE + '</div>';\n")

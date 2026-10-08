@@ -424,15 +424,33 @@ public func buildArchScene(data: ArchData, en: Bool): JsonValue {
         v.computeBounds()
         viewsSet(views, v.id, sceneViewJson(v))
 
-        // 文件级 panel
+        // 文件级 panel。out/in 与模块级**同构**，取自该模块的文件级边 ——
+        // ⚠️ 原实现恒发空数组：键在、结构合法，却等于对驱动声称「这个文件没有任何依赖」。
+        // 恒空假值比缺键更坏（驱动无从分辨「没依赖」与「引擎没填」）。
         for (n in dg.nodes) {
             if (n.external) { continue }
             let po = Json.obj()
             Json.set(po, "title", Json.of(n.label))
             Json.set(po, "sub", Json.of("${n.lang} · ${n.lines} ${ui.lineWord}"))
             Json.set(po, "stats", Json.of("${n.symbols} ${ui.symWord}"))
-            Json.set(po, "out", JArr(ArrayList<JsonValue>()))
-            Json.set(po, "in", JArr(ArrayList<JsonValue>()))
+            let outs = ArrayList<JsonValue>()
+            let ins = ArrayList<JsonValue>()
+            for ((ea, eb, ew) in dg.edges) {
+                if (ea == n.id) {
+                    let d = Json.obj()
+                    Json.set(d, "id", Json.of(eb))
+                    Json.set(d, "w", Json.of(ew))
+                    outs.add(d)
+                }
+                if (eb == n.id) {
+                    let d = Json.obj()
+                    Json.set(d, "id", Json.of(ea))
+                    Json.set(d, "w", Json.of(ew))
+                    ins.add(d)
+                }
+            }
+            Json.set(po, "out", JArr(outs))
+            Json.set(po, "in", JArr(ins))
             Json.set(panels, "${v.id}:${n.id}", po)
         }
     }

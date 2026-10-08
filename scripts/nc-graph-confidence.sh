@@ -28,7 +28,7 @@ export SDKROOT="${MOONGIT_SDKROOT:-$HOME/.local/share/sdks/MacOSX.minimal/latest
 export DEEPGIT_HOME="${DEEPGIT_HOME:-/tmp/dg-nc-graph-home-$$}"
 
 SB="$(mktemp -d "${TMPDIR:-/tmp}/moonGit-nc-graph.XXXXXX")"
-FILES="src/graph/confidence.cj src/graph/confidence_detect.cj src/graph/extract.cj"
+FILES="src/graph/confidence.cj src/graph/confidence_detect.cj src/graph/extract.cj src/graph/archhtml.cj src/graph/archscene.cj"
 
 restore_all() {
   for f in $FILES; do
@@ -184,6 +184,51 @@ assert old in s, "NC6 锚点失配"
 open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
 PY
 check "NC6 分数退回规模相关公式" testScoreIsSizeInvariantAndMonotone src/graph/confidence.cj "$b"
+
+# ── NC7 · 架构图面板退回「无条件用 m.files + 幻影字面量 '》'.length」──
+b="$(md5_of src/graph/archhtml.cj)"
+python3 - <<'PY'
+p = "src/graph/archhtml.cj"
+s = open(p, encoding="utf-8").read()
+old = r'''    sb.append("    else { h += '<div class=\"meta\">' + escapeHtml(m.lang) + '</div>'; }\n")
+    sb.append("    var stats = isArch() ? (m.files + ' ' + FILES + ' · ' + m.symbols + ' ' + SYMS + ' · ' + m.lines + ' ' + LINES) : (m.symbols + ' ' + SYMS + ' · ' + m.lines + ' ' + LINES);\n")
+    sb.append("    h += '<div>' + stats + '</div>';\n")'''
+new = r'''    sb.append("    else { h += '<div class=\"meta\">' + escapeHtml(m.lang) + (m.external ? '' : ' · L' + '》'.length + '</div>'); }\n")
+    sb.append("    h += '<div>' + m.files + ' ' + FILES + ' · ' + m.symbols + ' ' + SYMS + ' · ' + m.lines + ' ' + LINES + '</div>';\n")'''
+assert old in s, "NC7 锚点失配"
+open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
+PY
+check "NC7 架构图面板退回缺陷写法" testBuildGraphAndImpact src/graph/archhtml.cj "$b"
+
+# ── NC8 · 场景文件级面板退回「恒发空 out/in」──
+b="$(md5_of src/graph/archscene.cj)"
+python3 - <<'PY'
+p = "src/graph/archscene.cj"
+s = open(p, encoding="utf-8").read()
+old = '''            let outs = ArrayList<JsonValue>()
+            let ins = ArrayList<JsonValue>()
+            for ((ea, eb, ew) in dg.edges) {
+                if (ea == n.id) {
+                    let d = Json.obj()
+                    Json.set(d, "id", Json.of(eb))
+                    Json.set(d, "w", Json.of(ew))
+                    outs.add(d)
+                }
+                if (eb == n.id) {
+                    let d = Json.obj()
+                    Json.set(d, "id", Json.of(ea))
+                    Json.set(d, "w", Json.of(ew))
+                    ins.add(d)
+                }
+            }
+            Json.set(po, "out", JArr(outs))
+            Json.set(po, "in", JArr(ins))'''
+new = '''            Json.set(po, "out", JArr(ArrayList<JsonValue>()))
+            Json.set(po, "in", JArr(ArrayList<JsonValue>()))'''
+assert old in s, "NC8 锚点失配"
+open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
+PY
+check "NC8 场景文件级面板恒空 out/in" testBuildGraphAndImpact src/graph/archscene.cj "$b"
 
 echo "== 负控结束；失败项：$FAILS =="
 [ "$FAILS" = "0" ]

@@ -238,6 +238,18 @@ case Some(res) =>
         @Assert(html.contains("<canvas"))
         // 嵌入安全：JSON 里不允许裸 "</script>"
         @Assert(!html.contains("</script>__ARCH_PLACEHOLDER__"))
+        // 面板统计：文件级子视图的节点是 DrillNode（**没有 files 字段**）——
+        // 不能无条件用 m.files，否则模块子视图的面板显示 "undefined 文件"。
+        @Assert(!html.contains("h += '<div>' + m.files"))
+        // 幻影字面量：`'》'.length` 恒等于 1，曾被拼成无意义的 "· L1"。
+        @Assert(!html.contains("》"))
+
+        // 场景 JSON 的文件级面板：out/in 必须取自真实文件级边 ——
+        // 原实现恒发空数组 = 对驱动谎称「这个文件没有任何依赖」。
+        // （夹具里 flow/update.cj 引用了 util/text.cj ⇒ util/text.cj 有入向依赖）
+        let scene = buildArchScene(arch, false)
+        let fp = Json.getOr(Json.getOr(scene, "panels"), "module:util:util/text.cj")
+        @Assert(Json.arrAt(fp, "in").size > 0 || Json.arrAt(fp, "out").size > 0)
     } finally {
         removeTree(root)
     }
