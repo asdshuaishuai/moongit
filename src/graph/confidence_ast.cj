@@ -143,7 +143,12 @@ func runAstGrep(graph: CodeGraph): Option<ArrayList<AstNode>> {
     }
 
     let all = ArrayList<AstNode>()
-    for ((al, files) in byLang) {
+    // ⚠️ 确定性：HashMap 迭代顺序不定，会让命中节点的收集顺序在两次运行间变化，
+    // 进而使权重并列的 findings 顺序翻转（违反「逐字节一致」契约）。按语言名排序后迭代。
+    let groups = ArrayList<(String, ArrayList<String>)>()
+    for ((al, files) in byLang) { groups.add((al, files)) }
+    insertionSortBy(groups, { a, b => a[0] < b[0] })
+    for ((al, files) in groups) {
         let rules = rulesYamlFor(al)
         if (rules.isEmpty()) { continue }
         // 临时规则文件

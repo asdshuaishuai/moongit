@@ -41,7 +41,7 @@ moonGit Engine 用 git 自己的历史回答这两个问题：
 | **上下文包** | `moongit context [项目] [--budget N] --json`（MCP：context 类工具） | 预算内（字符数）的 markdown 事实摘要：总览/脉搏/分支表/日志/里程碑 |
 | **工具清单** | `moongit tools --json`（MCP：`tools/list`） | agent 可执行操作的结构化清单（10 项：读上下文/文档/日志，跑更新，git 操作，里程碑） |
 | **工具执行** | 对应的 CLI 子命令 | agent 决定调用，引擎照常执行并返回结果 |
-| **代码图谱** | `moongit graph <overview\|tree\|symbol\|impact\|arch>`（MCP：`codegraph_*` 五工具） | 符号索引 / 关系树 / 影响面 / 技术架构图（详见下节） |
+| **代码图谱** | `moongit graph <overview\|tree\|symbol\|impact\|arch\|confidence>`（MCP：`codegraph_*` 六工具） | 符号索引 / 关系树 / 影响面 / 技术架构图 / 代码置信度（详见下节） |
 
 ## CodeGraph — 代码图谱与架构图（AI 原生能力）
 
@@ -66,6 +66,29 @@ moongit graph arch <项目> --format html --out arch.html
 
 **如实标注的边界**：符号与影响面是**词法级、文件级粒度**（标识符命中），不是语义调用图；
 分层判定是模块名启发式。图里的**边**是事实，**层**是解读——两者在数据中分开存放。
+
+### 代码置信度 `graph confidence`（被动能力）
+
+AI 生成的代码最常见的不是「编译不过」，而是一批**看起来对**的结构性疑点：定义了没人引用的
+符号、空实现、吞掉错误的 catch、魔法数字、深嵌套、复制粘贴的重复函数体、TODO 残留。
+`graph confidence` 把它们做成**确定性事实**——逐条给出 `file:line` 证据，不替人下结论。
+
+```sh
+moongit graph confidence <项目>            # 文本报告：分数 + 分类计数 + 明细
+moongit graph confidence <项目> --json     # 机读：findings / byKind / score
+moongit graph confidence <项目> --llm      # 预填 LLM 复核提示词（要求逐条裁决并引用代码原文）
+moongit graph confidence <项目> --no-ast   # 跳过语法树，纯词法
+```
+
+- **语法树来自外部开源 `ast-grep`（tree-sitter 内核）**，引擎不自研 parser；未安装时**优雅降级**
+  为词法级，并在 `astNote` 里**如实披露**（区分「未安装」与「本次文件的语言都没有语法覆盖」）。
+- **仓颉暂无 tree-sitter 语法包**，因此词法路径被做厚到能产出**长度 / 嵌套 / 魔法数 / 空体**
+  四种函数级信号——引擎对自己的代码也能给出有意义的置信度（吞错与重复体依赖 AST 节点边界，词法路径不产出）。
+- **孤儿符号是符号级判定**：只要名字在某处（含同文件）以**非声明位置**出现过就不算孤儿；
+  测试入口（`@Test` / `__lint*`）与入口文件已豁免。
+- **分数是结构性疑点的汇总（0..100），不是正确性证明**；这个语义写进每一次输出。
+- **`--llm` 只产出提示词，不调用模型**：引擎 AI 无关是红线，语义复核由上层 agent 执行。
+- 输出**确定性**：同一仓库两次运行逐字节一致（全序排序 + 排序化迭代），agent 可以对账。
 
 ### 为什么这是「仓颉 AI 原生」的示范位
 
@@ -107,10 +130,17 @@ moongit mcp                      # stdio JSON-RPC（2024-11-05）
 {"mcpServers": {"moongit": {"command": "/path/to/moongit", "args": ["mcp"]}}}
 ```
 
-提供 **15 个工具**：list_projects、get_group_context、get_project_context、get_project_status、
-get_dashboard、get_project_docs、get_journal、run_shallow_update、run_deep_update、run_track、
-git_op、list_milestones、milestone_add、milestone_action、add_project；
+提供 **21 个工具**：
+- 项目管理：`list_projects`、`add_project`
+- 上下文与状态：`get_group_context`、`get_project_context`、`get_project_status`、`get_dashboard`
+- 文档与日志：`get_project_docs`、`get_journal`
+- 更新与追踪：`run_shallow_update`、`run_deep_update`、`run_track`
+- git 与里程碑：`git_op`、`list_milestones`、`milestone_add`、`milestone_action`
+- 代码图谱：`codegraph_overview`、`codegraph_tree`、`codegraph_symbol`、`codegraph_impact`、`codegraph_arch`、`codegraph_confidence`
+
 另有 resources（deepgit://project/{id}）与 prompts（project_brief）。
+> MCP 工具表与 CLI 的 `moongit tools --json`（17 项）**是两份注册表**，服务不同运行时、
+> 能力集本就可以不同——要紧的是差异是**有意识**的（见 `AGENTS.md` 不变量 43）。
 
 ### 3. Skill（教学包，让编码类 agent 学会用引擎）
 
@@ -186,6 +216,8 @@ moongit dashboard                 跨项目聚合：活跃度 / 里程碑 / 语�
 moongit report [项目] [--out F]   导出自包含 Markdown 进度报告
 moongit hook <install|uninstall|status> [项目]   post-commit + post-merge 钩子
 moongit verify [项目]             校验文档完整性（用户内容是否被改动）
+moongit graph <overview|tree|symbol|impact|arch|confidence> [项目] [--json]
+                                  代码图谱：符号索引 / 关系树 / 影响面 / 架构图 / 代码置信度
 moongit config <list|get|set> [k] [v]
 moongit doctor                    环境自检
 ```
@@ -232,19 +264,23 @@ moongit doctor                    环境自检
 ## 项目结构
 
 ```
-src/util/     JSON / SHA256 / 文本 / 时间 / 路径 / 进程 / 日志（叶子，仅依赖 std）
-src/kernel/   配置 / 注册表 / 存储 / git 封装 / 事实采集 / 里程碑 / 进度 / 文档区域 / 渲染 / 钩子
-src/ai/       provider（curl）/ 提示词 / 规则引擎
-src/flow/     浅更新 / 深更新 / 状态聚合 / 仪表盘 / 报告 / 文档读取（编排层）
-src/cli/      CLI 命令 + MCP 服务器（stdio JSON-RPC）
-scripts/      install.sh（含极简 SDK 自动部署）/ moongit.sh / build-minimal-sdk.sh
+src/util/     JSON / SHA256 / 文本 / 时间 / 路径 / 进程 / 日志 / 错误（叶子，仅依赖 std）
+src/kernel/   配置 / 注册表 / 存储 / git 封装 / 事实采集 / 里程碑 / 进度 / 叙事 / 文档区域 / 渲染 / 钩子
+src/graph/    CodeGraph：符号索引 / 关系边 / 影响面 / 架构图 / 代码置信度（只依赖 util）
+src/flow/     浅更新 / 深更新 / 状态聚合 / 仪表盘 / 报告 / agent 上下文（编排层）
+src/cli/      命令分发 + MCP 服务器（stdio JSON-RPC）
+scripts/      install.sh / moongit.sh / build-minimal-sdk.sh / package-release.sh / nc-graph-confidence.sh（负控）
 ```
 
-依赖方向严格单向：`util → kernel → ai → flow → cli`。
+依赖方向严格单向：`util → kernel → flow → cli`；`graph` 只依赖 `util`，与 `kernel` 并列供 `flow`/`cli` 消费。
 
 ## 构建细节与已知边界
 
-见 [AGENTS.md](AGENTS.md)（仓颉编码约定、macOS SDK 兼容、测试基线 492 项）。
+见 [AGENTS.md](AGENTS.md)（仓颉编码约定、macOS SDK 兼容、测试基线 505 项）。
 
 - SHA-256 自研（通过官方测试向量），不用于密码学安全场景。
 - AI 摘要质量取决于提交信息质量。
+- **代码置信度的边界**：孤儿是**词法级保守**判定（名字从未在非声明处出现），测试入口
+  （`@Test` / `__lint*`）与入口文件已豁免；**不追**传递性死代码；语法树信号只对
+  ast-grep 覆盖的语言启用（仓颉走词法近似）。分数受「低权重疑点数量」主导，
+  请以 `byKind` 分类明细为准，不要只看 headline 分数。

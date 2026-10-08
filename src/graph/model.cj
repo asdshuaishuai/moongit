@@ -114,17 +114,23 @@ public class CodeGraph {
     public let truncated: Bool
     /// 因超限/无法读取而跳过的文件数
     public let skipped: Int64
+    /// 被当作标识符用过（**非声明位置**）的符号名集合。**不进任何 JSON 出口**——
+    /// 供符号级孤儿检测（confidence_detect.detectOrphans）使用。
+    /// 同文件内的使用也算（私有 helper 只要在本文件被调用过就不算孤儿）。
+    public let referencedNames: HashSet<String>
 
     public init(root: String, files: ArrayList<FileEntry>,
                 importEdges: ArrayList<(String, String)>,
                 refEdges: ArrayList<(String, String, Int64)>,
-                truncated: Bool, skipped: Int64) {
+                truncated: Bool, skipped: Int64,
+                referencedNames: HashSet<String>) {
         this.root = root
         this.files = files
         this.importEdges = importEdges
         this.refEdges = refEdges
         this.truncated = truncated
         this.skipped = skipped
+        this.referencedNames = referencedNames
     }
 
     /// 符号名 → 定义处列表（同名符号可能多处定义，全部列出，不装作唯一）。

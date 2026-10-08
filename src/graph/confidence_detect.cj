@@ -10,42 +10,50 @@ import moongit.util.*
 
 // MARK: - ① 孤儿符号
 
-/// 定义了、但全仓没有任何别的文件引用它。复用图已有的引用边。
+/// 定义了、但全仓没有任何**非声明位置**的标识符引用它（**符号级**）。
+/// 数据来自 build.cj 累积的 `graph.referencedNames`（被使用过的符号名集合）。
 ///
-/// ⚠️ 边界如实说：词法级引用（标识符出现）会**高估**引用（同名巧合），
-/// 因此这里的「孤儿」是**保守的**——它只报「连名字都没人提」的符号。
-/// 真实使用但从未被提及名字的符号（纯入口/反射调用/协议实现）会被误报，
-/// 这类噪声在报告里靠 public/大写首字母的过滤降低（入口类符号不报）。
+/// ⚠️ 边界如实说：词法级引用会**高估**引用（同名巧合）⇒ 这里的「孤儿」是
+/// **保守的**（宁可漏报）。真实使用但从未被提及名字的符号（纯入口 / 反射 /
+/// 协议实现）会被误报，靠 `isEntryLike` 豁免入口 / 测试文件降低噪声。
+/// 只判「名字从未在非声明处出现」；**传递性**死代码（如仅被同样已死的空壳引用的
+/// 类型）不追。
+///
+/// 早期版本判定单位是**文件**（整个文件无人引用才报）—— 文件里混有活符号与
+/// 死符号时漏报（只用到该文件里某一个活符号，整文件就被判为「被引用」）。
 func detectOrphans(graph: CodeGraph, findings: ArrayList<Finding>): Unit {
-    // 被引用的文件集合（作为 **目标** 出现在引用边里的文件）
-    let referencedFiles = HashSet<String>()
-    for ((_, to, _) in graph.refEdges) {
-        referencedFiles.add(to)
-    }
-    for ((from, to) in graph.importEdges) {
-        referencedFiles.add(to)
-    }
-    // 逐符号：定义文件从未作为被引用目标 → 整个文件的符号都算孤儿？
-    // 不。逐符号判定做不到（引用边是文件级）。所以判定单位为**文件**：
-    // 一个文件从未被引用 = 其所有导出符号都没人提 ⇒ 按文件中符号数计条，
-    // 但合并成一条 finding（避免噪声），证据里写符号数与代表性符号名。
+    let perFile = HashMap<String, Int64>()
     for (f in graph.files) {
-        if (referencedFiles.contains(f.relPath)) { continue }
         if (f.symbols.size == 0) { continue }
-        // 入口文件豁免：main / 测试文件 / 明确命名的入口
+        // 入口文件豁免：main / 测试文件 / 明确命名的入口（这些「没人引用」是正常的）
         let base = lastSeg(f.relPath)
         if (isEntryLike(base)) { continue }
-        var names = ArrayList<String>()
         for (s in f.symbols) {
-            if (!names.contains(s.name)) { names.add(s.name) }
-            if (Int64(names.size) >= 4) { break }
+            if (graph.referencedNames.contains(s.name)) { continue }
+            // 测试符号豁免：`@Test func testXxx` 由测试框架反射调用，源码里无引用
+            if (isTestLike(s.name)) { continue }
+            let c = match (perFile.get(f.relPath)) {
+                case Some(v) => v
+                case None => 0
+            }
+            if (c >= CONF_MAX_PER_KIND_PER_FILE) { continue }
+            perFile[f.relPath] = c + 1
+            findings.add(Finding(Orphan, f.relPath, s.line, s.name,
+                "${symKindId(s.kind)} ${s.name}：定义后全仓无任何非声明处引用——"
+                + "可能从未被接入，或已被替代"))
         }
-        let more = if (Int64(f.symbols.size) > Int64(names.size)) { " 等" } else { "" }
-        findings.add(Finding(Orphan, f.relPath, 1,
-            names[0],
-            "文件内 ${Int64(f.symbols.size)} 个符号（${joinStrings(names, "、")}${more}）"
-            + "全仓无任何文件引用——可能从未被接入，或已被替代"))
     }
+}
+
+/// 测试符号豁免：由测试框架**反射调用**、源码里无引用的函数 ——
+/// `@Test func testXxx` 与 `@Test func __lintXxx`（本项目用 `__lint` 前缀
+/// 命名正则守卫，参考 kernel/scanner.cj 的同一约定）。这是「没人引用」的正常
+/// 形态，不是孤儿。
+func isTestLike(name: String): Bool {
+    if (name.startsWith("__lint")) { return true }
+    if (name.size < 4) { return false }
+    let head = name[0..4]
+    return head == "test" || head == "Test"
 }
 
 /// 入口/测试/协议实现类文件名豁免（这些「没人引用」是正常的）。
@@ -169,40 +177,45 @@ func detectTodos(graph: CodeGraph, findings: ArrayList<Finding>): Unit {
     }
 }
 
-/// TODO 标记判定：**词边界**精确匹配。
-/// ⚠️ 首次实跑修：原版 `contains("XXX")` 把注释里的占位符说明
-/// （`\uXXXX`、`m_xxx`、`0xxxxxxx`）全报了 9 条假阳性；
-/// 中文「未实现/待实现」太宽（正常描述性注释也命中），去掉了。
-/// 现在只认大写 TODO/FIXME/HACK，以及**独立成词**的 XXX。
+/// TODO 标记判定：**注释开头处的可执行标记**。
+/// ⚠️ 两版假阳性教训（`AGENTS.md` 不变量 25：禁令词会连自己的免责声明一起抓）：
+///   ① 认「独立成词的 TODO」⇒ 命中描述性注释（`// 魔法数字、TODO 残留。`、`// MARK: - ③ TODO 残留`）。
+///   ② 只加「后跟 `:`/`(`」⇒ 仍命中**文档里示范标记写法**的行。
+/// 现在把判定锚在**结构位置**上：标记必须是注释体（`//`、`#`、`/*`、行首 `*`、`--` 之后）
+/// 跳过空白后的**第一个词**，且后跟 `:` 或 `(` 或行尾。这样描述性文字与文档示范都不再命中。
 func containsTodo(line: String): Bool {
     let n = Int64(line.size)
     var i: Int64 = 0
     while (i < n) {
         let b = line[i]
-        // 词首候选：字母（区分大小写：只认大写形态）
-        if (b >= 65 && b <= 90) {
-            var j = i
-            while (j < n && isIdentByte(line[j])) { j += 1 }
-            let word = line[i..j]
-            if (word == "TODO" || word == "FIXME" || word == "HACK") { return true }
-            if (word == "XXX") {
-                // 独立成词才算（前面不能是下划线/字母——已在词首保证）
-                return true
+        // 注释开头检测
+        var after: Int64 = -1
+        if (b == 47 && i + 1 < n && line[i + 1] == 47) { after = i + 2 }        // //
+        else if (b == 47 && i + 1 < n && line[i + 1] == 42) { after = i + 2 }   // /*
+        else if (b == 35) { after = i + 1 }                                     // #
+        else if (b == 45 && i + 1 < n && line[i + 1] == 45) { after = i + 2 }   // --
+        else if (b == 42 && i == 0) { after = i + 1 }                           // 行首 *
+        if (after >= 0) {
+            // 跳过空白与装饰字符（/// 的第三个 /、* 装饰）
+            var k = after
+            while (k < n && (line[k] == 32 || line[k] == 9 || line[k] == 13
+                || line[k] == 47 || line[k] == 42)) { k += 1 }
+            if (k < n) {
+                var j = k
+                while (j < n && isIdentByte(line[j])) { j += 1 }
+                let word = line[k..j]
+                if (word == "TODO" || word == "FIXME" || word == "HACK" || word == "XXX") {
+                    var m = j
+                    while (m < n && (line[m] == 32 || line[m] == 9 || line[m] == 13)) { m += 1 }
+                    if (m >= n) { return true }                 // 行尾裸标记
+                    let nb = line[m]
+                    if (nb == 58 || nb == 40) { return true }   // ':' 或 '('
+                }
             }
-            i = j
-        } else {
-            i += 1
         }
+        i += 1
     }
     return false
-}
-
-func upperAscii(s: String): String {
-    let out = ArrayList<UInt8>()
-    for (b in s) {
-        if (b >= 97 && b <= 122) { out.add(b - 32) } else { out.add(b) }
-    }
-    return fromUtf8Lossy(out.toArray())
 }
 
 // MARK: - ④ AST 节点信号（空体/长度/嵌套/魔法数/吞错）
@@ -384,43 +397,55 @@ func maxBraceDepth(text: String): Int64 {
     return maxD
 }
 
-/// 魔法数字计数：裸数字字面量（长度 ≥ 2 位，或非 0/1/2/10/100 的常见豁免），
-/// 排除注释行。判据：连续数字串且前一个非标识符字符（不是变量名的一部分）
-/// 且值不在豁免表（0/1/2/10/100/1000/60/24/1024）。
-func countMagicNumbers(text: String): Int64 {
+/// 豁免值（不属于「魔法数」的常见常量）。模块级预计算一次。
+func buildMagicExempt(): HashSet<String> {
     let exempt = HashSet<String>()
     for (v in ["0", "1", "2", "10", "100", "1000", "60", "24", "1024",
         "255", "360", "365", "12", "7", "30"]) {
         exempt.add(v)
     }
+    return exempt
+}
+
+let MAGIC_EXEMPT: HashSet<String> = buildMagicExempt()
+
+/// 逐行魔法数计数（输入必须是**已剥注释**的代码行）。AST 与词法路径共用同一口径。
+/// 判据：连续数字串、前一个字符非标识符、非小数尾、值不在豁免表。
+func magicCountInLine(t: String): Int64 {
+    if (blankLine(t)) { return 0 }
+    let n = Int64(t.size)
+    var count: Int64 = 0
+    var i: Int64 = 0
+    while (i < n) {
+        let b = t[i]
+        if (b >= 48 && b <= 57) {
+            // 前一个字符若是标识符字符或 '.'（如 x2 / 1.5 的小数部分）→ 跳过
+            let prevIdent = if (i > 0) {
+                let p = t[i - 1]
+                isIdentByte(p) || p == 46    // '.'
+            } else { false }
+            var j = i
+            while (j < n && ((t[j] >= 48 && t[j] <= 57) || t[j] == 46 || t[j] == 95)) { j += 1 }
+            if (!prevIdent) {
+                let lit = t[i..j]
+                // 十六进制/后缀不算（0x、f16），浮点小数尾不算（前有 '.' 已排）
+                if (!lit.isEmpty() && !MAGIC_EXEMPT.contains(lit) && !lit.contains(".")) {
+                    count += 1
+                }
+            }
+            i = j
+        } else {
+            i += 1
+        }
+    }
+    return count
+}
+
+/// 魔法数字计数：裸数字字面量，排除注释行（供 AST 路径对节点文本计数）。
+func countMagicNumbers(text: String): Int64 {
     var count: Int64 = 0
     for (line in text.lazySplit("\n")) {
-        let t = stripComment(line)
-        if (blankLine(t)) { continue }
-        let n = Int64(t.size)
-        var i: Int64 = 0
-        while (i < n) {
-            let b = t[i]
-            if (b >= 48 && b <= 57) {
-                // 前一个字符若是标识符字符或 '.'（如 x2 / 1.5 的小数部分）→ 跳过
-                let prevIdent = if (i > 0) {
-                    let p = t[i - 1]
-                    isIdentByte(p) || p == 46    // '.'
-                } else { false }
-                var j = i
-                while (j < n && ((t[j] >= 48 && t[j] <= 57) || t[j] == 46 || t[j] == 95)) { j += 1 }
-                if (!prevIdent) {
-                    let lit = t[i..j]
-                    // 十六进制/后缀不算（0x、f16），浮点小数尾不算（前有 '.' 已排）
-                    if (!lit.isEmpty() && !exempt.contains(lit) && !lit.contains(".")) {
-                        count += 1
-                    }
-                }
-                i = j
-            } else {
-                i += 1
-            }
-        }
+        count += magicCountInLine(stripComment(line))
     }
     return count
 }
@@ -474,20 +499,32 @@ func detectDuplicateBodies(nodes: ArrayList<AstNode>, findings: ArrayList<Findin
 
 // MARK: - 降级路径：词法级函数信号（无 AST 时）
 
-/// 无 AST 时的近似：按「声明行 + 花括号配平」推函数体边界（只对
-/// C 系花括号语言有效；python 缩进体不在此列，如实少报而不是乱报）。
-func detectLexicalFunctionSignals(graph: CodeGraph, findings: ArrayList<Finding>): Unit {
+/// 词法级函数信号：按「声明行 + 花括号配平」推函数体边界（只对 C 系花括号
+/// 语言有效；python 缩进体不在此列，如实少报而不是乱报）。
+///
+/// 产出 **长度 / 空体 / 深嵌套 / 魔法数** —— 让**没有 tree-sitter 语法的语言
+/// （仓颉！）也能拿到这四种函数级信号**，而不是只剩「超长函数」。
+/// 吞错与重复体依赖 AST 节点边界，词法路径不产出（避免乱报）。
+///
+/// `astUsed=true` 时只补跑 AST **覆盖不到**的语言（否则同一处会被两条路各报一次）。
+func detectLexicalFunctionSignals(graph: CodeGraph, findings: ArrayList<Finding>,
+                                  astUsed: Bool): Unit {
     let perFileKind = HashMap<String, Int64>()
     for (f in graph.files) {
         // 按语法上可能有花括号体的语言做
         if (!braceLang(f.lang)) { continue }
+        // 有 AST 覆盖（且本轮 AST 可用）的语言交给 detectFromAst，避免重复
+        if (astUsed && !astGrepLang(f.lang).isEmpty()) { continue }
         let content = readFileText("${graph.root}/${f.relPath}")
         match (content) {
             case Some(text) =>
                 var lineNo: Int64 = 0
                 var pendingStub: Option<(String, Int64)> = None
                 var depth: Int64 = 0
+                var baseDepth: Int64 = 0
+                var maxRel: Int64 = 0
                 var bodyLines: Int64 = 0
+                var bodyMagic: Int64 = 0
                 var bodyHadContent = false
                 var bodyStarted = false
                 var strState: Int64 = 0
@@ -508,6 +545,8 @@ func detectLexicalFunctionSignals(graph: CodeGraph, findings: ArrayList<Finding>
                                 if (isFunc) {
                                     pendingStub = Some((name, lineNo))
                                     bodyLines = 0
+                                    bodyMagic = 0
+                                    maxRel = 0
                                     bodyHadContent = false
                                     bodyStarted = false
                                 }
@@ -519,6 +558,7 @@ func detectLexicalFunctionSignals(graph: CodeGraph, findings: ArrayList<Finding>
                     // 体开始：第一个 '{' 出现在「待跟随声明之后」的任意行
                     if (!bodyStarted && pendingStub.isSome() && opens > 0 && depth == 0) {
                         bodyStarted = true
+                        baseDepth = depth
                         // 同行体（func f() { ... }）：只取 { 与 } 之间的部分判内容
                         if (opens == closes) {
                             let inner = betweenBraces(t)
@@ -540,6 +580,12 @@ func detectLexicalFunctionSignals(graph: CodeGraph, findings: ArrayList<Finding>
                     }
                     depth += opens - closes
                     if (depth < 0) { depth = 0 }
+                    // 体内统计：相对嵌套深度 + 魔法数（口径与 AST 路径一致）
+                    if (bodyStarted) {
+                        let rel = depth - baseDepth
+                        if (rel > maxRel) { maxRel = rel }
+                        bodyMagic += magicCountInLine(t)
+                    }
                     // 收尾：体真的开始过、且配平回 0
                     if (depth == 0 && bodyStarted) {
                         match (pendingStub) {
@@ -547,14 +593,26 @@ func detectLexicalFunctionSignals(graph: CodeGraph, findings: ArrayList<Finding>
                                 if (!bodyHadContent) {
                                     bumpFinding(findings, perFileKind, StubBody, f.relPath, ln,
                                         name, "函数体（词法判定）内无可执行内容——占位实现候选")
-                                } else if (bodyLines > CONF_LONG_FUNCTION_LINES) {
-                                    bumpFinding(findings, perFileKind, LongFunction, f.relPath, ln,
-                                        name, "约 ${bodyLines} 行（词法近似；阈值 ${CONF_LONG_FUNCTION_LINES}）")
+                                } else {
+                                    if (bodyLines > CONF_LONG_FUNCTION_LINES) {
+                                        bumpFinding(findings, perFileKind, LongFunction, f.relPath, ln,
+                                            name, "约 ${bodyLines} 行（词法近似；阈值 ${CONF_LONG_FUNCTION_LINES}）")
+                                    }
+                                    if (maxRel > CONF_DEEP_NESTING) {
+                                        bumpFinding(findings, perFileKind, DeepNesting, f.relPath, ln,
+                                            name, "花括号嵌套 ${maxRel} 层（词法近似；阈值 ${CONF_DEEP_NESTING}）")
+                                    }
+                                    if (bodyMagic >= 3) {
+                                        bumpFinding(findings, perFileKind, MagicNumber, f.relPath, ln,
+                                            name, "函数体内 ${bodyMagic} 处裸数字字面量（词法近似；≥3 时才报）——建议提取常量")
+                                    }
                                 }
                             case None => ()
                         }
                         pendingStub = None
                         bodyStarted = false
+                        bodyMagic = 0
+                        maxRel = 0
                     }
                 }
             case None => ()
@@ -610,32 +668,4 @@ func braceLang(lang: String): Bool {
     // python 无花括号体；ts 的箭头函数混排这里近似会误报，只收「结构清晰」的几种
     return lang == "c" || lang == "java" || lang == "kotlin" || lang == "rust"
         || lang == "go" || lang == "swift" || lang == "cangjie" || lang == "ts"
-}
-
-/// 一行的花括号净增量（跳过字符串内）
-func braceDelta(line: String): Int64 {
-    let t = stripComment(line)
-    var d: Int64 = 0
-    var inStr = false
-    var quoteCh: UInt8 = 0
-    let n = Int64(t.size)
-    var i: Int64 = 0
-    while (i < n) {
-        let b = t[i]
-        if (inStr) {
-            if (b == 92) { i += 2; continue }
-            if (b == quoteCh) { inStr = false }
-        } else {
-            if (b == 34 || b == 39) {
-                inStr = true
-                quoteCh = b
-            } else if (b == 123) {
-                d += 1
-            } else if (b == 125) {
-                d -= 1
-            }
-        }
-        i += 1
-    }
-    return d
 }

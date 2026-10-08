@@ -305,7 +305,7 @@ public func buildArchScene(data: ArchData, en: Bool): JsonValue {
 
     // ── 模块子视图（文件级）──
     let views = Json.obj()
-    viewsSet(views, "arch", archViewJson(arch, data))
+    viewsSet(views, "arch", sceneViewJson(arch))
     let panels = Json.obj()
 
     // 架构级 panel（每模块）
@@ -508,36 +508,6 @@ func numsJson(vals: Array<Float64>): JsonValue {
     let a = ArrayList<JsonValue>()
     for (v in vals) { a.add(Json.of(v)) }
     return JArr(a)
-}
-
-func archViewJson(v: SceneView, data: ArchData): JsonValue {
-    let o = Json.obj()
-    Json.set(o, "label", Json.of(v.label))
-    if (!v.parent.isEmpty()) {
-        Json.set(o, "parent", Json.of(v.parent))
-    }
-    let b = Json.obj()
-    Json.set(b, "x0", Json.of(v.bx0))
-    Json.set(b, "y0", Json.of(v.by0))
-    Json.set(b, "x1", Json.of(v.bx1))
-    Json.set(b, "y1", Json.of(v.by1))
-    Json.set(o, "bounds", b)
-    let nt = Json.obj()
-    for ((k, tok) in v.nodeTheme) { Json.set(nt, k, Json.of(tok)) }
-    Json.set(o, "nodeTheme", nt)
-    let nl = Json.obj()
-    for ((k, l) in v.nodeLayer) { Json.set(nl, k, Json.of(l)) }
-    Json.set(o, "nodeLayer", nl)
-    let od = Json.obj()
-    for ((k, c) in v.order) { Json.set(od, k, Json.of(c)) }
-    Json.set(o, "order", od)
-    let lbl = Json.obj()
-    for ((k, s) in v.labels) { Json.set(lbl, k, Json.of(s)) }
-    Json.set(o, "labels", lbl)
-    Json.set(o, "shapes", JArr(v.shapes))
-    Json.set(o, "particles", JArr(v.particles))
-    Json.set(o, "hits", JArr(v.hits))
-    return o
 }
 
 func sceneViewJson(v: SceneView): JsonValue {

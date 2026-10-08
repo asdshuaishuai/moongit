@@ -265,12 +265,6 @@ let TREE_PIPE = "│  "
 let TREE_TEE = "├─ "
 let TREE_LAST = "└─ "
 
-/// 树条目（目录 | 文件）。
-enum TreeItem {
-    | TDir(String, String)
-    | TFile(FileEntry)
-}
-
 /// 树条目 + 排序键。**键必须复刻旧实现**（目录 key = 名 + "/"，文件 key = 完整
 /// relPath），否则输出序会变 —— 实测过：目录全在前 + 文件全在后是
 /// **另一个序**（Package.swift ↔ scripts/ 的先后会翻转）。契约是「同一仓库
@@ -322,13 +316,6 @@ func renderDir(graph: CodeGraph, node: TreeDir, depth: Int64, maxDepth: Int64,
             case _ => ()
         }
         i += 1
-    }
-}
-
-func treeKey(item: TreeItem): String {
-    match (item) {
-        case TDir(name, _) => return name + "/"
-        case TFile(f) => return f.relPath
     }
 }
 

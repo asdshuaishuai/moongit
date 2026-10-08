@@ -146,12 +146,11 @@ public class ConfidenceReport {
     public let astUsed: Bool           // 语法树是否真的用上了
     public let astNote: String         // 降级原因或覆盖说明
     public let filesAnalyzed: Int64
-    public let filesTotal: Int64
     public let byKind: ArrayList<(FlawKind, Int64)>
 
     public init(root: String, score: Int64, findings: ArrayList<Finding>,
                 astUsed: Bool, astNote: String,
-                filesAnalyzed: Int64, filesTotal: Int64,
+                filesAnalyzed: Int64,
                 byKind: ArrayList<(FlawKind, Int64)>) {
         this.root = root
         this.score = score
@@ -159,7 +158,6 @@ public class ConfidenceReport {
         this.astUsed = astUsed
         this.astNote = astNote
         this.filesAnalyzed = filesAnalyzed
-        this.filesTotal = filesTotal
         this.byKind = byKind
     }
 }
@@ -197,8 +195,17 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
                         + joinStrings(fallbackLangs, "、") + "）"
                 }
             case None =>
-                astNote = "未检测到可用的语法树覆盖（ast-grep 未安装，或全部文件语言无 tree-sitter 语法）——"
-                    + "已降级为词法级分析；函数粒度信号（空体/嵌套/长度/重复体）缺失，其余信号不受影响"
+                // 两种成因分开披露：工具没装 vs 装了但本次语言无语法覆盖。
+                // 原版把两者混成一句「未安装，或…」，读者无法判断该不该去装工具。
+                if (findAstGrep().isSome()) {
+                    astNote = "语法树不可用：ast-grep 已安装，但本次全部文件的语言都无 tree-sitter 语法（如纯仓颉仓库）——"
+                        + "已降级为词法级分析；函数粒度信号改由词法路径近似（长度/嵌套/魔法数/空体），"
+                        + "吞错与重复体仍缺失"
+                } else {
+                    astNote = "语法树不可用：未安装 ast-grep（`brew install ast-grep` 可获得 tree-sitter 级覆盖）——"
+                        + "已降级为词法级分析；函数粒度信号改由词法路径近似（长度/嵌套/魔法数/空体），"
+                        + "吞错与重复体仍缺失"
+                }
         }
     } else {
         astNote = "按调用方要求跳过语法树（--no-ast），仅词法级分析"
@@ -210,29 +217,20 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
     detectSuspiciousNames(graph, findings)
     // ── ③ TODO 残留（按文件计数）──
     detectTodos(graph, findings)
-    // ── ④ 函数粒度信号：有 AST 走 AST 节点，否则词法近似 ──
+    // ── ④ 函数粒度信号：AST 节点 + 词法近似 ──
+    // AST 覆盖得到时用 AST；词法路径**始终**补跑 AST 覆盖不到的语言
+    // （如纯仓颉仓库 / 混合仓库里的仓颉文件），否则这些语言只剩「超长函数」。
     if (astUsed) {
         detectFromAst(astNodes, findings)
-    } else {
-        detectLexicalFunctionSignals(graph, findings)
     }
+    detectLexicalFunctionSignals(graph, findings, astUsed)
     // ── ⑤ 重复函数体（同体哈希，需 AST 的准确边界）──
     if (astUsed) {
         detectDuplicateBodies(astNodes, findings)
     }
 
-    // 排序：权重降序，同级按 file:line（确定性 + 重要的在前）
-    insertionSortBy(findings, { a, b =>
-        let wa = flawWeight(a.kind)
-        let wb = flawWeight(b.kind)
-        if (wa != wb) {
-            wa > wb
-        } else if (a.file != b.file) {
-            a.file < b.file
-        } else {
-            a.line < b.line
-        }
-    })
+    // 排序：全序（见 sortFindings），确定性 + 重要的在前
+    sortFindings(findings)
     // 总量截断（披露进 astNote，不静默）
     var truncatedNote = ""
     if (Int64(findings.size) > CONF_MAX_FINDINGS) {
@@ -265,7 +263,12 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
     insertionSortBy(byKind, { a, b =>
         let ka = a[0]
         let kb = b[0]
-        flawWeight(ka) > flawWeight(kb)
+        let wa = flawWeight(ka)
+        let wb = flawWeight(kb)
+        if (wa != wb) { return wa > wb }
+        // 权重并列（如 MagicNumber=3 与 SuspiciousName=3）时按 id 兜底，
+        // 否则顺序随 HashMap 迭代而变 ⇒ 违反逐字节一致
+        return flawId(ka) < flawId(kb)
     })
 
     // 分数：100 − Σ权重，下限 0。文件数归一：大仓库少量疑点不该把分压死，
@@ -281,7 +284,29 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
     if (score < 0) { score = 0 }
 
     return ConfidenceReport(graph.root, score, findings, astUsed,
-                            astNote + truncatedNote, nFiles, nFiles, byKind)
+                            astNote + truncatedNote, nFiles, byKind)
+}
+
+/// findings 的**全序**排序（`AGENTS.md` 契约：同一仓库两次运行逐字节一致）。
+/// ⚠️ 原比较器只按 (权重, file, line)：权重并列且 file:line 相同时判等，
+/// 于是依赖**输入顺序** —— 而输入来自 `runAstGrep` 里按语言分组的 HashMap 迭代，
+/// 顺序不确定。实测 deepDolphin 两次运行 findings 的 (long-function, deep-nesting)
+/// 对在同一函数首行翻转（两者权重都是 4）。补足全序：
+/// 权重↓ → file↑ → line↑ → flawId↑ → symbol↑。
+public func sortFindings(findings: ArrayList<Finding>): Unit {
+    insertionSortBy(findings, { a, b => findingLess(a, b) })
+}
+
+func findingLess(a: Finding, b: Finding): Bool {
+    let wa = flawWeight(a.kind)
+    let wb = flawWeight(b.kind)
+    if (wa != wb) { return wa > wb }
+    if (a.file != b.file) { return a.file < b.file }
+    if (a.line != b.line) { return a.line < b.line }
+    let ia = flawId(a.kind)
+    let ib = flawId(b.kind)
+    if (ia != ib) { return ia < ib }
+    return a.symbol < b.symbol
 }
 
 /// 整数平方根的温和近似（牛顿迭代 8 轮，够用且确定）

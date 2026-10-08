@@ -45,7 +45,7 @@ func walkSources(dir: String, rel: String, files: ArrayList<(String, String)>,
     let names = ArrayList<String>()
     let dirs = ArrayList<String>()
     for (info in entries) {
-        if (info.name.startsWith(".") || SKIP_DIRS.contains(info.name)) { continue }
+        if (skipDirName(info.name)) { continue }
         let full = if (rel.isEmpty()) { info.name } else { "${rel}/${info.name}" }
         if (isDirectoryPath("${dir}/${info.name}")) {
             dirs.add(full)
@@ -121,7 +121,7 @@ public func buildGraph(root: String): CodeGraph {
 
     // ── 文件 → 模块索引 + 文件级 import 解析 ──
     // ⚠️ 性能审查 §2.1：原来是「每个 import × 扫描全部文件」的嵌套扫描
-    // （F×I×F，1000 文件仓库是百万级 pathContainsModule 调用，每次都要 split 路径）。
+    // （F×I×F，1000 文件仓库是百万级路径包含判断，每次都要 split 路径）。
     // 改为一次建索引：每个目录段与文件名去扩展后作为键，值 = 排序序下前两个命中
     // ——「前两个」是为了复刻原「首个非自身命中」语义（首个恰是自己时取第二个）。
     let moduleIndex = HashMap<String, ArrayList<String>>()
@@ -176,25 +176,53 @@ public func buildGraph(root: String): CodeGraph {
         }
     }
     // 引用计数：from 文件 → to 文件 → 命中的**不同**符号名个数。
+    // 同时累积 referencedNames：**被当作标识符用过**（非声明位置）的符号名集合，
+    // 供符号级孤儿检测使用（见 confidence_detect.detectOrphans）。
     //
     // ⚠️ 性能审查 §5.1/§6.1：原来每个 token 命中都拼一次 "from|to" 字符串 key
     // 再查全局 map（同行同 token 重复也重复拼）；tokenize 还逐行分配 ArrayList。
     // 现在：逐文件 token 去重（token → HashSet，文件切换即丢），
     // 计数用嵌套 map，字符串 key 只在外层文件对首次建立时出现。
     let refCount = HashMap<String, HashMap<String, Int64>>()
+    let referencedNames = HashSet<String>()
     for (f in facts) {
+        // 本文件各行的声明符号名（声明位置自身不算「使用」）
+        let declAtLine = HashMap<Int64, HashSet<String>>()
+        for (s in f.symbols) {
+            match (declAtLine.get(s.line)) {
+                case Some(ns) => ns.add(s.name)
+                case None =>
+                    let ns = HashSet<String>()
+                    ns.add(s.name)
+                    declAtLine[s.line] = ns
+            }
+        }
         let content = readFileText("${root}/${f.relPath}")
         match (content) {
             case Some(text) =>
                 let seen = HashSet<String>()
                 var strState: Int64 = 0
+                var lineNo: Int64 = 0
                 for (line in text.lazySplit("\n")) {
+                    lineNo += 1
                     // 注释与字符串内的标识符都不算引用（与 scanSource 同一套）
                     let (t, nextState) = stripCode(line, strState)
                     strState = nextState
+                    let lineDecls = declAtLine.get(lineNo)
+                    // 符号级孤儿用：注释剥掉但**保留字符串** —— Cangjie/Swift 的
+                    // `"${expr}"` 里嵌的是代码，stripCode 会把它们一并剥掉，导致
+                    // 「只在插值里用到」的符号被误判孤儿（实测 sanitizeId / sumLines / numText）。
+                    // 声明位置自身不算「使用」：否则「定义即使用」让孤儿永远检不出。
+                    forEachToken(stripComment(line)) { tok =>
+                        let isDecl = match (lineDecls) {
+                            case Some(ns) => ns.contains(tok)
+                            case None => false
+                        }
+                        if (!isDecl && defFiles.get(tok).isSome()) { referencedNames.add(tok) }
+                    }
                     if (blankLine(t)) { continue }
+                    // 引用计数：同一文件里同一符号只计一次（复刻原 pairNames 的集合语义）
                     forEachToken(t) { tok =>
-                        // 同一文件里同一符号只计一次（复刻原 pairNames 的集合语义）
                         if (seen.contains(tok)) { return }
                         seen.add(tok)
                         match (defFiles.get(tok)) {
@@ -229,26 +257,8 @@ public func buildGraph(root: String): CodeGraph {
     }
 
     return CodeGraph(root, facts, importEdges, refEdges,
-                     files.size >= Int64(GRAPH_MAX_FILES), skipped.value)
-}
-
-/// relPath 里是否含名为 mod 的目录段（import 模块 → 文件的启发式解析）
-func pathContainsModule(relPath: String, mod: String): Bool {
-    if (mod.isEmpty()) { return false }
-    for (seg in relPath.split("/")) {
-        if (seg == mod) { return true }
-    }
-    // 顶层单文件名去扩展后命中也算（`import util` ↔ util.cj / util.swift）
-    let name = lastSeg(relPath)
-    match (name.lastIndexOf(".")) {
-        case Some(dot) =>
-            if (dot > 0) {
-                let stem = name[0..dot]
-                return stem == mod
-            }
-            return false
-        case None => return false
-    }
+                     files.size >= Int64(GRAPH_MAX_FILES), skipped.value,
+                     referencedNames)
 }
 
 // 泛型排序：**共享给全 graph 包**（render/arch 都在用）。

@@ -145,7 +145,11 @@ public func runUpdate(): Bool { return true }
 public class Updater { }
 """
     let f = scanSource(cj)
-    @Assert(f.imports[0] == "moongit")
+    // ⚠️ 推翻旧断言：这里原本是 `imports[0] == "moongit"`（首段）—— 那是把缺陷
+    // 写成了断言（`import moongit.util.*` 的语义在**末段** `util`；取首段 `moongit`
+    // 导致整个仓颉仓库 import 边恒为 0）。详见 confidence 修复与下方
+    // `testImportSegmentResolution`。
+    @Assert(f.imports[0] == "util")
     let names = ArrayList<String>()
     for (s in f.symbols) { names.add(symKindId(s.kind) + ":" + s.name) }
     @Assert(names.contains("func:runUpdate"))
@@ -258,5 +262,154 @@ func testTreeAndSymbolOutputs(): Unit {
     } finally {
         removeTree(root)
     }
+}
+
+// MARK: - 置信度：import 解析 / TODO 标记 / 符号级孤儿 / 词法函数信号 / 全序排序
+
+@Test
+func testImportSegmentResolution(): Unit {
+    // 仓颉/Swift 的跨包引用语义在**末段**（能命中项目内目录/文件名的才是它）。
+    @Assert(scanSource("import moongit.util.*\n").imports[0] == "util")
+    @Assert(scanSource("import Foundation\n").imports[0] == "Foundation")
+    // Swift 别名 `import X as Y` → 取 X，不是别名 Y
+    @Assert(scanSource("import CoreGraphics as CG\n").imports[0] == "CoreGraphics")
+    @Assert(scanSource("from flow.update import runUpdate\n").imports[0] == "flow")
+    @Assert(scanSource("use std::collections::HashMap\n").imports[0] == "std")
+    @Assert(scanSource("import \"net/http\"\n").imports[0] == "http")
+}
+
+@Test
+func testTodoMarkerShape(): Unit {
+    // ⚠️ 标记字面量**必须拼接构造**：直接写出「注释开头的标记」会被本检测器
+    // 扫到自己的测试数据（`AGENTS.md` 不变量 55：needle 字面量在源码里 ⇒ 匹配到自己）。
+    let td = "TO" + "DO"
+    let fx = "FIX" + "ME"
+    let hk = "HA" + "CK"
+    let xx = "X" + "XX"
+    // 可执行标记（注释开头处）
+    @Assert(containsTodo("// " + td + ": fix the parser"))
+    @Assert(containsTodo("//" + td + "(alice): rework"))
+    @Assert(containsTodo("  # " + fx + ": broken"))
+    @Assert(containsTodo("/* " + hk + ": temporary */"))
+    @Assert(containsTodo("// " + xx))
+    // 假阳性回归：描述性文字 / 文档里示范标记写法，都不得命中
+    @Assert(!containsTodo("// 魔法数字、TODO 残留。它们单看都不致命"))
+    @Assert(!containsTodo("// MARK: - ③ TODO 残留"))
+    @Assert(!containsTodo("/// 只认可执行标记：`TODO:` / `TODO(owner)`"))
+    @Assert(!containsTodo("let x = 1  // 正文里的 TODO 只是提及"))
+    @Assert(!containsTodo("let todo = compute()"))
+}
+
+func confFixture(): String {
+    let root = "${tempDirPath()}/moongit-conf-test-${getpid()}"
+    ensureDir("${root}/util")
+    ensureDir("${root}/cli")
+    writeFileAtomic("${root}/util/a.cj", """
+package p
+
+public func usedElsewhere(): Int64 { return 1 }
+
+func localHelper(): Int64 { return 2 }
+
+public func callerOfLocal(): Int64 { return localHelper() }
+
+public func deadOne(): Int64 { return 3 }
+""")
+    writeFileAtomic("${root}/cli/b.cj", """
+package q
+
+public func run(): Int64 { return usedElsewhere() }
+""")
+    return root
+}
+
+func orphanNames(rep: ConfidenceReport): ArrayList<String> {
+    let names = ArrayList<String>()
+    for (f in rep.findings) {
+        match (f.kind) {
+            case Orphan => names.add(f.symbol)
+            case _ => ()
+        }
+    }
+    return names
+}
+
+@Test
+func testOrphanIsSymbolLevel(): Unit {
+    let root = confFixture()
+    try {
+        let rep = analyzeConfidence(buildGraph(root), false)
+        let names = orphanNames(rep)
+        // 定义了、全仓无任何非声明处引用 → 报
+        @Assert(names.contains("deadOne"))
+        // 仅在同文件内被调用 → 不算孤儿（符号级判定的关键）
+        @Assert(!names.contains("localHelper"))
+        // 被**别的文件**引用 → 不算孤儿
+        @Assert(!names.contains("usedElsewhere"))
+    } finally {
+        removePathIfExists(root)
+    }
+}
+
+@Test
+func testLexicalDeepNestingAndMagic(): Unit {
+    // 纯仓颉夹具（无 tree-sitter 语法 → 走词法路径）：验证词法路径确实产出
+    // 深嵌套与魔法数，而不是只剩「超长函数」。
+    let root = "${tempDirPath()}/moongit-conf-lex-${getpid()}"
+    ensureDir(root)
+    writeFileAtomic("${root}/deep.cj", """
+package p
+
+public func deep(): Int64 {
+    if (a) {
+        if (b) {
+            if (c) {
+                if (d) {
+                    if (e) {
+                        return 111
+                    }
+                }
+            }
+        }
+    }
+    let x = 222
+    let y = 333
+    return x + y
+}
+""")
+    try {
+        let rep = analyzeConfidence(buildGraph(root), false)
+        var deep = false
+        var magic = false
+        for (f in rep.findings) {
+            match (f.kind) {
+                case DeepNesting => deep = true
+                case MagicNumber => magic = true
+                case _ => ()
+            }
+        }
+        @Assert(deep)
+        @Assert(magic)
+    } finally {
+        removePathIfExists(root)
+    }
+}
+
+@Test
+func testFindingsOrderIsTotalAndDeterministic(): Unit {
+    // 旧比较器只按 (权重, file, line)：long-function(4) 与 deep-nesting(4) 在同一
+    // file:line 上判等 ⇒ 保留输入序 ⇒ 不同输入序产出不同结果。全序后必须一致。
+    let a = ArrayList<Finding>()
+    a.add(Finding(DeepNesting, "f.cj", 10, "x", "n"))
+    a.add(Finding(LongFunction, "f.cj", 10, "x", "l"))
+    let b = ArrayList<Finding>()
+    b.add(Finding(LongFunction, "f.cj", 10, "x", "l"))
+    b.add(Finding(DeepNesting, "f.cj", 10, "x", "n"))
+    sortFindings(a)
+    sortFindings(b)
+    @Assert(flawId(a[0].kind) == flawId(b[0].kind))
+    @Assert(flawId(a[1].kind) == flawId(b[1].kind))
+    // 并列时按 flawId 兜底："deep-nesting" < "long-function"
+    @Assert(flawId(a[0].kind) == "deep-nesting")
 }
 
