@@ -1,0 +1,298 @@
+// graph/confidence.cj — 代码置信度：结构性疑点的确定性度量。
+//
+// 【为什么需要它】AI 生成的代码最常见的不是「编译不过」，而是
+// 一批**看起来对**的结构性疑点：孤立的符号（定义了没人用）、
+// 空实现（函数体只有 pass/return nil）、吞掉错误的 catch、
+// 魔法数字、TODO 残留。它们单看都不致命，合在一起就是
+// 「这段代码到底可不可信」的答案缺失。
+//
+// 【AI 无关边界】引擎**不做 LLM 调用**（红线）。这里只产出：
+//   ① 确定性信号（词法 + 语法树事实，逐条带 file:line 证据）
+//   ② 一份预填的 LLM 复核提示词（llmPrompt），上层 agent 可拿去喂模型
+// 分数 = 结构级信号的汇总，**不是正确性证明** —— 这个语义写进输出。
+//
+// 【语法树从哪来】不自造 parser：调用已装的开源 `ast-grep`
+// （tree-sitter 内核，9 种语言）。不可用时**优雅降级**为纯词法度量，
+// 并在 coverage 里如实披露降级（不许把降级说成全量）。
+package moongit.graph
+
+import std.collection.*
+import std.convert.*
+import moongit.util.*
+
+// MARK: - 模型
+
+/// 疑点类别。穷尽 match 的消费方：权重表、渲染、JSON、llmPrompt。
+public enum FlawKind {
+    | Orphan          // 孤儿符号：定义了，全仓无引用
+    | StubBody        // 空体/占位实现（pass / return nil / 空 {}）
+    | SwallowedError  // catch 里什么都不做（吞错误）
+    | MagicNumber     // 函数体内的裸魔法数字
+    | LongFunction    // 超长函数（阈值披露）
+    | DeepNesting     // 深嵌套
+    | TodoResidue     // TODO/FIXME/XXX 残留
+    | SuspiciousName  // 可疑命名（tmp/foo/单字符/new+old 等 AI 习惯）
+    | DuplicateBody   // 完全相同的函数体（复制粘贴，多处出现）
+}
+
+public func flawId(k: FlawKind): String {
+    match (k) {
+        case Orphan => "orphan"
+        case StubBody => "stub-body"
+        case SwallowedError => "swallowed-error"
+        case MagicNumber => "magic-number"
+        case LongFunction => "long-function"
+        case DeepNesting => "deep-nesting"
+        case TodoResidue => "todo-residue"
+        case SuspiciousName => "suspicious-name"
+        case DuplicateBody => "duplicate-body"
+    }
+}
+
+public func flawLabel(k: FlawKind, en: Bool): String {
+    if (en) {
+        match (k) {
+            case Orphan => "Orphan symbol"
+            case StubBody => "Stub body"
+            case SwallowedError => "Swallowed error"
+            case MagicNumber => "Magic numbers"
+            case LongFunction => "Long function"
+            case DeepNesting => "Deep nesting"
+            case TodoResidue => "TODO residue"
+            case SuspiciousName => "Suspicious name"
+            case DuplicateBody => "Duplicate body"
+        }
+    } else {
+        match (k) {
+            case Orphan => "孤儿符号"
+            case StubBody => "占位实现"
+            case SwallowedError => "错误被吞"
+            case MagicNumber => "魔法数字"
+            case LongFunction => "超长函数"
+            case DeepNesting => "深嵌套"
+            case TodoResidue => "TODO 残留"
+            case SuspiciousName => "可疑命名"
+            case DuplicateBody => "重复函数体"
+        }
+    }
+}
+
+/// 每类疑点的扣分权重。**表只有一个**（改分只改这里）。
+/// 排序理由：孤儿与占位实现是「这段代码可能压根没在跑」；
+/// 吞错误是「出错时你看不见」；重复体是「同一个 bug 有两份」。
+/// 其余是维护性信号，扣分递减。
+public func flawWeight(k: FlawKind): Int64 {
+    match (k) {
+        case Orphan => 12
+        case StubBody => 12
+        case SwallowedError => 10
+        case DuplicateBody => 8
+        case MagicNumber => 3
+        case LongFunction => 4
+        case DeepNesting => 4
+        case TodoResidue => 2
+        case SuspiciousName => 3
+    }
+}
+
+/// 阈值。**全部集中在这里**，输出里逐条披露（不许隐藏口径）。
+public let CONF_LONG_FUNCTION_LINES: Int64 = 80
+public let CONF_DEEP_NESTING: Int64 = 5
+/// 单文件里同一类疑点最多报几条（防噪声淹没；超出时计数汇总为一条）
+public let CONF_MAX_PER_KIND_PER_FILE: Int64 = 6
+/// 单次分析最多报多少条 findings（防止巨型仓库输出爆炸）
+public let CONF_MAX_FINDINGS: Int64 = 400
+
+/// 一条疑点：类别 + 位置 + 证据。证据必须自足（人不开编辑器就能判断）。
+public struct Finding {
+    public let kind: FlawKind
+    public let file: String
+    public let line: Int64
+    public let symbol: String
+    public let evidence: String
+
+    public init(kind: FlawKind, file: String, line: Int64, symbol: String, evidence: String) {
+        this.kind = kind
+        this.file = file
+        this.line = line
+        this.symbol = symbol
+        this.evidence = evidence
+    }
+}
+
+/// 语法树节点事实（ast-grep 的一条命中）。
+public struct AstNode {
+    public let file: String
+    public let startLine: Int64   // 1-based
+    public let endLine: Int64
+    /// 节点种类（ast-grep ruleId：fn / class / method …）
+    public let nodeRule: String
+    public let text: String
+
+    public init(file: String, startLine: Int64, endLine: Int64, nodeRule: String, text: String) {
+        this.file = file
+        this.startLine = startLine
+        this.endLine = endLine
+        this.nodeRule = nodeRule
+        this.text = text
+    }
+}
+
+/// 分析报告。
+public class ConfidenceReport {
+    public let root: String
+    public let score: Int64            // 0..100（100 = 未发现结构性疑点）
+    public let findings: ArrayList<Finding>
+    public let astUsed: Bool           // 语法树是否真的用上了
+    public let astNote: String         // 降级原因或覆盖说明
+    public let filesAnalyzed: Int64
+    public let filesTotal: Int64
+    public let byKind: ArrayList<(FlawKind, Int64)>
+
+    public init(root: String, score: Int64, findings: ArrayList<Finding>,
+                astUsed: Bool, astNote: String,
+                filesAnalyzed: Int64, filesTotal: Int64,
+                byKind: ArrayList<(FlawKind, Int64)>) {
+        this.root = root
+        this.score = score
+        this.findings = findings
+        this.astUsed = astUsed
+        this.astNote = astNote
+        this.filesAnalyzed = filesAnalyzed
+        this.filesTotal = filesTotal
+        this.byKind = byKind
+    }
+}
+
+// MARK: - 主流程
+
+/// 分析入口。`useAst=false` 或 ast-grep 不可用时走纯词法。
+public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport {
+    let findings = ArrayList<Finding>()
+    var astNodes = ArrayList<AstNode>()
+    var astUsed = false
+    var astNote = ""
+
+    if (useAst) {
+        match (runAstGrep(graph)) {
+            case Some(nodes) =>
+                astNodes = nodes
+                astUsed = true
+                // 覆盖度披露：多少文件真走了 AST、多少因语言降级
+                var astFiles = Int64(0)
+                var fallbackFiles = Int64(0)
+                let fallbackLangs = ArrayList<String>()
+                for (f in graph.files) {
+                    if (astGrepLang(f.lang).isEmpty()) {
+                        fallbackFiles += 1
+                        if (!fallbackLangs.contains(f.lang)) { fallbackLangs.add(f.lang) }
+                    } else {
+                        astFiles += 1
+                    }
+                }
+                astNote = "语法树：ast-grep (tree-sitter)，${astFiles} 文件走 AST、"
+                    + "命中 ${Int64(nodes.size)} 个结构节点"
+                if (fallbackFiles > 0) {
+                    astNote += "；${fallbackFiles} 文件因语言无 tree-sitter 语法降级为词法级（"
+                        + joinStrings(fallbackLangs, "、") + "）"
+                }
+            case None =>
+                astNote = "未检测到可用的语法树覆盖（ast-grep 未安装，或全部文件语言无 tree-sitter 语法）——"
+                    + "已降级为词法级分析；函数粒度信号（空体/嵌套/长度/重复体）缺失，其余信号不受影响"
+        }
+    } else {
+        astNote = "按调用方要求跳过语法树（--no-ast），仅词法级分析"
+    }
+
+    // ── ① 孤儿符号：定义了，全仓无引用（图数据直接支撑）──
+    detectOrphans(graph, findings)
+    // ── ② 命名可疑 ──
+    detectSuspiciousNames(graph, findings)
+    // ── ③ TODO 残留（按文件计数）──
+    detectTodos(graph, findings)
+    // ── ④ 函数粒度信号：有 AST 走 AST 节点，否则词法近似 ──
+    if (astUsed) {
+        detectFromAst(astNodes, findings)
+    } else {
+        detectLexicalFunctionSignals(graph, findings)
+    }
+    // ── ⑤ 重复函数体（同体哈希，需 AST 的准确边界）──
+    if (astUsed) {
+        detectDuplicateBodies(astNodes, findings)
+    }
+
+    // 排序：权重降序，同级按 file:line（确定性 + 重要的在前）
+    insertionSortBy(findings, { a, b =>
+        let wa = flawWeight(a.kind)
+        let wb = flawWeight(b.kind)
+        if (wa != wb) {
+            wa > wb
+        } else if (a.file != b.file) {
+            a.file < b.file
+        } else {
+            a.line < b.line
+        }
+    })
+    // 总量截断（披露进 astNote，不静默）
+    var truncatedNote = ""
+    if (Int64(findings.size) > CONF_MAX_FINDINGS) {
+        let extra = Int64(findings.size) - CONF_MAX_FINDINGS
+        while (Int64(findings.size) > CONF_MAX_FINDINGS) {
+            findings.remove(at: findings.size - 1)
+        }
+        truncatedNote = "；另有 ${extra} 条低权重疑点未列出（按权重截断）"
+    }
+
+    // 每类计数
+    // enum 作 HashMap 键需要 Hashable 派生；这里用 id 字符串当键（零依赖）
+    let counts = HashMap<String, Int64>()
+    let kindById = HashMap<String, FlawKind>()
+    for (f in findings) {
+        let kid = flawId(f.kind)
+        kindById[kid] = f.kind
+        match (counts.get(kid)) {
+            case Some(v) => counts[kid] = v + 1
+            case None => counts[kid] = 1
+        }
+    }
+    let byKind = ArrayList<(FlawKind, Int64)>()
+    for ((kid, v) in counts) {
+        match (kindById.get(kid)) {
+            case Some(k) => byKind.add((k, v))
+            case None => ()
+        }
+    }
+    insertionSortBy(byKind, { a, b =>
+        let ka = a[0]
+        let kb = b[0]
+        flawWeight(ka) > flawWeight(kb)
+    })
+
+    // 分数：100 − Σ权重，下限 0。文件数归一：大仓库少量疑点不该把分压死，
+    // 但也不该按比例稀释掉定性信号 —— 用 sqrt 型的温和归一（除以文件数平方根）。
+    var penalty: Int64 = 0
+    for (f in findings) { penalty += flawWeight(f.kind) }
+    let nFiles = Int64(graph.files.size)
+    var normalized: Float64 = Float64(penalty)
+    if (nFiles > 1) {
+        normalized = Float64(penalty) / sqrtApprox(Float64(nFiles))
+    }
+    var score = 100 - Int64(normalized)
+    if (score < 0) { score = 0 }
+
+    return ConfidenceReport(graph.root, score, findings, astUsed,
+                            astNote + truncatedNote, nFiles, nFiles, byKind)
+}
+
+/// 整数平方根的温和近似（牛顿迭代 8 轮，够用且确定）
+func sqrtApprox(x: Float64): Float64 {
+    if (x <= 0.0) { return 1.0 }
+    var g = x / 2.0
+    if (g < 1.0) { g = 1.0 }
+    var i = 0
+    while (i < 8) {
+        g = (g + x / g) / 2.0
+        i += 1
+    }
+    return g
+}

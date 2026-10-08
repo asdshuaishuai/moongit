@@ -187,8 +187,11 @@ public func buildGraph(root: String): CodeGraph {
         match (content) {
             case Some(text) =>
                 let seen = HashSet<String>()
+                var strState: Int64 = 0
                 for (line in text.lazySplit("\n")) {
-                    let t = stripComment(line)
+                    // 注释与字符串内的标识符都不算引用（与 scanSource 同一套）
+                    let (t, nextState) = stripCode(line, strState)
+                    strState = nextState
                     if (blankLine(t)) { continue }
                     forEachToken(t) { tok =>
                         // 同一文件里同一符号只计一次（复刻原 pairNames 的集合语义）

@@ -238,6 +238,8 @@ let KNOWN_FLAGS: Array<String> = [
     "--dir", "--limit", "--note", "--host", "--format",
     // 布尔
     "--dry-run", "--git-only", "--open", "--purge",
+    // confidence 专用（被动能力开关）
+    "--no-ast", "--llm",
 ]
 
 /// token 是否长得像 flag。负数（-5）不是 flag。
@@ -928,7 +930,7 @@ func cmdContext(rest: ArrayList<String>, ctx: CliContext): Int64 {
 /// 子命令：overview（默认）/ tree / symbol <名> / impact <名> / arch。
 /// arch 支持 --format html（Canvas 交互架构图，默认）/ mermaid / dot / json。
 func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
-    let subs = ["overview", "tree", "symbol", "impact", "arch"]
+    let subs = ["overview", "tree", "symbol", "impact", "arch", "confidence"]
     var sub = "overview"
     let args = ArrayList<String>()
     if (rest.size > 0 && subs.contains(rest[0])) {
@@ -1030,6 +1032,20 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
                     }
                     return 1
             }
+        case "confidence" =>
+            // 被动能力：只有用户显式执行才算（不是任何更新流程的一部分）
+            var useAst = true
+            var wantLlm = false
+            if (hasFlag(args, "--no-ast")) { useAst = false }
+            if (hasFlag(args, "--llm")) { wantLlm = true }
+            let report = analyzeConfidence(graph, useAst)
+            if (wantLlm) {
+                printOut(confidenceLlmPrompt(report, p.name))
+            } else if (ctx.json) {
+                printOut(Json.pretty(confidenceJson(report)))
+            } else {
+                printOut(confidenceText(report))
+            }
         case "arch" =>
             let arch = buildArch(graph)
             layoutArch(arch)
@@ -1047,10 +1063,14 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
                 payload = Json.pretty(archJson(arch, en))
             } else if (format == "html") {
                 payload = archCanvasHtml(arch, en)
+            } else if (format == "scene") {
+                // 场景 JSON（moongit-graph-scene v1）：几何/命中/动画时序的
+                // 数据层，供任何标准 Canvas2D API 移植实现驱动渲染
+                payload = Json.pretty(buildArchScene(arch, en))
             } else {
                 throw DgError.usage(T(
-                    "--format accepts html | mermaid | dot | json (got: ${format})",
-                    "--format 只支持 html | mermaid | dot | json（收到：${format}）"))
+                    "--format accepts html | mermaid | dot | json | scene (got: ${format})",
+                    "--format 只支持 html | mermaid | dot | json | scene（收到：${format}）"))
             }
             match (flagValue(args, "--out")) {
                 case Some(outPath) =>
@@ -1087,7 +1107,8 @@ func skillMarkdown(): String {
         + "工具：list_projects / get_project_context / get_project_status / get_dashboard / get_project_docs / "
         + "get_journal / run_shallow_update / run_deep_update / run_track / git_op / list_milestones / "
         + "milestone_add / milestone_action / add_project / "
-        + "codegraph_overview / codegraph_tree / codegraph_symbol / codegraph_impact / codegraph_arch")
+        + "codegraph_overview / codegraph_tree / codegraph_symbol / codegraph_impact / codegraph_arch / "
+        + "codegraph_confidence")
     ways.add("**CLI**（一次性问答/脚本）：`" + engine + " status --json`、`context [项目] --budget N`、`tools`、"
         + "`journal <项目>`、`dashboard --json`")
     let sb = StringBuilder()
@@ -1403,7 +1424,8 @@ func printHelp(): Unit {
         printOut("  mcp                      Run as an MCP server (stdio JSON-RPC; for Claude and other agent hosts)")
         printOut("  skill <print|install>    Print/install the agent Skill pack (--dir for the target directory)")
         printOut("  report [project] [--out F]  Export a Markdown progress report")
-        printOut("  graph [overview|tree|symbol|impact|arch] [project]")
+        printOut("  graph [overview|tree|symbol|impact|arch|confidence] [project]")
+        printOut("                           confidence: structural confidence report (--llm for the LLM review prompt)")
         printOut("                           Code graph: symbol index / relationship tree / impact /")
         printOut("                           interactive architecture canvas (--format html|mermaid|dot|json)")
         printOut("  config <list|get|set> [k] [v]  Configuration (AI preset, etc.)")
@@ -1450,7 +1472,8 @@ func printHelp(): Unit {
     printOut("  mcp                      以 MCP 服务器运行（stdio JSON-RPC；供 Claude 等 agent 宿主接入）")
     printOut("  skill <print|install>    输出/安装 agent Skill 教学包（--dir 指定目录）")
     printOut("  report [项目] [--out F]  导出 Markdown 进度报告")
-    printOut("  graph [overview|tree|symbol|impact|arch] [项目]")
+    printOut("  graph [overview|tree|symbol|impact|arch|confidence] [项目]")
+    printOut("                           confidence：代码置信度报告（--llm 出 LLM 复核提示词）")
     printOut("                           代码图谱：符号索引/关系树/影响面/技术架构图")
     printOut("                           （arch 用 --format html|mermaid|dot|json，html 为 Canvas 交互图）")
     printOut("  config <list|get|set> [k] [v]  配置（AI 预设等）")

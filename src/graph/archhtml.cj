@@ -46,6 +46,8 @@ public struct ArchUi {
     public let lineWord: String
     public let layerWord: String
     public let closeHint: String
+    public let moduleWord: String
+    public let root: String
 
     public init(en: Bool) {
         if (en) {
@@ -63,6 +65,8 @@ public struct ArchUi {
             lineWord = "lines"
             layerWord = "Layer"
             closeHint = "Esc to clear"
+            moduleWord = "external module"
+            root = "Architecture"
         } else {
             title = "技术架构"
             sub = "moonGit 引擎（仓颉）确定性计算 · 零依赖单文件"
@@ -78,6 +82,8 @@ public struct ArchUi {
             lineWord = "行"
             layerWord = "层"
             closeHint = "Esc 取消选中"
+            moduleWord = "外部模块"
+            root = "架构总览"
         }
     }
 }
@@ -387,6 +393,30 @@ func renderJs(en: Bool): String {
     sb.append("    if (hm && DATA.drilldown[decodeURIComponent(hm[1])]) { setLevel('mod', decodeURIComponent(hm[1])); }\n")
     sb.append("  } catch (_) {}\n")
     sb.append("  loop();\n")
+    // ── 注入式驱动入口：契约的正式出口 ──
+    // 任何提供标准 Canvas2D API 的实现（OffscreenCanvas / node-canvas /
+    // Skia 绑定 / CoreGraphics 包装）都可以把自己的 ctx 传给 renderTo，
+    // draw() 只调用上文审计过的那组标准方法，绘制路径不碰 DOM。
+    sb.append("  window.MoongitArch = {\n")
+    sb.append("    scene: DATA,\n")
+    sb.append("    canvas: cv,\n")
+    sb.append("    setTheme: function (d) { dark = d; document.body.className = dark ? 'dark' : 'light'; },\n")
+    sb.append("    fit: fit,\n")
+    sb.append("    draw: function (now) { draw(now || performance.now()); },\n")
+    sb.append("    renderTo: function (ctx2, w, h, now) {\n")
+    sb.append("      var keep = ctx; var ow = innerWidth; var oh = innerHeight;\n")
+    sb.append("      ctx = ctx2;\n")
+    sb.append("      try {\n")
+    sb.append("        Object.defineProperty(window, 'innerWidth', { value: w, configurable: true });\n")
+    sb.append("        Object.defineProperty(window, 'innerHeight', { value: h, configurable: true });\n")
+    sb.append("        draw(now || performance.now());\n")
+    sb.append("      } finally {\n")
+    sb.append("        Object.defineProperty(window, 'innerWidth', { value: ow, configurable: true });\n")
+    sb.append("        Object.defineProperty(window, 'innerHeight', { value: oh, configurable: true });\n")
+    sb.append("        ctx = keep;\n")
+    sb.append("      }\n")
+    sb.append("    }\n")
+    sb.append("  };\n")
     sb.append("})();\n")
     return sb.toString()
 }

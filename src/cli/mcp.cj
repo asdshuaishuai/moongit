@@ -93,6 +93,7 @@ public func mcpToolList(): JsonValue {
     arr.add(mcpTool("codegraph_symbol", "符号定位：定义处 + 词法引用文件", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"])))
     arr.add(mcpTool("codegraph_impact", "影响面分析：符号定义 + 引用文件 + 受影响符号（词法文件级粒度，非语义调用图）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"])))
     arr.add(mcpTool("codegraph_arch", "技术架构图：模块聚合 + 分层判定。format=html（Canvas 交互图，单文件零依赖）/ mermaid / dot / json", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "html|mermaid|dot|json，默认 html")], ["name"])))
+    arr.add(mcpTool("codegraph_confidence", "代码置信度：结构性疑点（孤儿/占位/吞错/魔法数/重复体…）的确定性度量。被动能力——只在本工具被显式调用时分析。format=json|text|llm（llm 产出可直接喂模型的逐条复核提示词）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "json|text|llm，默认 json")], ["name"])))
     let o = Json.obj()
     Json.set(o, "tools", JArr(arr))
     return o
@@ -301,6 +302,22 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                 match (impactOf(g, sym)) {
                     case Some(res) => mcpOk(Json.pretty(impactJson(res)))
                     case None => mcpErr("symbol not found: ${sym}")
+                }
+            case "codegraph_confidence" =>
+                let p = mcpRequireProject(getStr("name"))
+                var format = "json"
+                let f = getStr("format")
+                if (!f.isEmpty()) { format = f }
+                let g = buildGraph(p.path)
+                let report = analyzeConfidence(g, true)
+                if (format == "text") {
+                    mcpOk(confidenceText(report))
+                } else if (format == "llm") {
+                    mcpOk(confidenceLlmPrompt(report, p.name))
+                } else if (format == "json") {
+                    mcpOk(Json.pretty(confidenceJson(report)))
+                } else {
+                    mcpErr("format accepts json | text | llm (got: ${format})")
                 }
             case "codegraph_arch" =>
                 let p = mcpRequireProject(getStr("name"))

@@ -166,6 +166,103 @@ public func tokenize(line: String): ArrayList<String> {
     return out
 }
 
+/// 代码清洗：把注释与字符串字面量从扫描视野里摘掉。
+///
+/// ⚠️ 两轮实跑暴露的三个坑，全在这里修：
+///   ① 内嵌 JS 的大段字符串：`function m()` 被当成仓颉声明（假阳性「单字符名」）
+///   ② 文档注释里的裸 `"`（如「遇未转义 " 结束」）把状态机带进字符串状态，
+///      后续所有行被误吞 —— 所以**整行注释必须先行跳过**，不参与剥串
+///   ③ 行尾注释里的引号同理 —— 代码态遇到 `//` 直接截断，不再向后看
+///
+/// 状态：0 = 代码；1 = 单行字符串内（EOL 自动复位——常规串不跨行）；
+///       2 = 多行字符串内（碰 """ 才结束）。
+/// 返回 (清洗后的代码, 新状态)。
+public func stripCode(line: String, inState: Int64): (String, Int64) {
+    let trimmed = line.trimAscii()
+    // ① 整行注释：不参与剥串、不改状态（文档注释里的引号不该影响代码扫描）
+    if (wholeLineComment(trimmed)) {
+        return ("", inState)
+    }
+    let n = Int64(line.size)
+    let out = ArrayList<UInt8>()
+    var state = inState
+    var i: Int64 = 0
+    while (i < n) {
+        let b = line[i]
+        if (state == 0) {
+            // 行内注释：截断（②的修法）
+            if (b == 47 && i + 1 < n && line[i + 1] == 47) { break }   // //
+            // 多行字符串开
+            if (b == 34 && i + 2 < n && line[i + 1] == 34 && line[i + 2] == 34) {
+                var closedSameLine = false
+                var j = i + 3
+                while (j + 2 < n) {
+                    if (line[j] == 34 && line[j + 1] == 34 && line[j + 2] == 34) {
+                        closedSameLine = true
+                        break
+                    }
+                    j += 1
+                }
+                if (closedSameLine) {
+                    i = j + 3
+                    continue
+                }
+                state = 2
+                i += 3
+                continue
+            }
+            if (b == 34) {
+                state = 1
+                i += 1
+                continue
+            }
+            if (b == 39) {
+                var j = i + 1
+                var done = false
+                while (j < n) {
+                    if (line[j] == 92) { j += 2; continue }
+                    if (line[j] == 39) { done = true; break }
+                    j += 1
+                }
+                i = if (done) { j + 1 } else { n }
+                continue
+            }
+            out.add(b)
+            i += 1
+        } else if (state == 1) {
+            if (b == 92) { i += 2; continue }
+            if (b == 34) {
+                state = 0
+                i += 1
+                continue
+            }
+            i += 1
+        } else {
+            if (b == 34 && i + 2 < n && line[i + 1] == 34 && line[i + 2] == 34) {
+                state = 0
+                i += 3
+                continue
+            }
+            i += 1
+        }
+    }
+    // ③ 单行串不跨行：行尾仍在串内 → 复位（否则一个孤儿引号吞掉整个文件）
+    if (state == 1) { state = 0 }
+    return (fromUtf8Lossy(out.toArray()), state)
+}
+
+/// 整行注释前缀判定（与 stripComment 的入口条件一致）
+func wholeLineComment(trimmed: String): Bool {
+    if (trimmed.isEmpty()) { return false }
+    let b0 = trimmed[0]
+    let b1: UInt8 = if (trimmed.size > 1) { trimmed[1] } else { 0 }
+    if (b0 == 47 && (b1 == 47 || b1 == 42)) { return true }   // // /*
+    if (b0 == 42 && b1 != 47) { return true }                  // * 续行
+    if (b0 == 35) { return true }                              // #
+    if (b0 == 45 && b1 == 45) { return true }                  // --
+    return false
+}
+
 /// 去掉行内注释（启发式：整行注释前缀 + `//` 截断）。
 /// 字符串里的 `//`（如 URL）会被误截 —— 词法级提取可接受的噪音，
 /// 换取的是零字符串状态机复杂度；误截的后果是**少**一个符号，不会编一个。
@@ -298,6 +395,22 @@ case Some(kind) =>
 
 /// 从一行里取 import 的模块名。返回空串 = 不是 import 行。
 func scanImportLine(t: String): String {
+    // C/C++ `#include "x.h"` → x.h 的文件名键（系统头 <...> 不在仓内，跳过）
+    if (t.startsWith("#include")) {
+        let q = quotedPart(t)
+        if (!q.isEmpty()) {
+            let segs = q.split("/")
+            let base = segs[segs.size - 1]
+            // 去扩展名：与 moduleIndex 的「文件名去扩展」键一致（Util.h → Util）
+            let dot = base.lastIndexOf(".")
+            match (dot) {
+                case Some(i) => if (i > 0) { return base[0..i] }
+                case None => ()
+            }
+            return base
+        }
+        return ""
+    }
     if (t.startsWith("import ")) {
         // go：import "a/b/c" → 取引号内最后一段
         let q = quotedPart(t)
@@ -365,30 +478,28 @@ public func scanSource(content: String): SourceFacts {
     let seenImports = HashSet<String>()
     var lineNo: Int64 = 0
     var lineCount: Int64 = 0
+    var strState: Int64 = 0
     // lazySplit：不物化全部行（split 会为整文件一次性分配全部行字符串）
     for (raw in content.lazySplit("\n")) {
         lineNo += 1
         lineCount = lineNo
-        let t = stripComment(raw)
+        // stripCode 同时剥注释与字符串字面量（含跨行状态）——见函数头的三个坑
+        let (t, nextState) = stripCode(raw, strState)
+        strState = nextState
+        let imp = scanImportLine(t.trimAscii())
+        if (!imp.isEmpty() && !seenImports.contains(imp)) {
+            seenImports.add(imp)
+            imports.add(imp)
+        }
         if (blankLine(t)) { continue }
         // 前置过滤：不含声明关键词的行免去 tokenize 的整行分配
         if (!mayDeclare(t)) {
-            let imp0 = scanImportLine(t.trimAscii())
-            if (!imp0.isEmpty() && !seenImports.contains(imp0)) {
-                seenImports.add(imp0)
-                imports.add(imp0)
-            }
             continue
         }
         match (scanDeclLine(tokenize(t))) {
             case Some((kind, name)) =>
                 symbols.add(SymDecl(kind, name, lineNo))
             case None => ()
-        }
-        let imp = scanImportLine(t.trimAscii())
-        if (!imp.isEmpty() && !seenImports.contains(imp)) {
-            seenImports.add(imp)
-            imports.add(imp)
         }
     }
     return SourceFacts(symbols, imports, lineCount)
