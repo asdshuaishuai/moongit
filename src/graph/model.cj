@@ -42,7 +42,9 @@ public func symKindId(k: SymKind): String {
     }
 }
 
-/// 人类可读标签（树/文本输出用）。
+/// 人类可读标签（zh）。
+/// ⚠️ 当前**无调用方**：树/文本输出用的是 `symKindId`（语言中立的短标识，与 JSON 契约同名）。
+/// 保留它只为 SymKind 的人读镜像 —— **不要**再写「树/文本输出用」这类没兑现的注释。
 public func symKindLabel(k: SymKind): String {
     match (k) {
         case Func => "函数"

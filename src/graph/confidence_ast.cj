@@ -101,19 +101,6 @@ func catchKindsFor(astLang: String): Array<String> {
 
 // MARK: - 规则集与调用
 
-/// AST 分析的覆盖度事实（诚实披露用）。
-public struct AstCoverage {
-    public let astFiles: Int64       // 真的走了 AST 的文件数
-    public let fallbackFiles: Int64  // 因语言无 tree-sitter 语法而降级的文件数
-    public let fallbackLangs: String // 降级语言（去重列出）
-
-    public init(astFiles: Int64, fallbackFiles: Int64, fallbackLangs: String) {
-        this.astFiles = astFiles
-        this.fallbackFiles = fallbackFiles
-        this.fallbackLangs = fallbackLangs
-    }
-}
-
 /// 一次 ast-grep scan 的产出（结构化节点，按文件分组好了）。
 ///
 /// 实现：把规则集写成临时 YAML（ast-grep 的规则语法比 --pattern 表达力强，

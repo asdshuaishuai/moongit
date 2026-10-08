@@ -441,17 +441,6 @@ public func runTrack(project: ProjectEntry, config: Config, source: String): Upd
     return runUpdate(project, config, opts)
 }
 
-func readPreviousDocs(root: String, facts: RepoFacts, maxChars: Int64): ArrayList<(String, String)> {
-    let out = ArrayList<(String, String)>()
-    for (file in facts.docsPresent) {
-        match (readFileText("${root}/${file}")) {
-            case Some(c) => out.add((file, truncateChars(c, maxChars)))
-            case None => ()
-        }
-    }
-    return out
-}
-
 /// 分支基线：把「哪些分支、各自 head 到哪、摘要是什么」写进 progress。
 ///
 /// runUpdate 与 runDeep 都要做这件事，但以前只有 runUpdate 做：

@@ -304,14 +304,6 @@ public func runDeep(project: ProjectEntry, config: Config, opts: DeepOptions): D
     })
 }
 
-func pickSection(primary: String, fallback: String): String {
-    let trimmed = primary.trimAscii()
-    if (trimmed.size > 40) {
-        return tidyMarkdown(trimmed)
-    }
-    return fallback
-}
-
 func targetFiles(targets: ArrayList<(String, ArrayList<(String, String)>, String)>): ArrayList<String> {
     let out = ArrayList<String>()
     for ((f, _, _) in targets) {

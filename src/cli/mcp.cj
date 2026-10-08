@@ -155,9 +155,6 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
             case None => return ""
         }
     }
-    func getInt(key: String, fallback: Int64): Int64 {
-        return Json.intAt(args, key, fallback)
-    }
     // 严格的整数取参。**本文件所有数值参数都必须走这里**。
     //
     // 为什么不能用 Json.intAt：它对 JNum 一律 Int64(n) 静默截断，
