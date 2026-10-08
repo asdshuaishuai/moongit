@@ -296,5 +296,17 @@ open(p, "w", encoding="utf-8").write(s)
 PY
 check "NC12 错峰入场 ord 未补" testBuildGraphAndImpact src/graph/archhtml.cj "$b"
 
+# ── NC13 · stripCode 快路径漏判引号（把字符串当代码留下）──
+b="$(md5_of src/graph/extract.cj)"
+python3 - <<'PY'
+p = "src/graph/extract.cj"
+s = open(p, encoding="utf-8").read()
+old = "            if (b == 34 || b == 39 || b == 47) { bad = true }   // \" ' /"
+new = "            if (b == 39 || b == 47) { bad = true }   // ' /"
+assert old in s, "NC13 锚点失配"
+open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
+PY
+check "NC13 stripCode 快路径漏判引号" testStripCodeFastPathMatchesFullScan src/graph/extract.cj "$b"
+
 echo "== 负控结束；失败项：$FAILS =="
 [ "$FAILS" = "0" ]

@@ -178,12 +178,34 @@ public func tokenize(line: String): ArrayList<String> {
 ///       2 = 多行字符串内（碰 """ 才结束）。
 /// 返回 (清洗后的代码, 新状态)。
 public func stripCode(line: String, inState: Int64): (String, Int64) {
+    let n = Int64(line.size)
+    // ⚡ 零拷贝快路径（与 stripComment 同款）：**代码态**且整行不含引号/斜杠、
+    // 行首也不是 `#` / `*`续行 / `--` ⇒ 一定原样输出、状态仍为 0，直接返回不分配。
+    // 绝大多数代码行落在这里 —— 原实现每行无条件分配一个 ArrayList + 一份字符串。
+    if (inState == 0) {
+        var bad = false
+        var s: Int64 = 0
+        while (s < n && (line[s] == 32 || line[s] == 9)) { s += 1 }
+        if (s < n) {
+            let b0 = line[s]
+            let b1: UInt8 = if (s + 1 < n) { line[s + 1] } else { 0 }
+            if (b0 == 35) { bad = true }                  // #
+            if (b0 == 42 && b1 != 47) { bad = true }      // * 续行
+            if (b0 == 45 && b1 == 45) { bad = true }      // --
+        }
+        var i: Int64 = 0
+        while (!bad && i < n) {
+            let b = line[i]
+            if (b == 34 || b == 39 || b == 47) { bad = true }   // " ' /
+            i += 1
+        }
+        if (!bad) { return (line, 0) }
+    }
     let trimmed = line.trimAscii()
     // ① 整行注释：不参与剥串、不改状态（文档注释里的引号不该影响代码扫描）
     if (wholeLineComment(trimmed)) {
         return ("", inState)
     }
-    let n = Int64(line.size)
     let out = ArrayList<UInt8>()
     var state = inState
     var i: Int64 = 0

@@ -511,3 +511,22 @@ func testAstDetectionIsOrderIndependent(): Unit {
     @Assert(fa[5].line == 25)
 }
 
+@Test
+func testStripCodeFastPathMatchesFullScan(): Unit {
+    // stripCode 新增了「代码态、整行无引号/斜杠、行首非注释起始 ⇒ 原样返回」的零拷贝快路径。
+    // 它必须与逐字节完整扫描**结果一致**（否则是行为变更，不是优化）。
+    let ins = ["let x = 1", "// comment", "/* block", "# shell", "  * doc", "-- sql",
+        "code // tail", "let s = \"hi\"", "let s = \"hi", "let c = 'x'",
+        "let s = \"\"\"abc", "\" ; more", "tail"]
+    let sts: Array<Int64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2]
+    let wantOut = ["let x = 1", "", "", "", "", "", "code ", "let s = ", "let s = ", "let c = ",
+        "let s = ", " ; more", ""]
+    let wantSt: Array<Int64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2]
+    @Assert(ins.size == 13)
+    for (i in 0..ins.size) {
+        let (out, ns) = stripCode(ins[i], sts[i])
+        @Assert(out == wantOut[i])
+        @Assert(ns == wantSt[i])
+    }
+}
+
