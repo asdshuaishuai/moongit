@@ -81,12 +81,13 @@ func themeJson(): JsonValue {
 
 // MARK: - 视图构建（一个视图 = 一份 shapes/particles/hits/panels）
 
-/// 单视图最多导出的边数。
-/// scene 的每条边会展开成「渐变形状 + 流动粒子」两组对象 —— 上万条边在小堆上会直接
-/// `OutOfMemoryError`（实测 deepGit / deepOrca / deepDolphin 的 `--format scene` 全部崩）。
-/// 上限之外按**权重降序**保留（留最重的依赖 —— 有原则的截断，不是按遍历顺序砍），
+/// 单视图最多导出的边数 —— **兜底**，不是容量调节手段。
+/// 容量由运行期堆决定（`cjHeapSize`，见 README「已知边界」）；这项上限只防御
+/// 「病态规模的视图」把输出炸掉：scene 的每条边会展开成「渐变形状 + 流动粒子」两组对象。
+/// 阈值取得刻意宽：实测最"正常的大仓库"单视图 ≤560 边、极端单视图 8836 边 —— 都不会被截断。
+/// 一旦真的触发，按**权重降序**保留（留最重的依赖 —— 有原则的截断），
 /// 并在视图里**恒发** `edgesDropped`（同不变量 33：截断必须披露）。
-public let SCENE_MAX_EDGES_PER_VIEW: Int64 = 600
+public let SCENE_MAX_EDGES_PER_VIEW: Int64 = 10000
 
 /// 取视图要导出的边：按 (权重↓, from↑, to↑) 排序后截断到 max 条。返回 (保留, 丢弃数)。
 func sceneEdges(edges: ArrayList<(String, String, Int64)>, max: Int64): (ArrayList<(String, String, Int64)>, Int64) {

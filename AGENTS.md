@@ -2945,6 +2945,24 @@ util → (kernel | graph) → ai → flow → cli
     推广：给文案建了一个来源（字段 / 表）之后，必须**把该文案的所有字面量逐处替换掉**；
     判据要钉「英文输出里不许出现中文」（`!html.contains("外部模块")`），而不是钉「用了哪个字段」。
 
+133. **「跑得动」在源码里看不见 —— 运行时的堆上限是环境变量，删掉它零成本、零告警。**
+    `graph arch --format json|html|scene` 在较大仓库上 `OutOfMemoryError`。查到底**不是算法问题**：
+    仓颉运行时的堆上限由 `cjHeapSize` 控制，**默认值偏小**，而且**必须带单位**（`kb`/`mb`/`gb`；
+    范围 `[4MB, 系统内存]`）—— 实测**不带单位的值被静默忽略**（只在日志里留一行
+    `Unsupported cjHeapSize parameter…`），于是得到「我设了却没用」这种最难查的症状。
+    该变量只在**进程启动前**生效，程序自己改不了 ⇒ 只能由启动器设：
+    `scripts/moongit.sh` 与 `install.sh` 写入的包装脚本默认注入 `cjHeapSize=1gb`（不覆盖用户设置）。
+    证据：deepOrca 的 `arch --format json` 在默认堆下**时崩时通**（rc 1,0,0,1,1）、`scene` 恒崩；
+    `cjHeapSize=1gb` 下三者恒定通过；最小可用 `512mb`。
+    推广：
+    - **先怀疑环境，再改算法**。OOM 先看堆上限（这次的真因），别一头扎进"减少分配"：
+      我先做了两轮分配优化（`stripCode` 零拷贝快路径），RSS 基本没动 —— 因为峰值是堆而非热点。
+    - **「OOM 就上并发」是错的直觉**：并发是**延迟**工具，会**放大**峰值内存（N 个 worker 同时在飞）。
+      这里图构建只要 **0.25s** —— 既不慢，也不该拿并发去治内存。
+    - 这类**环境级**修复在源码里没有任何痕迹，所以配一条静态守卫
+      `scripts/check-launcher-heap.sh`（断言两个启动器都设了它、且装的是包装脚本），
+      并在脚本注释里**如实标注「源码级保证，不是行为级保证」**（同不变量 78）。
+
 
 ## 常用命令
 
@@ -2963,6 +2981,9 @@ cjpm test
 
 # 负控：判据必须能被真缺陷打红（注入 → 跑对应用例 → 期望红 → 还原）
 sh scripts/nc-graph-confidence.sh
+
+# 环境级守卫：启动器必须给仓颉运行时一个够用的堆（cjHeapSize）
+sh scripts/check-launcher-heap.sh
 
 # macOS 客户端（独立 SwiftPM 项目；主面板 + 菜单栏 bar，纯展示层）
 cd deepDolphin/macos

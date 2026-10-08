@@ -94,9 +94,23 @@ fi
 
 # ------------------------------- 安装 CLI -------------------------------
 mkdir -p "$PREFIX"
-cp "$BIN" "$PREFIX/moongit"
+# ⚠️ 装的是**包装脚本**，不是裸二进制。原因：仓颉运行时的堆上限由环境变量 `cjHeapSize`
+# 决定（**必须带单位**，如 `1gb`；范围 [4MB, 系统内存]），而它只在**进程启动前**生效 ——
+# 程序自己改不了，只能在启动器这一层设。默认堆偏小：大仓库的 `graph arch --format
+# json|html|scene` 会 `OutOfMemoryError`（实测 deepGit / deepOrca / ddolphin 默认堆下崩、
+# `cjHeapSize=1gb` 下恒通过）。客户端按 `~/.local/bin/moongit` 发现引擎，也会走到这里。
+cp "$BIN" "$PREFIX/.moongit-bin"
+chmod 755 "$PREFIX/.moongit-bin"
+cat > "$PREFIX/moongit" <<'WRAP'
+#!/bin/sh
+# moonGit 启动器：给仓颉运行时一个够用的堆（只在未设置时设，尊重调用方的选择）。
+if [ -z "${cjHeapSize:-}" ]; then export cjHeapSize=1gb; fi
+SELF="$0"
+case "$SELF" in */*) ;; *) SELF="$(command -v "$SELF" 2>/dev/null || echo "$SELF")" ;; esac
+exec "$(dirname "$SELF")/.moongit-bin" "$@"
+WRAP
 chmod 755 "$PREFIX/moongit"
-echo "✓ 已安装：$PREFIX/moongit"
+echo "✓ 已安装：$PREFIX/moongit（启动器；真实二进制：$PREFIX/.moongit-bin）"
 
 # 兼容软链：老脚本、老习惯里敲的还是 `deepgit`。
 #

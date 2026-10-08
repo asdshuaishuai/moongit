@@ -19,4 +19,11 @@ if [ ! -x "$BIN" ]; then
   (cd "$ENGINE" && cjpm build 2>&1 | tail -2)
 fi
 
+# 仓颉运行时的**堆上限**由 `cjHeapSize` 决定（必须带单位，如 `1gb`；取值范围 [4MB, 系统内存]）。
+# 默认值偏小：大仓库的 `graph arch --format json|html|scene` 会 `OutOfMemoryError`
+# （实测 deepGit / deepOrca / ddolphin 在默认堆下崩，`cjHeapSize=1gb` 下恒通过）。
+# 该变量只在**进程启动前**生效 —— 程序自己改不了，所以只能在启动器这一层设。
+# 用户/调用方已显式设置时不覆盖。
+[ -z "${cjHeapSize:-}" ] && export cjHeapSize=1gb
+
 exec "$BIN" "$@"

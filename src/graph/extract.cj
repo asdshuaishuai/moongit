@@ -179,27 +179,20 @@ public func tokenize(line: String): ArrayList<String> {
 /// 返回 (清洗后的代码, 新状态)。
 public func stripCode(line: String, inState: Int64): (String, Int64) {
     let n = Int64(line.size)
-    // ⚡ 零拷贝快路径（与 stripComment 同款）：**代码态**且整行不含引号/斜杠、
-    // 行首也不是 `#` / `*`续行 / `--` ⇒ 一定原样输出、状态仍为 0，直接返回不分配。
-    // 绝大多数代码行落在这里 —— 原实现每行无条件分配一个 ArrayList + 一份字符串。
+    // ⚡ 零拷贝快路径：**代码态且整行无引号** ⇒ 结果等价于「只剥注释」，
+    // 用字节切片直接给出，不再分配一个 `ArrayList<UInt8>` + 拷一份字符串。
+    // 覆盖绝大多数代码行（纯代码行、以及带 `//` / `#` 注释的行）。
+    // 实测动机：`graph tree deepAutoTest --json` 仅 0.25s，却在一次构建里吃掉 137 MB ——
+    // 峰值不是「算得慢」，是**逐行分配**把 GC 峰值推上去的（并发只会同时放大它）。
     if (inState == 0) {
-        var bad = false
-        var s: Int64 = 0
-        while (s < n && (line[s] == 32 || line[s] == 9)) { s += 1 }
-        if (s < n) {
-            let b0 = line[s]
-            let b1: UInt8 = if (s + 1 < n) { line[s + 1] } else { 0 }
-            if (b0 == 35) { bad = true }                  // #
-            if (b0 == 42 && b1 != 47) { bad = true }      // * 续行
-            if (b0 == 45 && b1 == 45) { bad = true }      // --
-        }
+        var hasQuote = false
         var i: Int64 = 0
-        while (!bad && i < n) {
+        while (i < n) {
             let b = line[i]
-            if (b == 34 || b == 39 || b == 47) { bad = true }   // " ' /
+            if (b == 34 || b == 39) { hasQuote = true; break }   // " 或 '
             i += 1
         }
-        if (!bad) { return (line, 0) }
+        if (!hasQuote) { return (stripLineComment(line), 0) }
     }
     let trimmed = line.trimAscii()
     // ① 整行注释：不参与剥串、不改状态（文档注释里的引号不该影响代码扫描）
@@ -271,6 +264,29 @@ public func stripCode(line: String, inState: Int64): (String, Int64) {
     // ③ 单行串不跨行：行尾仍在串内 → 复位（否则一个孤儿引号吞掉整个文件）
     if (state == 1) { state = 0 }
     return (fromUtf8Lossy(out.toArray()), state)
+}
+
+/// 只剥注释、不处理字符串状态 —— 供 `stripCode` 的**无引号快路径**使用。
+/// 规则必须与 `stripCode` 状态 0 逐字等价（尤其 `*/` 开头**不算**整行注释，
+/// 那是它与 `stripComment` 的一处既有差异）。零拷贝：无注释时原样返回。
+func stripLineComment(line: String): String {
+    let n = Int64(line.size)
+    var s: Int64 = 0
+    while (s < n && (line[s] == 32 || line[s] == 9)) { s += 1 }
+    if (s < n) {
+        let b0 = line[s]
+        let b1: UInt8 = if (s + 1 < n) { line[s + 1] } else { 0 }
+        if (b0 == 47 && (b1 == 47 || b1 == 42)) { return "" }   // // 或 /*
+        if (b0 == 42 && b1 != 47) { return "" }                 // * 续行（`*/` 不算）
+        if (b0 == 35) { return "" }                             // #
+        if (b0 == 45 && b1 == 45) { return "" }                 // --
+    }
+    var i: Int64 = 0
+    while (i + 1 < n) {
+        if (line[i] == 47 && line[i + 1] == 47) { return line[0..i] }   // 行内 //
+        i += 1
+    }
+    return line
 }
 
 /// 整行注释前缀判定（与 stripComment 的入口条件一致）

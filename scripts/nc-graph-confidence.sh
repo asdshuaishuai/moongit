@@ -301,8 +301,8 @@ b="$(md5_of src/graph/extract.cj)"
 python3 - <<'PY'
 p = "src/graph/extract.cj"
 s = open(p, encoding="utf-8").read()
-old = "            if (b == 34 || b == 39 || b == 47) { bad = true }   // \" ' /"
-new = "            if (b == 39 || b == 47) { bad = true }   // ' /"
+old = "            if (b == 34 || b == 39) { hasQuote = true; break }   // \" 或 '"
+new = "            if (b == 39) { hasQuote = true; break }   // '"
 assert old in s, "NC13 锚点失配"
 open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
 PY
