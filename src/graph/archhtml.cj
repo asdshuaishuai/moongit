@@ -190,8 +190,11 @@ func renderJs(en: Bool): String {
     sb.append("  var level = { mode: 'arch', id: '' };\n")
     sb.append("  var sel = null; var hover = null; var layersOn = {};\n")
     sb.append("  var byId = {};\n")
-    sb.append("  DATA.modules.forEach(function (m) { byId[m.id] = m; layersOn[m.layer] = true; m._a = 0; m._s = 1; });\n")
-    sb.append("  Object.keys(DATA.drilldown).forEach(function (k) { DATA.drilldown[k].nodes.forEach(function (n) { n._a = 0; n._s = 1; }); });\n")
+    // ⚠️ `_ord` 必须在这里补：draw() 读它做错峰入场（`(m._ord || 1)`），
+    // 而 archJson 的节点形状里**没有 ord 字段**（那是 scene 出口才有的）——
+    // 不补的话恒取 1，错峰静默退化成「所有节点同一延迟」（同不变量 129）。
+    sb.append("  DATA.modules.forEach(function (m, i) { byId[m.id] = m; layersOn[m.layer] = true; m._a = 0; m._s = 1; m._ord = i + 1; });\n")
+    sb.append("  Object.keys(DATA.drilldown).forEach(function (k) { DATA.drilldown[k].nodes.forEach(function (n, i) { n._a = 0; n._s = 1; n._ord = i + 1; }); });\n")
     sb.append("  var PAL = {\n")
     sb.append("    dark: { bg0:'#0d1526', bg1:'#080d1a', grid:'#1a2740', text:'#e8eef8', muted:'#8b9bb4', border:'#263650', arrow:'#64748b', accent:'#34d399',\n")
     sb.append("      cols:['#38bdf8','#a78bfa','#34d399','#fbbf24','#8ea3bd'], fills:['rgba(56,189,248,0.10)','rgba(167,139,250,0.10)','rgba(52,211,153,0.10)','rgba(251,191,36,0.08)','rgba(142,163,189,0.08)'],\n")

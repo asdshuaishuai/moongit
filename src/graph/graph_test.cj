@@ -257,6 +257,11 @@ case Some(res) =>
         @Assert(!htmlEn.contains("外部模块"))
         @Assert(!htmlEn.contains("架构总览"))
         @Assert(htmlEn.contains("external module"))
+
+        // 内嵌 JS 读 `m._ord` 做错峰入场，而 archJson 的节点形状里没有 `ord` ——
+        // 必须在初始化时补上，否则 `(m._ord || 1)` 恒为 1、错峰静默退化成常量（同不变量 129）。
+        @Assert(html.contains("m._ord = i + 1"))
+        @Assert(html.contains("n._ord = i + 1"))
     } finally {
         removeTree(root)
     }

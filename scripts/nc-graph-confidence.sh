@@ -281,5 +281,20 @@ open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
 PY
 check "NC11 架构图 JS 硬编码中文" testBuildGraphAndImpact src/graph/archhtml.cj "$b"
 
+# ── NC12 · 内嵌 JS 不再补 m._ord / n._ord（错峰入场退化成常量）──
+b="$(md5_of src/graph/archhtml.cj)"
+python3 - <<'PY'
+p = "src/graph/archhtml.cj"
+s = open(p, encoding="utf-8").read()
+old = 'm._s = 1; m._ord = i + 1; });'
+new = 'm._s = 1; });'
+old2 = 'n._s = 1; n._ord = i + 1; });'
+new2 = 'n._s = 1; });'
+assert old in s and old2 in s, "NC12 锚点失配"
+s = s.replace(old, new, 1).replace(old2, new2, 1)
+open(p, "w", encoding="utf-8").write(s)
+PY
+check "NC12 错峰入场 ord 未补" testBuildGraphAndImpact src/graph/archhtml.cj "$b"
+
 echo "== 负控结束；失败项：$FAILS =="
 [ "$FAILS" = "0" ]
