@@ -250,6 +250,13 @@ case Some(res) =>
         let scene = buildArchScene(arch, false)
         let fp = Json.getOr(Json.getOr(scene, "panels"), "module:util:util/text.cj")
         @Assert(Json.arrAt(fp, "in").size > 0 || Json.arrAt(fp, "out").size > 0)
+
+        // i18n：英文模式（cli 按 config.language 传 en=true）下内嵌 JS 不得出现中文 ——
+        // 原实现把 MODULEW / ROOTW 硬编码成「外部模块」「架构总览」。
+        let htmlEn = archCanvasHtml(arch, true)
+        @Assert(!htmlEn.contains("外部模块"))
+        @Assert(!htmlEn.contains("架构总览"))
+        @Assert(htmlEn.contains("external module"))
     } finally {
         removeTree(root)
     }

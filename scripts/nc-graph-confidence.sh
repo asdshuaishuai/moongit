@@ -269,5 +269,17 @@ open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
 PY
 check "NC10 AST 检测依赖输入顺序" testAstDetectionIsOrderIndependent src/graph/confidence_detect.cj "$b"
 
+# ── NC11 · 架构图 JS 的 MODULEW/ROOTW 退回硬编码中文（英文模式出中文）──
+b="$(md5_of src/graph/archhtml.cj)"
+python3 - <<'PY'
+p = "src/graph/archhtml.cj"
+s = open(p, encoding="utf-8").read()
+old = 'MODULEW = " + jsStr(t.moduleWord) + ", ROOTW = " + jsStr(t.root) + "'
+new = 'MODULEW = " + jsStr("外部模块") + ", ROOTW = " + jsStr("架构总览") + "'
+assert old in s, "NC11 锚点失配"
+open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
+PY
+check "NC11 架构图 JS 硬编码中文" testBuildGraphAndImpact src/graph/archhtml.cj "$b"
+
 echo "== 负控结束；失败项：$FAILS =="
 [ "$FAILS" = "0" ]

@@ -390,7 +390,9 @@ func renderJs(en: Bool): String {
     sb.append("  document.getElementById('q').addEventListener('keydown', function (e) { if (e.key !== 'Enter') return; var q = e.target.value.toLowerCase(); if (!q) return; var hit = null; cur().nodes.forEach(function (m) { var t = (m.id + ' ' + (m.label || '')).toLowerCase(); if (!hit && t.indexOf(q) >= 0) hit = m; }); if (hit) { sel = hit.id; showPanel(hit); center(hit); } });\n")
     sb.append("  var FILES = " + jsStr(t.filesWord) + ", SYMS = " + jsStr(t.symWord) + ", LINES = " + jsStr(t.lineWord) + ";\n")
     sb.append("  var OUT = " + jsStr(t.depsOut) + ", IN = " + jsStr(t.depsIn) + ", NONE = " + jsStr(t.none) + ";\n")
-    sb.append("  var LAYERW = " + jsStr(t.layerWord) + ", ESC = " + jsStr(t.closeHint) + ", MODULEW = " + jsStr("外部模块") + ", ROOTW = " + jsStr("架构总览") + ";\n")
+    // ⚠️ 必须取 `t.moduleWord` / `t.root`（ArchUi 两种语言都有），不能硬编码中文 ——
+    // 否则英文模式（cli 按 config.language 传 en=true）下面板与面包屑会出现中文。
+    sb.append("  var LAYERW = " + jsStr(t.layerWord) + ", ESC = " + jsStr(t.closeHint) + ", MODULEW = " + jsStr(t.moduleWord) + ", ROOTW = " + jsStr(t.root) + ";\n")
     sb.append("  var en = " + (if (en) { "true" } else { "false" }) + ";\n")
     sb.append("  resize(); fit(); buildParts(); renderCrumbs();\n")
     sb.append("  try {\n")
