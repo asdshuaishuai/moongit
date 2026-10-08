@@ -28,7 +28,7 @@ export SDKROOT="${MOONGIT_SDKROOT:-$HOME/.local/share/sdks/MacOSX.minimal/latest
 export DEEPGIT_HOME="${DEEPGIT_HOME:-/tmp/dg-nc-graph-home-$$}"
 
 SB="$(mktemp -d "${TMPDIR:-/tmp}/moonGit-nc-graph.XXXXXX")"
-FILES="src/graph/confidence.cj src/graph/confidence_detect.cj src/graph/extract.cj src/graph/archhtml.cj src/graph/archscene.cj"
+FILES="src/graph/confidence.cj src/graph/confidence_detect.cj src/graph/extract.cj src/graph/archhtml.cj src/graph/archscene.cj src/graph/arch.cj"
 
 restore_all() {
   for f in $FILES; do
@@ -229,6 +229,30 @@ assert old in s, "NC8 锚点失配"
 open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
 PY
 check "NC8 场景文件级面板恒空 out/in" testBuildGraphAndImpact src/graph/archscene.cj "$b"
+
+# ── NC9 · mermaid 节点 id 退回「非法字符 → _」（不同模块折叠成同一节点）──
+b="$(md5_of src/graph/arch.cj)"
+python3 - <<'PY'
+p = "src/graph/arch.cj"
+s = open(p, encoding="utf-8").read()
+old = '''    var i: Int64 = 0
+    for (m in sorted) {
+        map[m.id] = "M${i}"
+        i += 1
+    }'''
+new = '''    var i: Int64 = 0
+    for (m in sorted) {
+        let out = ArrayList<UInt8>()
+        for (b in m.id.toArray()) {
+            if (isIdentByte(b)) { out.add(b) } else { out.add(95) }
+        }
+        map[m.id] = "M${fromUtf8Lossy(out.toArray())}"
+        i += 1
+    }'''
+assert old in s, "NC9 锚点失配"
+open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
+PY
+check "NC9 mermaid 节点 id 折叠" testArchMermaidNodeIdsAreInjective src/graph/arch.cj "$b"
 
 echo "== 负控结束；失败项：$FAILS =="
 [ "$FAILS" = "0" ]

@@ -439,3 +439,28 @@ func testScoreIsSizeInvariantAndMonotone(): Unit {
     @Assert(confidenceScore(50, 10) > confidenceScore(150, 10))
 }
 
+@Test
+func testArchMermaidNodeIdsAreInjective(): Unit {
+    // 两个模块 id 在「非法字符 → _」的旧映射下会**折叠**（`a-b` 与 `a_b` 都 → `a_b`），
+    // 图上两个模块合并成一个节点且不报错。现在按下标映射，必须是两个不同节点。
+    let root = "${tempDirPath()}/moongit-archid-${getpid()}"
+    ensureDir("${root}/a-b")
+    ensureDir("${root}/a_b")
+    writeFileAtomic("${root}/a-b/x.cj", "package p\n\npublic func ax(): Int64 { return 1 }\n")
+    writeFileAtomic("${root}/a_b/y.cj", "package q\n\npublic func by(): Int64 { return 2 }\n")
+    try {
+        let arch = buildArch(buildGraph(root))
+        @Assert(Int64(arch.modules.size) == 2)
+        let mm = archMermaid(arch, false)
+        // 统计节点定义行的**不同 id**
+        let ids = HashSet<String>()
+        for (line in mm.split("\n")) {
+            let parts = line.split("[")
+            if (parts.size >= 1 && parts[0].startsWith("    M")) { ids.add(parts[0]) }
+        }
+        @Assert(Int64(ids.size) == 2)
+    } finally {
+        removePathIfExists(root)
+    }
+}
+

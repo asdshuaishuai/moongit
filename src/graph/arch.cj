@@ -546,7 +546,32 @@ public func archJson(data: ArchData, en: Bool): JsonValue {
 
 // MARK: - Mermaid / DOT（agent 出口）
 
+/// 模块 id → 图节点 id 的**唯一映射**（`M0` / `M1` …，按模块名排序）。
+/// ⚠️ 不用「把非法字符替换成 `_`」：那会把**不同模块折叠成同一个节点**
+/// （`a-b` 与 `a_b` 都 → `a_b`），于是两个模块在图上合并成一个、依赖边也糊在一起，
+/// 而且**不报错**。模块名仍出现在节点标签里，可读性不丢。
+func archNodeIds(data: ArchData): HashMap<String, String> {
+    let sorted = ArrayList<ArchModule>()
+    for (m in data.modules) { sorted.add(m) }
+    insertionSortBy(sorted, { a, b => a.id < b.id })
+    let map = HashMap<String, String>()
+    var i: Int64 = 0
+    for (m in sorted) {
+        map[m.id] = "M${i}"
+        i += 1
+    }
+    return map
+}
+
+func mermaidNodeId(ids: HashMap<String, String>, moduleId: String): String {
+    match (ids.get(moduleId)) {
+        case Some(v) => return v
+        case None => return "M?"   // 理论上不会发生（边两端都来自 data.modules）
+    }
+}
+
 public func archMermaid(data: ArchData, en: Bool): String {
+    let ids = archNodeIds(data)
     let sb = StringBuilder()
     sb.append("flowchart LR\n")
     var i: Int64 = 0
@@ -557,14 +582,14 @@ public func archMermaid(data: ArchData, en: Bool): String {
         if (colMods.size > 0) {
             sb.append("  subgraph L${i}[\"${layerName(i, en)}\"]\n")
             for (m in colMods) {
-                sb.append("    M${sanitizeId(m.id)}[\"${m.id} · ${m.files}f/${m.symbols}s\"]\n")
+                sb.append("    ${mermaidNodeId(ids, m.id)}[\"${m.id} · ${m.files}f/${m.symbols}s\"]\n")
             }
             sb.append("  end\n")
         }
         i += 1
     }
     for ((a, b, w) in data.edges) {
-        sb.append("  M${sanitizeId(a)} -->|${w}| M${sanitizeId(b)}\n")
+        sb.append("  ${mermaidNodeId(ids, a)} -->|${w}| ${mermaidNodeId(ids, b)}\n")
     }
     return sb.toString()
 }
@@ -581,13 +606,4 @@ public func archDot(data: ArchData, en: Bool): String {
     }
     sb.append("}\n")
     return sb.toString()
-}
-
-/// mermaid 节点 id 只收字母数字下划线
-func sanitizeId(s: String): String {
-    let out = ArrayList<UInt8>()
-    for (b in s.toArray()) {
-        if (isIdentByte(b)) { out.add(b) } else { out.add(95) }   // '_'
-    }
-    return fromUtf8Lossy(out.toArray())
 }
