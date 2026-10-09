@@ -548,6 +548,8 @@ public func agentToolsManifest(): JsonValue {
     addTool("codegraph_symbol", "符号定位：定义处 + 词法引用。params: name, symbol", "name,symbol")
     addTool("codegraph_impact", "影响面：改这个符号会波及哪些文件与符号（词法文件级粒度）。params: name, symbol", "name,symbol")
     addTool("codegraph_arch", "技术架构图：模块分层依赖（Canvas 交互 HTML / mermaid / dot / json）。params: name, format", "name,format")
+    addTool("codegraph_patch_confidence", "补丁级置信度 Layer 1：S1..S10 信号 + uncertain 待办清单（配合 skill 做 Layer 2 复核）。params: name, patch_path", "name,patch_path")
+    addTool("codegraph_patch_merge", "补丁级置信度 Layer 3：合并 algorithm+agent 输出。params: algorithm_json, agent_json", "algorithm_json,agent_json")
     addTool("codegraph_confidence", "代码置信度报告：结构性疑点（孤儿/占位/吞错/魔法数/重复体）。被动能力，仅显式调用时分析。params: name, format(json|text|llm)", "name,format")
 
     let o = Json.obj()

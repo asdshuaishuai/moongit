@@ -564,3 +564,72 @@ func testSceneEdgesCapKeepsHeaviestAndDiscloses(): Unit {
     @Assert(d2 == 0)
 }
 
+
+
+// MARK: - 补丁级置信度（三层）
+
+@Test
+func testParseUnifiedDiff(): Unit {
+    let diff = "--- a/x.c\n+++ b/x.c\n@@ -1,2 +1,3 @@\n ctx\n-old\n+new1\n+new2\n"
+    let (files, errs) = parseUnifiedDiff(diff)
+    @Assert(errs == 0)
+    @Assert(Int64(files.size) == 1)
+    @Assert(files[0].newPath == "x.c")
+    var added: Int64 = 0
+    for (pl in files[0].lines) {
+        if (pl.kind == 1) { added += 1 }
+    }
+    @Assert(added == 2)
+    // 新增行行号：new1 在 +1 起 hunk 的第 2 行（ctx 后）
+    var firstAdd: Int64 = -1
+    for (pl in files[0].lines) {
+        if (pl.kind == 1) { firstAdd = pl.newNo; break }
+    }
+    @Assert(firstAdd == 2)
+}
+
+@Test
+func testPatchConfidenceLayers(): Unit {
+    let root = writeTree()
+    let graph = buildGraph(root)
+    try {
+        // patch：调用了存在的 Text（解析）+ 不存在的幻觉 fn（未解析）
+        let diff = "--- a/flow/update.cj\n+++ b/flow/update.cj\n@@ -1,3 +1,7 @@\n" +
+            " package moongit.flow\n+\n+public func patchHelper(t: Text): Bool {\n" +
+            "+    let ok = t.trimAll(\"x\")\n+    return ok && ghost_fn(t)\n+}\n"
+        let pc = analyzePatchConfidence(graph, diff)
+        // S1 部分（有解析也有未解析）
+        @Assert(pc.overall > 0.0 && pc.overall < 1.0)
+        // 幻觉调用进 uncertain
+        var hasGhost = false
+        for (u in pc.uncertain) {
+            if (uncId(u.kind) == "unresolved_call" && u.id.contains("ghost_fn")) { hasGhost = true }
+        }
+        @Assert(hasGhost)
+        // entity：patchHelper 被识别
+        var hasEntity = false
+        for (e in pc.entities) {
+            if (e.name == "patchHelper") { hasEntity = true }
+        }
+        @Assert(hasEntity)
+        // S7 恒 null（词法层如实披露）
+        @Assert(pc.nullSignals.contains("S7"))
+
+        // Layer 3：合并（agent 裁决 resolved/unresolved/deferred 三态）
+        let alg = patchConfidenceJson(pc)
+        let ag = Json.parse("{\"items\": [{\"id\": \"x\", \"verdict\": \"resolved\", \"confidence\": 1.0}]}").getOrThrow()
+        match (mergePatchConfidence(alg, ag)) {
+            case Some(m) =>
+                // x 不在 uncertain → deferred（agent 处理了不存在的项不影响）
+                @Assert(m.overall >= 0.0)
+                var hasDeferred = false
+                for (e in m.entities) {
+                    if (Json.strAt(e, "source", "") == "deferred") { hasDeferred = true }
+                }
+                @Assert(hasDeferred)   // ghost_fn 项没人裁决 → deferred
+            case None => @Assert(false)
+        }
+    } finally {
+        removeTree(root)
+    }
+}

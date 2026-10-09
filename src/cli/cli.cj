@@ -217,7 +217,7 @@ let HOOK_KINDS: Array<String> = ["post-commit", "post-merge"]
 let VALUE_FLAGS: Array<String> = [
     "--name", "--depth", "--docs", "--scope", "--branch", "--port",
     "--source", "--tag", "--date", "--desc", "--out", "--message", "--budget",
-    "--dir", "--limit", "--note", "--host", "--format",
+    "--dir", "--limit", "--note", "--host", "--format", "--patch",
 ]
 
 /// 全部 CLI flag 白名单：全局 + 带值 + 布尔。
@@ -235,11 +235,11 @@ let KNOWN_FLAGS: Array<String> = [
     // 带值（与 VALUE_FLAGS 一致）
     "--name", "--depth", "--docs", "--scope", "--branch", "--port",
     "--source", "--tag", "--date", "--desc", "--out", "--message", "--budget",
-    "--dir", "--limit", "--note", "--host", "--format",
+    "--dir", "--limit", "--note", "--host", "--format", "--patch",
     // 布尔
     "--dry-run", "--git-only", "--open", "--purge",
     // confidence 专用（被动能力开关）
-    "--no-ast", "--llm",
+    "--no-ast", "--llm", "--skill", "--merge",
 ]
 
 /// token 是否长得像 flag。负数（-5）不是 flag。
@@ -930,7 +930,7 @@ func cmdContext(rest: ArrayList<String>, ctx: CliContext): Int64 {
 /// 子命令：overview（默认）/ tree / symbol <名> / impact <名> / arch。
 /// arch 支持 --format html（Canvas 交互架构图，默认）/ mermaid / dot / json。
 func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
-    let subs = ["overview", "tree", "symbol", "impact", "arch", "confidence"]
+    let subs = ["overview", "tree", "symbol", "impact", "arch", "confidence", "patchconf"]
     var sub = "overview"
     let args = ArrayList<String>()
     if (rest.size > 0 && subs.contains(rest[0])) {
@@ -942,6 +942,49 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
         }
     } else {
         for (a in rest) { args.add(a) }
+    }
+
+    // patchconf --merge：Layer 3 纯 JSON 合并，不需要项目上下文
+    if (sub == "patchconf" && hasFlag(args, "--merge")) {
+        let mrefs = positionalsOnly(args, VALUE_FLAGS)
+        if (mrefs.size != 2) {
+            throw DgError.usage(T(
+                "Usage: moongit graph patchconf --merge <algorithm.json> <agent.json>",
+                "用法：moongit graph patchconf --merge <algorithm.json> <agent.json>"))
+        }
+        let algText = match (readFileText(mrefs[0])) {
+            case Some(t) => t
+            case None => throw DgError.usage(T("Cannot read ${mrefs[0]}", "读不了 ${mrefs[0]}"))
+        }
+        let agText = match (readFileText(mrefs[1])) {
+            case Some(t) => t
+            case None => throw DgError.usage(T("Cannot read ${mrefs[1]}", "读不了 ${mrefs[1]}"))
+        }
+        match (Json.parse(algText)) {
+            case Some(alg) =>
+                match (Json.parse(agText)) {
+                    case Some(ag) =>
+                        match (mergePatchConfidence(alg, ag)) {
+                            case Some(m) =>
+                                match (flagValue(args, "--out")) {
+                                    case Some(outPath) =>
+                                        writeFileAtomic(outPath, Json.pretty(mergedConfidenceJson(m, alg)))
+                                        Log.ok(T("Written: ${outPath}", "已写出：${outPath}"))
+                                    case None =>
+                                        if (ctx.json) {
+                                            printOut(Json.pretty(mergedConfidenceJson(m, alg)))
+                                        } else {
+                                            printOut(mergedConfidenceText(m))
+                                        }
+                                }
+                            case None => throw DgError.usage(T(
+                                "Merge failed (malformed inputs)", "合并失败（输入结构不合法）"))
+                        }
+                    case None => throw DgError.usage("agent.json " + T("is not valid JSON", "不是合法 JSON"))
+                }
+            case None => throw DgError.usage("algorithm.json " + T("is not valid JSON", "不是合法 JSON"))
+        }
+        return 0
     }
 
     let refs = positionalsOnly(args, VALUE_FLAGS)
@@ -1032,6 +1075,32 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
                     }
                     return 1
             }
+        case "patchconf" =>
+            // Layer 1：算法层（被动能力：仅显式执行）
+            let patchPath = match (flagValue(args, "--patch")) {
+                case Some(p) => p
+                case None => throw DgError.usage(T(
+                    "Usage: moongit graph patchconf <project> --patch <diff> [--skill] [--out F]",
+                    "用法：moongit graph patchconf <项目> --patch <diff> [--skill] [--out 文件]"))
+            }
+            if (hasFlag(args, "--skill")) {
+                printOut(patchConfidenceSkill(p.name))
+                return 0
+            }
+            let patchText = match (readFileText(patchPath)) {
+                case Some(t) => t
+                case None => throw DgError.usage(T(
+                    "Cannot read patch: ${patchPath}", "读不了补丁文件：${patchPath}"))
+            }
+            let pc = analyzePatchConfidence(graph, patchText)
+            match (flagValue(args, "--out")) {
+                case Some(outPath) =>
+                    writeFileAtomic(outPath, Json.pretty(patchConfidenceJson(pc)))
+                    Log.ok(T(
+                        "Written: ${outPath} (Layer 1 done; next: --skill, then --merge)",
+                        "已写出：${outPath}（Layer 1 完成；下一步 --skill，再 --merge）"))
+                case None => printOut(Json.pretty(patchConfidenceJson(pc)))
+            }
         case "confidence" =>
             // 被动能力：只有用户显式执行才算（不是任何更新流程的一部分）
             var useAst = true
@@ -1108,7 +1177,8 @@ func skillMarkdown(): String {
         + "get_journal / run_shallow_update / run_deep_update / run_track / git_op / list_milestones / "
         + "milestone_add / milestone_action / add_project / "
         + "codegraph_overview / codegraph_tree / codegraph_symbol / codegraph_impact / codegraph_arch / "
-        + "codegraph_confidence")
+        + "codegraph_confidence / "
+        + "codegraph_patch_confidence（补丁级三层：Layer1 分析 + Layer2 skill 复核 + Layer3 合并）")
     ways.add("**CLI**（一次性问答/脚本）：`" + engine + " status --json`、`context [项目] --budget N`、`tools`、"
         + "`journal <项目>`、`dashboard --json`")
     let sb = StringBuilder()
@@ -1424,7 +1494,8 @@ func printHelp(): Unit {
         printOut("  mcp                      Run as an MCP server (stdio JSON-RPC; for Claude and other agent hosts)")
         printOut("  skill <print|install>    Print/install the agent Skill pack (--dir for the target directory)")
         printOut("  report [project] [--out F]  Export a Markdown progress report")
-        printOut("  graph [overview|tree|symbol|impact|arch|confidence] [project]")
+        printOut("  graph [overview|tree|symbol|impact|arch|confidence|patchconf] [project]")
+        printOut("                           patchconf: patch-level confidence (3-layer: --patch analyze / --skill agent / --merge final)")
         printOut("                           confidence: structural confidence report (--llm for the LLM review prompt)")
         printOut("                           Code graph: symbol index / relationship tree / impact /")
         printOut("                           interactive architecture canvas (--format html|mermaid|dot|json)")
@@ -1472,7 +1543,8 @@ func printHelp(): Unit {
     printOut("  mcp                      以 MCP 服务器运行（stdio JSON-RPC；供 Claude 等 agent 宿主接入）")
     printOut("  skill <print|install>    输出/安装 agent Skill 教学包（--dir 指定目录）")
     printOut("  report [项目] [--out F]  导出 Markdown 进度报告")
-    printOut("  graph [overview|tree|symbol|impact|arch|confidence] [项目]")
+    printOut("  graph [overview|tree|symbol|impact|arch|confidence|patchconf] [项目]")
+    printOut("                           patchconf：补丁级置信度三层架构（--patch 分析 / --skill 取 Agent 任务 / --merge 合并终稿）")
     printOut("                           confidence：代码置信度报告（--llm 出 LLM 复核提示词）")
     printOut("                           代码图谱：符号索引/关系树/影响面/技术架构图")
     printOut("                           （arch 用 --format html|mermaid|dot|json，html 为 Canvas 交互图）")

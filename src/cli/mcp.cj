@@ -93,6 +93,8 @@ public func mcpToolList(): JsonValue {
     arr.add(mcpTool("codegraph_symbol", "符号定位：定义处 + 词法引用文件", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"])))
     arr.add(mcpTool("codegraph_impact", "影响面分析：符号定义 + 引用文件 + 受影响符号（词法文件级粒度，非语义调用图）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"])))
     arr.add(mcpTool("codegraph_arch", "技术架构图：模块聚合 + 分层判定。format=html（Canvas 交互图，单文件零依赖）/ mermaid / dot / json", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "html|mermaid|dot|json，默认 html")], ["name"])))
+    arr.add(mcpTool("codegraph_patch_confidence", "补丁级置信度 Layer 1（算法层）：S1..S10 信号 + certain/uncertain 分层。uncertain 是给 Agent 的待办清单（配合 --skill 的任务说明）。name=项目名，patch_path=diff 文件路径", mcpSchemaObject([("name", "string", "项目名或 ID"), ("patch_path", "string", "unified diff 文件路径")], ["name", "patch_path"])))
+    arr.add(mcpTool("codegraph_patch_merge", "补丁级置信度 Layer 3（合并器）：algorithm.json + agent.json → final.json。规则：agent resolved ×0.9 / unresolved 计负分 / ambiguous 0.5 / 未处理 deferred 0.5", mcpSchemaObject([("algorithm_json", "string", "Layer 1 输出的 JSON 文本"), ("agent_json", "string", "Layer 2 输出的 JSON 文本")], ["algorithm_json", "agent_json"])))
     arr.add(mcpTool("codegraph_confidence", "代码置信度：结构性疑点（孤儿/占位/吞错/魔法数/重复体…）的确定性度量。被动能力——只在本工具被显式调用时分析。format=json|text|llm（llm 产出可直接喂模型的逐条复核提示词）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "json|text|llm，默认 json")], ["name"])))
     let o = Json.obj()
     Json.set(o, "tools", JArr(arr))
@@ -299,6 +301,34 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                 match (impactOf(g, sym)) {
                     case Some(res) => mcpOk(Json.pretty(impactJson(res)))
                     case None => mcpErr("symbol not found: ${sym}")
+                }
+            case "codegraph_patch_confidence" =>
+                let p = mcpRequireProject(getStr("name"))
+                let patchPath = getStr("patch_path")
+                if (patchPath.isEmpty()) { return mcpErr("patch_path is required") }
+                let patchText = match (readFileText(patchPath)) {
+                    case Some(t) => t
+                    case None => return mcpErr("cannot read patch file: " + patchPath)
+                }
+                let g = buildGraph(p.path)
+                mcpOk(Json.pretty(patchConfidenceJson(analyzePatchConfidence(g, patchText))))
+            case "codegraph_patch_merge" =>
+                let algText = getStr("algorithm_json")
+                let agText = getStr("agent_json")
+                if (algText.isEmpty() || agText.isEmpty()) {
+                    return mcpErr("algorithm_json and agent_json are required")
+                }
+                match (Json.parse(algText)) {
+                    case Some(alg) =>
+                        match (Json.parse(agText)) {
+                            case Some(ag) =>
+                                match (mergePatchConfidence(alg, ag)) {
+                                    case Some(m) => mcpOk(Json.pretty(mergedConfidenceJson(m, alg)))
+                                    case None => mcpErr("merge failed (malformed inputs)")
+                                }
+                            case None => mcpErr("agent_json is not valid JSON")
+                        }
+                    case None => mcpErr("algorithm_json is not valid JSON")
                 }
             case "codegraph_confidence" =>
                 let p = mcpRequireProject(getStr("name"))
