@@ -248,8 +248,30 @@ public func analyzePatchConfidence(graph: CodeGraph, patchText: String): PatchCo
     // S5/S6 原料
     var braceDepth: Int64 = 0
     var braceNeg: Int64 = 0
-    // patch 内新声明的符号（use-before-def 判定用）
+    // patch 内新声明的符号（「扫到第 N 行时已知」的那一份：引用解析用）
     let patchDecls = HashMap<String, (String, Int64)>()   // 名 → (file, newNo)
+    // patch 内**全部**新声明（use-before-def 判定用）。
+    // ⚠️ 必须与 patchDecls 分成两份：边扫边填的 patchDecls 里只有行号 ≤ N 的
+    // 声明，`n2 > pl.newNo` 于是永假 ⇒ UUseBeforeDef 一条也不产生、S5 恒为
+    // 1.0 虚抬 overall 约 1/10 标度（审查 H2）。use-before-def 问的是「这次
+    // 补丁里有没有先用后声明」，答案需要全量表，不能问「到目前为止」。
+    let allPatchDecls = HashMap<String, (String, Int64)>()
+    for (pf0 in pfiles) {
+        for (pl0 in pf0.lines) {
+            if (pl0.kind != 1) { continue }
+            let (t0, _) = stripCode(pl0.text, 0)
+            if (blankLine(t0)) { continue }
+            match (scanDeclLine(tokenize(t0))) {
+                case Some((_, name0)) =>
+                    allPatchDecls[name0] = (pf0.newPath, pl0.newNo)
+                case None =>
+                    match (cStyleFuncName(t0, detectLang(pf0.newPath))) {
+                        case Some(name0) => allPatchDecls[name0] = (pf0.newPath, pl0.newNo)
+                        case None => ()
+                    }
+            }
+        }
+    }
 
     for (pf in pfiles) {
         // 文件在 repo 中的模块（S4 用）：能被 moduleIndex 命中即可
@@ -268,7 +290,17 @@ public func analyzePatchConfidence(graph: CodeGraph, patchText: String): PatchCo
                     totalDecls += 1
                     if (hasTypeAnnotation(t)) { anotDecls += 1 }
                     // entity 关系 = 该声明体内（到下一个声明前的新增行）的调用
-                    // v1 简化：先用本行 + 后续 15 行新增行的调用归入（词法近似）
+                    // v1 简化：本行 + 后续 15 行新增行的调用归入（词法近似）
+                    //
+                    // ⚠️ 这里**只收集关系**，绝不再累计 totalRefs/totalCalls/
+                    // resolvedRefs/callScore，也不在这里加 uncertain：这些行随后
+                    // 会被主循环的 `case None` 分支逐行统计一遍，双算的后果是
+                    // ① 同一 id 的 entity 每个前窥行生成一个（原缺陷 H1：
+                    //    entities.add 落在 while 体内）② unresolved 的 uncertain
+                    //    被加两遍，而合并器（patchconf_render.cj 的
+                    //    mergePatchConfidence）逐条把 uncertain 计入 conf 均值
+                    //    ⇒ 整体被重复计入。声明后紧跟另一声明行时首轮即 break，
+                    //    原实现连一条 entity 都不生成——现在 add 在 while 之外。
                     let rels = ArrayList<(String, String, Float64)>()
                     var relScore: Float64 = 0.0
                     var relCount: Int64 = 0
@@ -283,13 +315,9 @@ public func analyzePatchConfidence(graph: CodeGraph, patchText: String): PatchCo
                         // 到下一个声明为止
                         if (scanDeclLine(tokenize(nt)).isSome()) { break }
                         for ((cname, _) in freeCallsIn(nt)) {
-                            totalRefs += 1
-                            totalCalls += 1
                             match (defFiles.get(cname)) {
                                 case Some(list) =>
-                                    resolvedRefs += 1
                                     let c = Float64(Int64(list.size))
-                                    callScore += 1.0 / c
                                     relScore += 1.0 / c
                                     relCount += 1
                                     if (Int64(list.size) == 1) {
@@ -297,24 +325,15 @@ public func analyzePatchConfidence(graph: CodeGraph, patchText: String): PatchCo
                                     } else if (Int64(list.size) <= 4) {
                                         rels.add(("calls", "${cname}@${list[0]}", 1.0 / c))
                                     }
-                                case None =>
-                                    match (patchDecls.get(cname)) {
-                                        case Some(_) => resolvedRefs += 1
-                                        case None =>
-                                            uncertain.add(UncertainItem(
-                                                "${pf.newPath}@${nl.newNo}:${cname}",
-                                                UUnresolvedCall,
-                                                "call to ${cname}(…) not found in repo or patch",
-                                                ArrayList<String>(), pf.newPath, nl.newNo))
-                                    }
+                                case None => ()
                             }
                         }
+                    }
                     let conf = if (relCount == 0) { 0.9 } else { relScore / Float64(relCount) }
                     entities.add(PatchEntity("${name}@${pf.newPath}:${pl.newNo}", name,
                         symKindId(kind), conf, rels, pf.newPath, pl.newNo))
-                    }
                 case None =>
-                    match (cStyleFuncName(t)) {
+                    match (cStyleFuncName(t, detectLang(pf.newPath))) {
                         case Some(name) =>
                             patchDecls[name] = (pf.newPath, pl.newNo)
                             totalDecls += 1
@@ -396,7 +415,7 @@ public func analyzePatchConfidence(graph: CodeGraph, patchText: String): PatchCo
                             let st2 = ti
                             while (ti < tn && isIdentByte(tb[ti])) { ti += 1 }
                             let tok = fromUtf8Lossy(tb[st2..ti])
-                            match (patchDecls.get(tok)) {
+                            match (allPatchDecls.get(tok)) {
                                 case Some((f2, n2)) =>
                                     if (pf.newPath == f2 && n2 > pl.newNo && pl.newNo > 0) {
                                         uncertain.add(UncertainItem(

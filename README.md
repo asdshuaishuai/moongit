@@ -39,7 +39,7 @@ moonGit Engine 用 git 自己的历史回答这两个问题：
 | 提供 | 接口 | 说明 |
 |---|---|---|
 | **上下文包** | `moongit context [项目] [--budget N] --json`（MCP：context 类工具） | 预算内（字符数）的 markdown 事实摘要：总览/脉搏/分支表/日志/里程碑 |
-| **工具清单** | `moongit tools --json`（MCP：`tools/list`） | agent 可执行操作的结构化清单（10 项：读上下文/文档/日志，跑更新，git 操作，里程碑） |
+| **工具清单** | `moongit tools --json`（MCP：`tools/list`） | agent 可执行操作的结构化清单（CLI 侧 18 项 / MCP 侧 23 项：读上下文/文档/日志，跑更新，git 操作，里程碑，代码图谱） |
 | **工具执行** | 对应的 CLI 子命令 | agent 决定调用，引擎照常执行并返回结果 |
 | **代码图谱** | `moongit graph <overview\|tree\|symbol\|impact\|arch\|confidence>`（MCP：`codegraph_*` 六工具） | 符号索引 / 关系树 / 影响面 / 技术架构图 / 代码置信度（详见下节） |
 
@@ -102,7 +102,7 @@ moongit graph confidence <项目> --no-ast   # 跳过语法树，纯词法
   对标识符提取与正则等价，且每条规则可独立单测；多字节 UTF-8（中文注释）在字节层
   天然不是标识符字符，词法边界天然正确。
 - **无第三方依赖的图谱**：遍历、建图、布局、Canvas 渲染全部标准库完成——
-  引擎保持「git + curl 之外零依赖」的发布形态，agent 宿主不必拖一棵依赖树。
+  引擎保持「git 之外零依赖」的发布形态，agent 宿主不必拖一棵依赖树。
 - **确定性输出**：目录遍历排序、插入排序、固定布局算法，同一仓库两次构建逐字节一致——
   agent 可以对账，这是给 LLM 消费的事实该有的性质。
 
@@ -131,17 +131,18 @@ moongit mcp                      # stdio JSON-RPC（2024-11-05）
 {"mcpServers": {"moongit": {"command": "/path/to/moongit", "args": ["mcp"]}}}
 ```
 
-提供 **21 个工具**：
+提供 **23 个工具**：
 - 项目管理：`list_projects`、`add_project`
 - 上下文与状态：`get_group_context`、`get_project_context`、`get_project_status`、`get_dashboard`
 - 文档与日志：`get_project_docs`、`get_journal`
 - 更新与追踪：`run_shallow_update`、`run_deep_update`、`run_track`
 - git 与里程碑：`git_op`、`list_milestones`、`milestone_add`、`milestone_action`
-- 代码图谱：`codegraph_overview`、`codegraph_tree`、`codegraph_symbol`、`codegraph_impact`、`codegraph_arch`、`codegraph_confidence`
+- 代码图谱：`codegraph_overview`、`codegraph_tree`、`codegraph_symbol`、`codegraph_impact`、`codegraph_arch`、`codegraph_confidence`、`codegraph_patch_confidence`、`codegraph_patch_merge`
 
 另有 resources（deepgit://project/{id}）与 prompts（project_brief）。
-> MCP 工具表与 CLI 的 `moongit tools --json`（17 项）**是两份注册表**，服务不同运行时、
+> MCP 工具表与 CLI 的 `moongit tools --json`（18 项）**是两份注册表**，服务不同运行时、
 > 能力集本就可以不同——要紧的是差异是**有意识**的（见 `AGENTS.md` 不变量 43）。
+> 数字要跟着清单走：这两处都漂过（审查 M25 实测两处各差 3 项）。
 
 ### 3. Skill（教学包，让编码类 agent 学会用引擎）
 
@@ -175,11 +176,11 @@ prompt 组装、工具调用循环、答案渲染——与 deepDesign 之于 moo
 | 平台 | 状态 | 说明 |
 |---|---|---|
 | **macOS** (arm64) | ✅ 已验证 | 当前开发平台；macOS 26/27 需极简兼容 SDK（install.sh 自动处理） |
-| **Linux** (x86_64 / aarch64) | 🧭 路线内 | 仓颉官方支持 Linux 目标；引擎只用 `std.*` 与系统 `git`/`curl`，无 macOS 专有依赖 |
+| **Linux** (x86_64 / aarch64) | 🧭 路线内 | 仓颉官方支持 Linux 目标；引擎只用 `std.*` 与系统 `git`，无 macOS 专有依赖 |
 | **Windows** (x86_64) | 🧭 路线内 | 仓颉官方支持 Windows 目标；`cjpm.toml` 的 link-option 为 darwin 专属，移植时需按平台调整 |
 | **鸿蒙 PC** | 🧭 路线内 | 仓颉是鸿蒙生态一等语言；走仓颉鸿蒙工具链编译，客户端层见 clients 仓库 |
 
-> 引擎零第三方依赖（JSON / SHA-256 / Markdown 渲染全部自研），外部依赖只有系统 `git` 与 `curl`——这是多平台移植成本低的关键。
+> 引擎零第三方依赖（JSON / SHA-256 / Markdown 渲染全部自研），外部依赖只有系统 `git`——这是多平台移植成本低的关键。
 
 ## 快速开始
 
@@ -255,7 +256,10 @@ moongit doctor                    环境自检
 4. **客户端可驱动的 git 操作是白名单制**：pull（--ff-only）/ push / commit / stash / unstash / fetch，
    刻意不提供 reset/clean/force-push。
 5. **非 git 目录降级但不放弃**：用文件 mtime 追踪并明确标注「非 git 模式」。
-6. **零第三方依赖**：外部依赖只有系统 `git` 与 `curl`（AI 调用走 curl）。
+6. **零第三方依赖**：外部依赖只有系统 `git`。
+   （⚠️ 这里原来写着「git 与 curl（AI 调用走 curl）」——AI 层移到客户端后
+   `grep -rn curl src/` 零调用点，`doctor` 只检查 git。
+   **残留的依赖声明比没有声明更糟**：它让用户去装一个根本没人用的二进制。）
 
 ## 叙述生成
 
@@ -270,7 +274,8 @@ src/kernel/   配置 / 注册表 / 存储 / git 封装 / 事实采集 / 里程�
 src/graph/    CodeGraph：符号索引 / 关系边 / 影响面 / 架构图 / 代码置信度（只依赖 util）
 src/flow/     浅更新 / 深更新 / 状态聚合 / 仪表盘 / 报告 / agent 上下文（编排层）
 src/cli/      命令分发 + MCP 服务器（stdio JSON-RPC）
-scripts/      install.sh / moongit.sh / build-minimal-sdk.sh / package-release.sh / nc-graph-confidence.sh（负控）
+scripts/      install.sh / moongit.sh / build-minimal-sdk.sh / package-release.sh /
+             nc-graph-confidence.sh / nc-audit-2026-10-09.sh（负控：注入真缺陷→判据必须变红）
 ```
 
 依赖方向严格单向：`util → kernel → flow → cli`；`graph` 只依赖 `util`，与 `kernel` 并列供 `flow`/`cli` 消费。

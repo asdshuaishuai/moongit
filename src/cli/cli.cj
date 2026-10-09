@@ -159,6 +159,17 @@ public func main2(argv: ArrayList<String>): Int64 {
     if (ctx.json) {
         Log.setColor(false)
     }
+    // ⚠️ M20：界面语言必须在**任何文案渲染之前**落到 util 的那个进程级信号上。
+    // 下沉到 util 是因为 util 自己的错误/告警也是用户可见的（internalErrorMessage /
+    // execCapture 超时 / removePathIfExists），而 util 是叶子层、拿不到 cli 的 T()。
+    // 漏了这一步的症状很安静：数据层按 config.language 出英文，util 层的错误仍是中文。
+    try {
+        setUiLanguage(loadConfig().language)
+    } catch (e: Exception) {
+        // 配置读不出来不让语言信号拦住命令：回落默认（中文）继续跑，
+        // 真正的配置错误会在各自的命令里再报一次。
+        setUiLanguage("zh")
+    }
 
     if (positionals.size == 0) {
         printHelp()
@@ -410,6 +421,7 @@ func effectiveMilestoneStatus(project: ProjectEntry, name: String, requested: St
 
 func cmdMilestone(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let refs = positionalsOnly(rest, VALUE_FLAGS)
+    let msl = loadConfig().language
     if (refs.size == 0) {
         throw DgError.usage(T("Usage: moongit milestone <add|list|done|drop|remove> [project] [name] [--tag T] [--date YYYY-MM-DD] [--desc S]", "用法：moongit milestone <add|list|done|drop|remove> [项目] [名称] [--tag T] [--date YYYY-MM-DD] [--desc S]"))
     }
@@ -417,7 +429,20 @@ func cmdMilestone(rest: ArrayList<String>, ctx: CliContext): Int64 {
     // （`moongit milestone add alpha v1 extra` → 「✓ 已创建」rc=0，extra 蒸发）。
     // 里程碑的元数是**固定**的（项目 + 名称），第 4 个参数不可能有别的含义，
     // 吞掉它等于把拼写错误变成一次「成功」。
-    rejectExtraPositionals("milestone ${refs[0]}", refs, 3)   // 动作 + 项目 + 名称
+    //
+    // ⚠️ M17：上限不能对所有子命令统一取 3 —— `list` 只消费 2 个（动作 + 项目），
+    // 第 3 个位置参数在 list 下没有含义，照样被吞成 rc=0
+    // （实测 `milestone list alpha extra` → 正常列出 alpha 的里程碑，extra 蒸发）。
+    // 上限必须按**子命令实际消费的个数**给，否则那道守卫只挡 add 那一支。
+    func milestoneMaxPositionals(action: String): Int64 {
+        // list：动作 + 项目（名称不参与筛选）
+        if (action == "list") {
+            return 2
+        }
+        // add / done / drop / remove / reopen：动作 + 项目 + 名称
+        return 3
+    }
+    rejectExtraPositionals("milestone ${refs[0]}", refs, milestoneMaxPositionals(refs[0]))
     let action = refs[0]
     match (action) {
         case "add" =>
@@ -508,7 +533,7 @@ func cmdMilestone(rest: ArrayList<String>, ctx: CliContext): Int64 {
                 return (if (msLabel == "ok") { 0 } else { 1 })
             }
             // 「列不出来」不能被说成「不存在」。四种看起来都是 0 的情况分开处理。
-            let (emptyLine, emptyRc) = milestoneEmptyState(items.size, orphans.size, msLabel, excludedDisabled)
+            let (emptyLine, emptyRc) = milestoneEmptyState(items.size, orphans.size, msLabel, excludedDisabled, msl)
             if (!emptyLine.isEmpty()) {
                 printOut(emptyLine)
                 if (msLabel != "ok") {
@@ -890,7 +915,8 @@ func cmdContext(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let reg = loadRegistry()
     let scope = if (refs.size > 0) { "project" } else { "group" }
     let target = if (refs.size > 0) { refs[0] } else { "" }
-    let text = buildAgentContext(reg.projects, config, scope, target, budget)
+    let ctxOut = buildAgentContext(reg.projects, config, scope, target, budget)
+    let text = ctxOut.text
     if (ctx.json) {
         let o = Json.obj()
         Json.set(o, "scope", Json.of(scope))
@@ -902,20 +928,11 @@ func cmdContext(rest: ArrayList<String>, ctx: CliContext): Int64 {
     }
     // 全部采集失败时不能 exit 0：agent 拿到的是一段不含任何项目事实的上下文，
     // 却收到「成功」信号，会据此得出「这个项目群是空的」。
-    var okCount2: Int64 = 0
-    for (st in allProjectStatuses(if (refs.size > 0) { ArrayList<ProjectEntry>([requireProject(refs[0])]) } else { reg.projects }, config, false)) {
-        if (!Json.has(st, "error")) {
-            okCount2 += 1
-        }
-    }
-    let listed2: Int64 = if (refs.size > 0) { 1 } else {
-        var n: Int64 = 0
-        for (p in reg.projects) {
-            if (!p.disabled) { n += 1 }
-        }
-        n
-    }
-    return groupExitCode(okCount2, listed2)
+    //
+    // M18：okCount/listed 由 buildAgentContext 内部那次采集带回。
+    // 原来这里**又跑了一遍** allProjectStatuses —— 所有项目的 git 采集开销翻倍，
+    // 而且两份结果可能不一致（并发 git 状态变化 ⇒ 退出码与正文对不上）。
+    return groupExitCode(ctxOut.okCount, ctxOut.listed)
 }
 
 // ------------------------------ 代码图谱（CodeGraph） ------------------------------
@@ -1031,11 +1048,25 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
         case "tree" =>
             var depth: Int64 = 6
             match (flagValue(args, "--depth")) {
-                case Some(v) => depth = Int64.parse(v.trimAscii())
+                case Some(v) =>
+                    // L1：原来裸 Int64.parse —— 传 `abc` 抛的异常被顶层兜成
+                    // 「内部错误（graph tree）」而不是用法报错。用户打错一个
+                    // 参数，读到的却是「引擎内部错误」。同文件 cmdScan 对同一
+                    // 参数是正确示范（try/catch → usage）。
+                    try {
+                        depth = Int64.parse(v.trimAscii())
+                    } catch (e: Exception) {
+                        throw DgError.usage(T(
+                            "--depth expects an integer (got \"${v}\")",
+                            "--depth 需要整数（收到 \"${v}\"）"))
+                    }
                 case None => ()
             }
             if (ctx.json) {
-                printOut(Json.pretty(fullGraphJson(graph)))
+                // M16：`--depth` 原先对 --json 路径完全无效（fullGraphJson 没有
+                // 这个参数），于是「同一条命令、同一个参数，两条路径两种行为」。
+                // 现在两条路都按 depth 截断，且 JSON 侧恒发 depth / depthOmitted。
+                printOut(Json.pretty(fullGraphJson(graph, depth)))
             } else {
                 printOut(treeText(graph, depth))
             }
@@ -1244,13 +1275,26 @@ func cmdSkill(rest: ArrayList<String>, ctx: CliContext): Int64 {
 ///
 /// 曾经这段是内联在 cmdDashboard 里的，于是数据源侧测得再严也测不到它：
 /// 负控把 listed 换回 total，测试照样全绿。判定必须落在能测的纯函数上。
-func dashboardProjectLine(projs: JsonValue): String {
+/// 与 T(en, zh) 同义的**参数化**版本：由调用方明确给语言。
+///
+/// ⚠️ 渲染纯函数一律走它，不走 T()：T() 读的是进程级 uiLang（启动时设一次），
+/// 而纯函数的语言来自它的入参 —— 用 T() 会让「传了 lang 却不生效」，
+/// 于是测试里传 "en" 拿到中文，而那种失败看起来像判据写错了。
+func tl(lang: String, en: String, zh: String): String {
+    return if (isEnglish(lang)) { en } else { zh }
+}
+
+func dashboardProjectLine(projs: JsonValue, lang: String): String {
     let failed = Json.intAt(projs, "failed", 0)
-    let note = if (failed > 0) { "（${failed} 个读取失败）" } else { "" }
-    return "项目群：共 ${Json.intAt(projs, "listed", 0)} 个${note} · " +
+    let note = if (failed > 0) { tl(lang, " (${failed} unreadable)", "（${failed} 个读取失败）") } else { "" }
+    return tl(lang, "Projects: ${Json.intAt(projs, "listed", 0)} total${note} · " +
+        "active 7d ${Json.intAt(projs, "active7d", 0)} · " +
+        "active 30d ${Json.intAt(projs, "active30d", 0)} · " +
+        "with uncommitted changes ${Json.intAt(projs, "dirty", 0)}",
+        "项目群：共 ${Json.intAt(projs, "listed", 0)} 个${note} · " +
         "近 7 天活跃 ${Json.intAt(projs, "active7d", 0)} · " +
         "近 30 天活跃 ${Json.intAt(projs, "active30d", 0)} · " +
-        "有未提交改动 ${Json.intAt(projs, "dirty", 0)}"
+        "有未提交改动 ${Json.intAt(projs, "dirty", 0)}")
 }
 
 /// dashboard 的里程碑行。
@@ -1267,29 +1311,33 @@ func dashboardProjectLine(projs: JsonValue): String {
 /// 修完 buildMilestoneOverview 之后，如果不把筛掉的条数说出来，
 /// 全停用场景下这行会变成「进行中 0 · 已达成 0 · 已放弃 0」，
 /// 用户仍然读成「一个里程碑都没有」。
-func dashboardMilestoneLine(counts: JsonValue): String {
-    var line = "里程碑：进行中 ${Json.intAt(counts, "open", 0)} · 已达成 ${Json.intAt(counts, "done", 0)} · 已放弃 ${Json.intAt(counts, "dropped", 0)}"
+func dashboardMilestoneLine(counts: JsonValue, lang: String): String {
+    var line = tl(lang, "Milestones: open ${Json.intAt(counts, "open", 0)} · done ${Json.intAt(counts, "done", 0)} · dropped ${Json.intAt(counts, "dropped", 0)}",
+        "里程碑：进行中 ${Json.intAt(counts, "open", 0)} · 已达成 ${Json.intAt(counts, "done", 0)} · 已放弃 ${Json.intAt(counts, "dropped", 0)}")
     let unknown = Json.intAt(counts, "unknown", 0)
     if (unknown > 0) {
-        line = line + " · ⚠ 无法核验 ${unknown}（仓库读不出来）"
+        line = line + tl(lang, " · ⚠ ${unknown} unverifiable (repo unreadable)", " · ⚠ 无法核验 ${unknown}（仓库读不出来）")
     }
     // 认不出来的 status（缺陷 #182）。不披露的话，这行会和下面的列表自相矛盾：
     // 「进行中 1 · 已达成 0 · 已放弃 0」而列表里有 2 条。
     let other = Json.intAt(counts, "other", 0)
     if (other > 0) {
-        line = line + " · ⚠ 状态认不出来 ${other}（没算进上面任何一栏）"
+        line = line + tl(lang, " · ⚠ ${other} unrecognized status (counted in no column above)",
+            " · ⚠ 状态认不出来 ${other}（没算进上面任何一栏）")
     }
     if (Json.boolAt(counts, "degraded", false)) {
-        line = line + " · ⚠ milestones.json ${Json.strAt(counts, "storeHealth", "corrupt")}，里程碑读不出来" +
-            "（读到 ${Json.intAt(counts, "readCount", 0)} 条），上面的 0 不是「没有」"
+        line = line + tl(lang, " · ⚠ milestones.json ${Json.strAt(counts, "storeHealth", "corrupt")}: milestones unreadable" +
+            " (${Json.intAt(counts, "readCount", 0)} read) - the 0 above does not mean none",
+            " · ⚠ milestones.json ${Json.strAt(counts, "storeHealth", "corrupt")}，里程碑读不出来" +
+            "（读到 ${Json.intAt(counts, "readCount", 0)} 条），上面的 0 不是「没有」")
     }
     let excluded = Json.intAt(counts, "excludedDisabled", 0)
     if (excluded > 0) {
-        line = line + " · 已停用项目的 ${excluded} 条未计入"
+        line = line + tl(lang, " · ${excluded} from disabled projects not counted", " · 已停用项目的 ${excluded} 条未计入")
     }
     let orphaned = Json.intAt(counts, "orphaned", 0)
     if (orphaned > 0) {
-        line = line + " · ⚠ ${orphaned} 条所属项目已不存在"
+        line = line + tl(lang, " · ⚠ ${orphaned} belong to projects that no longer exist", " · ⚠ ${orphaned} 条所属项目已不存在")
     }
     return line
 }
@@ -1372,9 +1420,10 @@ func milestoneListSelection(projects: ArrayList<ProjectEntry>, allMs: ArrayList<
 /// `Log.info`，结果它走 stderr、空态文案走 stdout，**两个流顺序不可控**，
 /// 实测输出是「（2 条属于已停用项目）」在前、「（无里程碑）」在后 ——
 /// 用户第一眼读到的仍然那句谎报。必须让这个判定自己产出一行确定的文案。
-func milestoneEmptyState(itemCount: Int64, orphanCount: Int64, msLabel: String, excludedDisabled: Int64): (String, Int64) {
+func milestoneEmptyState(itemCount: Int64, orphanCount: Int64, msLabel: String, excludedDisabled: Int64, lang: String): (String, Int64) {
     if (msLabel != "ok") {
-        return ("（milestones.json ${msLabel}：一条也没读到，不是「没有里程碑」）", 1)
+        return (tl(lang, "(milestones.json ${msLabel}: nothing read - that is not \"no milestones\")",
+            "（milestones.json ${msLabel}：一条也没读到，不是「没有里程碑」）"), 1)
     }
     if (itemCount > 0 || orphanCount > 0) {
         return ("", 0)
@@ -1382,9 +1431,10 @@ func milestoneEmptyState(itemCount: Int64, orphanCount: Int64, msLabel: String, 
     if (excludedDisabled > 0) {
         // 存储健康 + 读得到 0 条 + 孤儿 0 条 ⇒ 全部里程碑都挂在已停用项目上。
         // 说「无里程碑」等于断言「用户一条都没设」—— 数据明明在 milestones.json 里。
-        return ("（${excludedDisabled} 条里程碑属于已停用项目，未列出；清掉 registry.json 里的 disabled 即可显示）", 0)
+        return (tl(lang, "(${excludedDisabled} milestones belong to disabled projects and are not listed; clear `disabled` in registry.json to show them)",
+            "（${excludedDisabled} 条里程碑属于已停用项目，未列出；清掉 registry.json 里的 disabled 即可显示）"), 0)
     }
-    return ("（无里程碑）", 0)
+    return (tl(lang, "(no milestones)", "（无里程碑）"), 0)
 }
 
 func cmdDashboard(rest: ArrayList<String>, ctx: CliContext): Int64 {
@@ -1399,7 +1449,7 @@ func cmdDashboard(rest: ArrayList<String>, ctx: CliContext): Int64 {
         return dashRc
     }
     let projs = Json.getOr(dash, "projects")
-    printOut(dashboardProjectLine(projs))
+    printOut(dashboardProjectLine(projs, config.language))
     if (Json.intAt(projs, "failed", 0) > 0 && Json.intAt(projs, "total", 0) == 0) {
         Log.error(T("Every project failed to read; all statistics below are empty. Debug one by one: moongit status <project>", "全部项目都读取失败，下面所有统计都是空的。逐个排查：moongit status <项目名>"))
     }
@@ -1407,7 +1457,7 @@ func cmdDashboard(rest: ArrayList<String>, ctx: CliContext): Int64 {
     printOut(T("Working surface: branches ${Json.intAt(work, "branches", 0)} · merge candidates ${Json.intAt(work, "mergeCandidates", 0)} · untracked files ${Json.intAt(work, "untrackedFiles", 0)} · stashes ${Json.intAt(work, "stashes", 0)}", "工作面：分支 ${Json.intAt(work, "branches", 0)} · 待合入分支 ${Json.intAt(work, "mergeCandidates", 0)} · 未跟踪文件 ${Json.intAt(work, "untrackedFiles", 0)} · stash ${Json.intAt(work, "stashes", 0)}"))
     let ms = Json.getOr(dash, "milestones")
     let counts = Json.getOr(ms, "counts")
-    printOut(dashboardMilestoneLine(counts))
+    printOut(dashboardMilestoneLine(counts, config.language))
     if (Json.boolAt(counts, "degraded", false)) {
         Log.error(T("milestones.json is unreadable (a .corrupt copy has been kept). Writes are rejected; restore the file, or delete it after confirming.", "milestones.json 读不出来（已留 .corrupt 副本）。写操作会被拒绝，先恢复或确认后删除该文件。"))
     }
@@ -1469,7 +1519,7 @@ func cmdDashboard(rest: ArrayList<String>, ctx: CliContext): Int64 {
 }
 
 func printHelp(): Unit {
-    if (CHROME_ENGLISH) {
+    if (uiLanguage() == "en") {
         printOut("moonGit Engine - git-based local project progress engine")
         printOut("")
         printOut("Usage: moongit <command> [args] [--json] [-q] [-v]")
@@ -1478,15 +1528,15 @@ func printHelp(): Unit {
         printOut("  list                     List registered projects with a one-line status")
         printOut("  add <path> [--name N]    Register a project")
         printOut("  remove <project> [--purge]  Deregister (--purge also deletes progress data)")
-        printOut("  scan [root...] [--depth N]  Discover and register projects")
+        printOut("  scan [root...] [--depth N] [--git-only]  Discover and register projects (--git-only skips non-git dirs)")
         printOut("  status [project]         Show progress status (writes nothing)")
         printOut("  track [project]          Progress snapshot: record only, never touch docs (for hooks)")
-        printOut("  update [project] [--docs S]  Shallow update: record branch progress + refresh managed doc sections (S = all|readme|agent, default all)")
+        printOut("  update [project] [--docs S] [--dry-run] [--no-ai]  Shallow update: record branch progress + refresh managed doc sections (S = all|readme|agent, default all)")
         printOut("  deep [project] [--scope S]   Deep update: rewrite overview/architecture/commands/history")
         printOut("  journal [project] [--branch B]  View the progress log")
         printOut("  git <pull|push|commit|stash|unstash|fetch> [project] [--message M]")
         printOut("  hook <install|uninstall|status> [project]  Manage the post-commit hook")
-        printOut("  milestone <add|list|done|drop|remove> ...  Milestone management")
+        printOut("  milestone <add|list|done|drop|remove|reopen> ...  Milestone management")
         printOut("  dashboard                Cross-project aggregate dashboard (activity/milestones/languages)")
         printOut("  context [project] [--budget N]  Emit the agent context pack (markdown; budget = char budget)")
         printOut("  docs [project]           Print project README/AGENTS/CLAUDE verbatim (--json)")
@@ -1498,7 +1548,7 @@ func printHelp(): Unit {
         printOut("                           patchconf: patch-level confidence (3-layer: --patch analyze / --skill agent / --merge final)")
         printOut("                           confidence: structural confidence report (--llm for the LLM review prompt)")
         printOut("                           Code graph: symbol index / relationship tree / impact /")
-        printOut("                           interactive architecture canvas (--format html|mermaid|dot|json)")
+        printOut("                           interactive architecture canvas (--format html|mermaid|dot|json|scene)")
         printOut("  config <list|get|set> [k] [v]  Configuration (AI preset, etc.)")
         printOut("  verify [project]         Verify doc integrity (user content untouched)")
         printOut("  doctor                   Environment self-check")
@@ -1527,15 +1577,15 @@ func printHelp(): Unit {
     printOut("  list                     列出已注册项目及一句话现状")
     printOut("  add <路径> [--name N]    注册项目")
     printOut("  remove <项目> [--purge]  取消注册（--purge 一并删除进度数据）")
-    printOut("  scan [根目录...] [--depth N]  扫描发现项目并注册")
+    printOut("  scan [根目录...] [--depth N] [--git-only]  扫描发现项目并注册（--git-only 跳过非 git 目录）")
     printOut("  status [项目]            查看项目进度现状（不写任何文件）")
     printOut("  track [项目]             进度快照：只记录，不改文档（钩子用）")
-    printOut("  update [项目] [--docs S]  浅更新：记录各分支进度 + 刷新文档进度区域（S = all|readme|agent，默认 all）")
+    printOut("  update [项目] [--docs S] [--dry-run] [--no-ai]  浅更新：记录各分支进度 + 刷新文档进度区域（S = all|readme|agent，默认 all）")
     printOut("  deep [项目] [--scope S]   深度更新：重写 overview/architecture/commands/history")
     printOut("  journal [项目] [--branch B]  查看进度日志")
     printOut("  git <pull|push|commit|stash|unstash|fetch> [项目] [--message M]")
     printOut("  hook <install|uninstall|status> [项目]  管理 post-commit 钩子")
-    printOut("  milestone <add|list|done|drop|remove> …  里程碑管理")
+    printOut("  milestone <add|list|done|drop|remove|reopen> …  里程碑管理")
     printOut("  dashboard                跨项目聚合仪表盘（活跃度/里程碑/语言分布）")
     printOut("  context [项目] [--budget N]  输出 agent 上下文包（markdown，budget=字符预算）")
     printOut("  docs [项目]                输出项目 README/AGENTS/CLAUDE 原文（--json）")
@@ -1547,7 +1597,7 @@ func printHelp(): Unit {
     printOut("                           patchconf：补丁级置信度三层架构（--patch 分析 / --skill 取 Agent 任务 / --merge 合并终稿）")
     printOut("                           confidence：代码置信度报告（--llm 出 LLM 复核提示词）")
     printOut("                           代码图谱：符号索引/关系树/影响面/技术架构图")
-    printOut("                           （arch 用 --format html|mermaid|dot|json，html 为 Canvas 交互图）")
+    printOut("                           （arch 用 --format html|mermaid|dot|json|scene；html 为 Canvas 交互图）")
     printOut("  config <list|get|set> [k] [v]  配置（AI 预设等）")
     printOut("  verify [项目]            校验文档完整性（用户内容是否被改动）")
     printOut("  doctor                   环境自检")
@@ -1697,14 +1747,14 @@ func dashboardLanguageNotes(dash: JsonValue, shown: Int64): ArrayList<String> {
 /// 不能让它顶着「暂无新变化」冒充健康项目。
 func listRowHeadline(p: ProjectEntry, config: Config): String {
     if (p.disabled) {
-        return "已停用（不采集）"
+        return tl(config.language, "disabled (not collected)", "已停用（不采集）")
     }
     try {
         let facts = collectFacts(p.path, p.kind, config, 3, false)
         let progress = readProgress(p.id)
         return computeHeadline(facts, progress, config.language)
     } catch (e: Exception) {
-        return "（读取失败：${e.message}）"
+        return tl(config.language, "(unreadable: ${e.message})", "（读取失败：${e.message}）")
     }
 }
 
@@ -1714,9 +1764,10 @@ func listRowHeadline(p: ProjectEntry, config: Config): String {
 /// **可处理项目**（排除已停用）。两个数不同是设计使然，但两边都沉默时
 /// 用户只会看到 `list` 说「共 2 个」而 dashboard 说「共 1 个」，无从判断谁错了。
 /// 所以停用数必须写出来，把「口径不同」变成「口径已知」。
-func listSummaryLine(total: Int64, disabledCount: Int64): String {
-    let note = if (disabledCount > 0) { "（${disabledCount} 个已停用，不参与统计）" } else { "" }
-    return "共 ${total} 个项目${note}。用 `moongit status <项目>` 看详情。"
+func listSummaryLine(total: Int64, disabledCount: Int64, lang: String): String {
+    let note = if (disabledCount > 0) { tl(lang, " (${disabledCount} disabled, excluded from stats)", "（${disabledCount} 个已停用，不参与统计）") } else { "" }
+    return tl(lang, "${total} projects${note}. Use `moongit status <project>` for details.",
+        "共 ${total} 个项目${note}。用 `moongit status <项目>` 看详情。")
 }
 
 func cmdList(rest: ArrayList<String>, ctx: CliContext): Int64 {
@@ -1751,7 +1802,7 @@ func cmdList(rest: ArrayList<String>, ctx: CliContext): Int64 {
     }
     printOut(renderTable([T("Project", "项目"), T("Type", "类型"), T("Path", "路径"), T("Headline", "现状")], rows.toArray()))
     Log.info("")
-    Log.info(listSummaryLine(reg.projects.size, disabledCount))
+    Log.info(listSummaryLine(reg.projects.size, disabledCount, config.language))
     return 0
 }
 
@@ -1910,21 +1961,22 @@ func scanResultJson(result: ScanResult, added: Int64, existing: Int64): JsonValu
 /// 原来只表达前两种，于是「深度不够所以没看完」被渲染成
 /// 「看完了，这里没有项目」。
 /// 枚举而不是 if 链：三种成因可以同时发生，逐个 if 迟早漏掉一种组合。
-public func scanCoverage(truncated: Bool, unreadableCount: Int64, depthCapped: Bool): String {
+public func scanCoverage(truncated: Bool, unreadableCount: Int64, depthCapped: Bool, lang: String): String {
+    let en = isEnglish(lang)
     var why = ArrayList<String>()
     if (truncated) {
-        why.add("撞到目录上限")
+        why.add(tl(lang, "hit the directory cap", "撞到目录上限"))
     }
     if (depthCapped) {
-        why.add("撞到 --depth 上限，下面还有目录没看")
+        why.add(tl(lang, "hit the --depth cap; deeper directories were not visited", "撞到 --depth 上限，下面还有目录没看"))
     }
     if (unreadableCount > 0) {
-        why.add("${unreadableCount} 个目录读不出来")
+        why.add(tl(lang, "${unreadableCount} directories unreadable", "${unreadableCount} 个目录读不出来"))
     }
     if (why.isEmpty()) {
-        return "完整"
+        return tl(lang, "complete", "完整")
     }
-    return "部分覆盖：" + joinStrings(why, "，且")
+    return tl(lang, "partial coverage: ", "部分覆盖：") + joinStrings(why, tl(lang, "; ", "，且"))
 }
 
 /// 「本次扫描**没看完**吗」——文本路径两个出口（空结果早退 / 有结果收尾）
@@ -1940,6 +1992,7 @@ public func scanIncomplete(truncated: Bool, depthCapped: Bool): Bool {
 
 func cmdScan(rest: ArrayList<String>, ctx: CliContext): Int64 {
     var depth: Int64 = 4
+    let scanLang = loadConfig().language
     match (flagValue(rest, "--depth")) {
         case Some(v) =>
             try {
@@ -1981,7 +2034,7 @@ func cmdScan(rest: ArrayList<String>, ctx: CliContext): Int64 {
         throw DgError.usage(T("No valid directories to scan", "没有可扫描的有效目录"))
     }
 
-    Log.step("扫描 ${resolvedRoots.size} 个根目录（深度 ${depth}）…")
+    Log.step(T("Scanning ${resolvedRoots.size} root directories (depth ${depth})...", "扫描 ${resolvedRoots.size} 个根目录（深度 ${depth}）…"))
     let result = scanRoots(resolvedRoots, depth, includeNonGit)
     let (added, existing) = registerCandidates(result.candidates)
 
@@ -2004,7 +2057,7 @@ func cmdScan(rest: ArrayList<String>, ctx: CliContext): Int64 {
         for (u in result.unreadable) {
             Log.warn("  · ${u}")
         }
-        Log.warn(T("Scan coverage: ${scanCoverage(result.truncated, result.unreadable.size, result.depthCapped)} - the projects listed above are not the full set.", "扫描覆盖程度：${scanCoverage(result.truncated, result.unreadable.size, result.depthCapped)} —— 上面列出的项目不是全部。"))
+        Log.warn(T("Scan coverage: ${scanCoverage(result.truncated, result.unreadable.size, result.depthCapped, scanLang)} - the projects listed above are not the full set.", "扫描覆盖程度：${scanCoverage(result.truncated, result.unreadable.size, result.depthCapped, scanLang)} —— 上面列出的项目不是全部。"))
     }
 
     if (result.candidates.size == 0) {
@@ -2042,7 +2095,7 @@ func cmdScan(rest: ArrayList<String>, ctx: CliContext): Int64 {
     if (scanIncomplete(result.truncated, result.depthCapped)) {
         // 找到了项目不代表看全了：更深的目录里可能还有别的仓库。
         // 原来这里也只接了 truncated，深度上限同样静默。
-        Log.warn(T("Scan coverage: ${scanCoverage(result.truncated, result.unreadable.size, result.depthCapped)} - the projects listed above are not the full set; increase --depth or scan roots separately", "扫描覆盖程度：${scanCoverage(result.truncated, result.unreadable.size, result.depthCapped)} —— 上面列出的项目不是全部，可增加 --depth 或分根扫描"))
+        Log.warn(T("Scan coverage: ${scanCoverage(result.truncated, result.unreadable.size, result.depthCapped, scanLang)} - the projects listed above are not the full set; increase --depth or scan roots separately", "扫描覆盖程度：${scanCoverage(result.truncated, result.unreadable.size, result.depthCapped, scanLang)} —— 上面列出的项目不是全部，可增加 --depth 或分根扫描"))
     }
     return 0
 }
@@ -2480,6 +2533,7 @@ let JOURNAL_DEFAULT_LIMIT: Int64 = 20
 
 func cmdJournal(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let targets = resolveTargets(rest, true)
+    let jl = loadConfig().language
     var branch = ""
     match (flagValue(rest, "--branch")) {
         case Some(b) => branch = b
@@ -2583,7 +2637,7 @@ func cmdJournal(rest: ArrayList<String>, ctx: CliContext): Int64 {
             if (i >= limit) {
                 break
             }
-            let mode = modeLabel(Json.strAt(e, "mode", ""), "zh")
+            let mode = modeLabel(Json.strAt(e, "mode", ""), jl)
             printOut("## ${formatDateTime(Json.strAt(e, "at", ""))} · `${Json.strAt(e, "branch", "-")}` · ${mode}")
             let commits = Json.intAt(e, "commitCount", 0)
             if (commits > 0) {
@@ -3351,7 +3405,11 @@ func currentExecutable(): String {
     if (args.size > 0 && args[0].startsWith("/")) {
         return args[0]
     }
-    return "deepgit"
+    // ⚠️ L2：兜底原来返回旧名 `deepgit`。改名后这个分支只在「PATH 查找启动
+    //（argv[0] 是 moongit，不以 / 开头）且未设 DEEPGIT_BIN」时走到，
+    // 于是 hook install 写进去的是指向不存在命令的钩子 —— 老用户的钩子
+    // 会报「unknown command」，而这类失败只发生在用户机器上，CI 全绿。
+    return "moongit"
 }
 
 func getCwd(): String {

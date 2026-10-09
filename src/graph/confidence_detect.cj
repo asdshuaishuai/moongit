@@ -911,6 +911,24 @@ func firstIdentAfter(line: String, fromByte: Int64): String {
     return ""
 }
 
+/// C/C++ 的**前置声明**形态（opaque forward declaration）。
+/// ast-grep 的 type 规则对 `struct Fwd;` 与 `typedef struct Fwd FwdT;`
+/// 都跨 1 行命中，于是每个前置声明都被判成「空类型」扣 3 分 ——
+/// 而 opaque 前向声明是 C 头文件的**惯用法**（隐藏实现细节），
+/// 它系统性地拖低整个 C/C++ 仓库的分数（审查 M3）。
+/// 判据：声明以 `;` 结尾（没有 `{...}` 成员表）即前置声明。
+func isForwardDeclaration(text: String): Bool {
+    let t = text.trimAscii()
+    if (t.isEmpty()) {
+        return false
+    }
+    // 有成员表就不是前置声明（`{ }` 之间必然有内容）
+    if (t.contains("{")) {
+        return false
+    }
+    return t.endsWith(";")
+}
+
 /// 类型级信号：空类型（无成员）与上帝类（行数/方法数超阈）。
 func detectTypeSignals(nodes: ArrayList<AstNode>, findings: ArrayList<Finding>): Unit {
     for (n in nodes) {
@@ -923,6 +941,11 @@ func detectTypeSignals(nodes: ArrayList<AstNode>, findings: ArrayList<Finding>):
             if (mayDeclare(line)) { methods += 1 }
         }
         let name = typeNameOf(n)
+        // ⚠️ M3：前置声明不是空类型。它是一种**故意不暴露成员**的声明，
+        // 报它「被掏空」是对 C 头文件惯用法的事实性误判。
+        if (isForwardDeclaration(n.text)) {
+            continue
+        }
         if (methods == 0 && lines <= 3) {
             findings.add(Finding(EmptyType, n.file, n.startLine, name,
                 "类型 ${name} 没有任何成员（${lines} 行）——占位类型或被掏空"))

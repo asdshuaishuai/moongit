@@ -55,6 +55,9 @@ public func overviewJson(graph: CodeGraph): JsonValue {
     Json.set(o, "referenceEdges", Json.of(Int64(graph.refEdges.size)))
     Json.set(o, "truncated", Json.of(graph.truncated))
     Json.set(o, "skipped", Json.of(graph.skipped))
+    // M7：超大文件跳过数**恒发**（0 也发）——「没有」与「没扫描」是两件事，
+    // 缺键会让下游把后者读成前者。
+    Json.set(o, "oversizeSkipped", Json.of(graph.oversizeSkipped))
     let langs = Json.obj()
     for ((k, v) in byLang) { Json.set(langs, k, Json.of(v)) }
     Json.set(o, "byLang", langs)
@@ -74,6 +77,9 @@ public func overviewText(graph: CodeGraph): String {
     }
     if (graph.skipped > 0) {
         sb.append("  ⚠ ${graph.skipped} 个文件因超限被跳过（不参与统计）\n")
+    }
+    if (graph.oversizeSkipped > 0) {
+        sb.append("  ⚠ ${graph.oversizeSkipped} 个文件超过 ${GRAPH_MAX_FILE_BYTES} 字节上限未纳入（下列统计不含它们）\n")
     }
     // 按语言 / 按种类各一行
     let langs = Json.getOr(o, "byLang")
@@ -112,9 +118,24 @@ public func overviewText(graph: CodeGraph): String {
 // MARK: - 全量图 JSON（graph tree --json）
 
 /// 完整图谱的机读形态：文件事实 + 两类边。契约键名稳定。
-public func fullGraphJson(graph: CodeGraph): JsonValue {
+///
+/// `maxDepth <= 0` = 不截断（默认全量）。> 0 时只留**目录深度**不超过它的文件
+/// （根目录下的文件深度 0，`a/b.cj` 深度 1，与 treeText 的目录层级语义一致）。
+///
+/// ⚠️ M16：MCP 的 codegraph_tree 与 CLI 的 `graph tree --json` 都声明了
+/// `--depth`，而原先**解析完就把它丢掉**（fullGraphJson 根本没有这个参数）——
+/// 模型传 depth=2 期待小图，实际拿到全量图，且 schema 明写「默认 6」。
+/// 参数被接受而不生效，比没有这个参数更糟：调用方按它做了预算决策。
+/// 现在截断照做了，并且**恒发** depth / depthOmitted 两个键（不变量 33：
+/// 「没有截断」是一个有意义的事实，缺键会被读成旧版本没有这个字段）。
+public func fullGraphJson(graph: CodeGraph, maxDepth: Int64): JsonValue {
+    var depthOmitted: Int64 = 0
     let fs = ArrayList<JsonValue>()
     for (f in graph.files) {
+        if (maxDepth > 0 && dirDepthOf(f.relPath) > maxDepth) {
+            depthOmitted += 1
+            continue
+        }
         let o = Json.obj()
         Json.set(o, "path", Json.of(f.relPath))
         Json.set(o, "lang", Json.of(f.lang))
@@ -151,7 +172,19 @@ public func fullGraphJson(graph: CodeGraph): JsonValue {
     Json.set(o, "importEdges", JArr(imps))
     Json.set(o, "referenceEdges", JArr(refs))
     Json.set(o, "truncated", Json.of(graph.truncated))
+    Json.set(o, "skipped", Json.of(graph.skipped))
+    Json.set(o, "oversizeSkipped", Json.of(graph.oversizeSkipped))
+    // depth 截断的两个轴（M16）：请求的深度 + 因它没进本次输出的文件数。
+    Json.set(o, "depth", Json.of(maxDepth))
+    Json.set(o, "depthOmitted", Json.of(depthOmitted))
     return o
+}
+
+/// 文件的目录深度：根目录下的文件 = 0，`a/b.cj` = 1，`a/b/c.cj` = 2。
+/// 与 treeText 的目录层级同口径（那里根目录是深度 1，文件挂在目录下）。
+public func dirDepthOf(relPath: String): Int64 {
+    let segs = relPath.split("/")
+    return Int64(segs.size) - 1
 }
 
 // MARK: - 关系树

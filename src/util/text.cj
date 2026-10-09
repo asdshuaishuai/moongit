@@ -228,6 +228,22 @@ public func safeSlice(s: String, maxBytes: Int64): String {
     return s[..charBoundaryAt(s, maxBytes)]
 }
 
+/// 返回 >= from 的第一个 UTF-8 字符边界（供「取尾部子串」用）。
+/// from 落在多字节续字节中间时前移到该字符的起点；from 越界返回串长。
+/// 与 charBoundaryAt 是一对：一个回退、一个前进。
+public func nextCharBoundary(s: String, from: Int64): Int64 {
+    let bytes = s.toArray()
+    var i: Int64 = if (from < 0) { 0 } else { from }
+    while (i < bytes.size) {
+        let b = bytes[i]
+        if (b < 0x80u8 || b >= 0xc0u8) {
+            return i
+        }
+        i += 1
+    }
+    return Int64(bytes.size)
+}
+
 /// 返回 <= 目标字节位置的安全字符边界（避免切断 UTF-8 多字节序列）
 public func charBoundaryAt(s: String, target: Int64): Int64 {
     let bytes = s.toArray()
@@ -577,6 +593,33 @@ public func isEnglish(lang: String): Bool {
     return lang == "en"
 }
 
+/// 进程级界面语言提示。**util 是叶子层**（不得 import kernel/cli），
+/// 而它自己的错误/告警文案同样是用户可见的（M20：exec.cj 的子进程超时告警、
+/// errors.cj 的内部错误、paths.cj 的删除失败告警原先全是硬编码中文，
+/// en 用户在错误路径上看到的仍是中文）。由启动处在 loadConfig() 之后
+/// `setUiLanguage()` 一次；未设置时是引擎默认语言（中文）。
+///
+/// ⚠️ 这是**只写一次的启动参数**，不是运行时可切换项：进程内多处读、无锁。
+/// 若将来要支持运行中切语言，先回答「已渲染过的文本怎么办」。
+private var uiLang: String = "zh"
+
+/// 设置进程界面语言（启动处调用一次）。
+public func setUiLanguage(lang: String): Unit {
+    uiLang = lang
+}
+
+/// 当前界面语言（诊断用）。
+public func uiLanguage(): String {
+    return uiLang
+}
+
+/// 双语话术选择器：`pickText("Unknown command: X", "未知命令：X")`。
+/// 英文在前 —— 与默认语言（中文）对照着读，「英文是翻译」更贴近事实。
+/// cli 的 T() 是它的转发，全仓只有这一处读 uiLang。
+public func pickText(en: String, zh: String): String {
+    return if (isEnglish(uiLang)) { en } else { zh }
+}
+
 /// 语言取值的判据（写入口 / 读路径共用，同 #202 的三层纪律）。
 /// 返回空串表示合法，否则返回该报给用户的原因。
 public func languageError(v: String): String {
@@ -585,5 +628,7 @@ public func languageError(v: String): String {
             return ""
         }
     }
-    return "language 只支持：${joinStrings(SUPPORTED_LANGUAGES, ", ")}（收到 \"${v}\"）"
+    return pickText(
+        "language only supports: ${joinStrings(SUPPORTED_LANGUAGES, ", ")} (got \"${v}\")",
+        "language 只支持：${joinStrings(SUPPORTED_LANGUAGES, ", ")}（收到 \"${v}\"）")
 }

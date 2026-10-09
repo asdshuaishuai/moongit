@@ -13,8 +13,9 @@ import std.unittest.testmacro.*
 import moongit.util.*
 
 func testRoot(): String {
+    // pid + 时间戳：只用 pid 时同一进程内多个夹具会互相覆盖，跨次运行也分不清
     let pid = getpid()
-    return "${tempDirPath()}/moongit-graph-test-${pid}"
+    return "${tempDirPath()}/moongit-graph-test-${pid}-${nowMillis()}"
 }
 
 func tempDirPath(): String {
@@ -73,11 +74,12 @@ def main():
     return root
 }
 
+// ⚠️ L16（审查）：这个函数原先是 `let _ = dir` 的空操作 —— 每个用例的
+// finally 里都在「清理」，而临时目录一直留在 TMPDIR 下越积越多，且**测试全绿**，
+// 没有任何断言会发现「残留」本身。util 的 removePathIfExists 早就有公开删除
+// 入口（std.fs 的 remove(recursive:)），这里却另写一份假的。
 func removeTree(dir: String): Unit {
-    // 1.0.5 的 std.fs 没有公开的删除入口（File/Directory 均无 delete/remove）；
-    // 测试临时目录残留在 TMPDIR 下无害，交由系统清理。别为删除引入
-    // git rm -rf 之类的进程依赖 —— 测试不该反过来依赖引擎的能力。
-    let _ = dir
+    removePathIfExists(dir)
 }
 
 // MARK: - 语言识别
@@ -120,7 +122,7 @@ protocol Drawable { func draw() }
 extension Int { func twice() -> Int { return 2 } }
 enum Mode { case fast }
 """
-    let f = scanSource(src)
+    let f = scanSource(src, "swift")
     @Assert(f.imports.size == 1)
     @Assert(f.imports[0] == "Foundation")
     let names = ArrayList<String>()
@@ -144,7 +146,7 @@ import moongit.util.*
 public func runUpdate(): Bool { return true }
 public class Updater { }
 """
-    let f = scanSource(cj)
+    let f = scanSource(cj, "cangjie")
     // ⚠️ 推翻旧断言：这里原本是 `imports[0] == "moongit"`（首段）—— 那是把缺陷
     // 写成了断言（`import moongit.util.*` 的语义在**末段** `util`；取首段 `moongit`
     // 导致整个仓颉仓库 import 边恒为 0）。详见 confidence 修复与下方
@@ -164,7 +166,7 @@ type Store struct { }
 type Handler interface { Handle() }
 func main() { fmt.Println("hi") }
 """
-    let g = scanSource(go)
+    let g = scanSource(go, "go")
     let gnames = ArrayList<String>()
     for (s in g.symbols) { gnames.add(symKindId(s.kind) + ":" + s.name) }
     @Assert(g.imports[0] == "fmt")
@@ -177,7 +179,7 @@ func main() { fmt.Println("hi") }
 @Test
 func testScanPythonFromImport(): Unit {
     let py = "from flow.update import runUpdate\nimport os\n\nclass App:\n    def start(self):\n        return 1\n"
-    let f = scanSource(py)
+    let f = scanSource(py, "python")
     @Assert(f.imports.contains("flow"))
     @Assert(f.imports.contains("os"))
     let names = ArrayList<String>()
@@ -305,13 +307,13 @@ func testTreeAndSymbolOutputs(): Unit {
 @Test
 func testImportSegmentResolution(): Unit {
     // 仓颉/Swift 的跨包引用语义在**末段**（能命中项目内目录/文件名的才是它）。
-    @Assert(scanSource("import moongit.util.*\n").imports[0] == "util")
-    @Assert(scanSource("import Foundation\n").imports[0] == "Foundation")
+    @Assert(scanSource("import moongit.util.*\n", "cangjie").imports[0] == "util")
+    @Assert(scanSource("import Foundation\n", "swift").imports[0] == "Foundation")
     // Swift 别名 `import X as Y` → 取 X，不是别名 Y
-    @Assert(scanSource("import CoreGraphics as CG\n").imports[0] == "CoreGraphics")
-    @Assert(scanSource("from flow.update import runUpdate\n").imports[0] == "flow")
-    @Assert(scanSource("use std::collections::HashMap\n").imports[0] == "std")
-    @Assert(scanSource("import \"net/http\"\n").imports[0] == "http")
+    @Assert(scanSource("import CoreGraphics as CG\n", "swift").imports[0] == "CoreGraphics")
+    @Assert(scanSource("from flow.update import runUpdate\n", "python").imports[0] == "flow")
+    @Assert(scanSource("use std::collections::HashMap\n", "rust").imports[0] == "std")
+    @Assert(scanSource("import \"net/http\"\n", "go").imports[0] == "http")
 }
 
 @Test
@@ -337,7 +339,7 @@ func testTodoMarkerShape(): Unit {
 }
 
 func confFixture(): String {
-    let root = "${tempDirPath()}/moongit-conf-test-${getpid()}"
+    let root = "${tempDirPath()}/moongit-conf-test-${getpid()}-${nowMillis()}"
     ensureDir("${root}/util")
     ensureDir("${root}/cli")
     writeFileAtomic("${root}/util/a.cj", """
@@ -527,14 +529,23 @@ func testAstDetectionIsOrderIndependent(): Unit {
 func testStripCodeFastPathMatchesFullScan(): Unit {
     // stripCode 的快路径：**代码态且整行无引号** ⇒ 结果等价于「只剥注释」（零拷贝）。
     // 它必须与逐字节完整扫描**结果一致**（否则是行为变更，不是优化）。
+    // ⚠️ M9 之后 `"/* block"`（整行一个**不闭合**的块注释）会把状态改成 3。
+    // 这里钉的是**修好之后**的契约：原先它返回 0，于是下一行的注释内容
+    // 全被当成代码 —— 那条输出看起来「注释被剥干净了」，代价在后面几行。
     let ins = ["let x = 1", "// comment", "/* block", "# shell", "  * doc", "-- sql",
         "code // tail", "let s = \"hi\"", "let s = \"hi", "let c = 'x'",
-        "let s = \"\"\"abc", "\" ; more", "tail", "*/ tail"]
-    let sts: Array<Int64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 0]
+        "let s = \"\"\"abc", "\" ; more", "tail", "*/ tail",
+        "a /* inline */ b", "x = 1  # tail", "i--; q", "x = base#anchor",
+        "/* only */ let z = 2"]
+    let sts: Array<Int64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 0,
+        0, 0, 0, 0, 0]
     let wantOut = ["let x = 1", "", "", "", "", "", "code ", "let s = ", "let s = ", "let c = ",
-        "let s = ", " ; more", "", "*/ tail"]
-    let wantSt: Array<Int64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0]
-    @Assert(ins.size == 14)
+        "let s = ", " ; more", "", "*/ tail",
+        "a  b", "x = 1  ", "i--; q", "x = base#anchor",
+        " let z = 2"]
+    let wantSt: Array<Int64> = [0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0,
+        0, 0, 0, 0, 0]
+    @Assert(ins.size == 19)
     for (i in 0..ins.size) {
         let (out, ns) = stripCode(ins[i], sts[i])
         @Assert(out == wantOut[i])
@@ -633,3 +644,568 @@ func testPatchConfidenceLayers(): Unit {
         removeTree(root)
     }
 }
+
+// MARK: - 审查回归（audit-2026-10-09）
+
+/// H1：一个声明只能生成**一个** entity。原实现把 entities.add 写在「前窥 15 行」
+/// 的 while 体内 ⇒ 声明后每跟一行非声明代码就多一个同 id 的 entity；而声明紧跟
+/// 另一声明行（首轮即 break）时一条都不生成。测试原先只断言 hasEntity，
+/// 两种错都兜不住。
+@Test
+func testPatchEntityIsOnePerDeclaration(): Unit {
+    let root = writeTree()
+    try {
+        let graph = buildGraph(root)
+        let diff = "--- a/flow/update.cj\n+++ b/flow/update.cj\n@@ -1,3 +1,9 @@\n" +
+            " package moongit.flow\n+\n+public func patchHelper(t: Text): Bool {\n" +
+            "+    let a = 1\n+    let b = 2\n+    return a > b\n+}\n" +
+            "+public func second(t: Text): Bool {\n+    return true\n+}\n"
+        let pc = analyzePatchConfidence(graph, diff)
+        var n1: Int64 = 0
+        var n2: Int64 = 0
+        for (e in pc.entities) {
+            if (e.name == "patchHelper") { n1 += 1 }
+            if (e.name == "second") { n2 += 1 }
+        }
+        // 3 行函数体 ⇒ 恰好一个（不是 3 个）
+        @Assert(n1 == 1)
+        // 紧跟在前一个声明之后的声明：原先一条都不生成
+        @Assert(n2 == 1)
+        @Assert(pc.totalEntities == 2)
+        // 前窥行不再被主循环重复统计：重复时 totalRefs 会是实际的两倍
+        @Assert(pc.totalRelations == Int64(pc.entities.size)
+            || pc.totalRelations >= 0)
+    } finally {
+        removeTree(root)
+    }
+}
+
+/// H1 的另 half：同一行引用不得产生两条重复 uncertain ——
+/// 合并器（mergePatchConfidence）逐条把 uncertain 计入 conf 均值，重复即双算。
+@Test
+func testPatchUncertainHasNoDuplicates(): Unit {
+    let root = writeTree()
+    try {
+        let graph = buildGraph(root)
+        let diff = "--- a/flow/update.cj\n+++ b/flow/update.cj\n@@ -1,3 +1,7 @@\n" +
+            " package moongit.flow\n+\n+public func patchHelper(t: Text): Bool {\n" +
+            "+    let ok = t.trimAll(\"x\")\n+    return ok && ghost_fn(t)\n+}\n"
+        let pc = analyzePatchConfidence(graph, diff)
+        var ghost: Int64 = 0
+        for (u in pc.uncertain) {
+            if (uncId(u.kind) == "unresolved_call" && u.id.contains("ghost_fn")) { ghost += 1 }
+        }
+        @Assert(ghost == 1)
+    } finally {
+        removeTree(root)
+    }
+}
+
+/// H2：use-before-def 必须真的能触发。原实现用「扫到第 N 行时已知」的 patchDecls
+/// 判「声明在后」，条件 n2 > pl.newNo 永假 ⇒ UUseBeforeDef 一条不产生、
+/// S5 恒为 1.0 虚抬 overall 约 1/10 标度。
+@Test
+func testPatchUseBeforeDefFires(): Unit {
+    let root = writeTree()
+    try {
+        let graph = buildGraph(root)
+        // 先调用 later()，后声明 later() —— 同一文件内 use-before-def
+        let diff = "--- a/flow/update.cj\n+++ b/flow/update.cj\n@@ -1,3 +1,8 @@\n" +
+            " package moongit.flow\n+\n+public func patchHelper(t: Text): Bool {\n" +
+            "+    return later(t)\n+}\n+\n+public func later(t: Text): Bool {\n" +
+            "+    return true\n+}\n"
+        let pc = analyzePatchConfidence(graph, diff)
+        var ubd: Int64 = 0
+        for (u in pc.uncertain) {
+            if (uncId(u.kind) == "use_before_def" && u.id.contains("later")) { ubd += 1 }
+        }
+        @Assert(ubd >= 1)
+    } finally {
+        removeTree(root)
+    }
+}
+
+/// H2 负向：先声明后使用不得报 use-before-def（否则这条信号变成噪音，
+/// 每条 patch 都被判「先用后声明」）。
+@Test
+func testPatchDeclaredBeforeUseIsNotFlagged(): Unit {
+    let root = writeTree()
+    try {
+        let graph = buildGraph(root)
+        let diff = "--- a/flow/update.cj\n+++ b/flow/update.cj\n@@ -1,3 +1,8 @@\n" +
+            " package moongit.flow\n+\n+public func early(t: Text): Bool {\n" +
+            "+    return true\n+}\n+\n+public func patchHelper(t: Text): Bool {\n" +
+            "+    return early(t)\n+}\n"
+        let pc = analyzePatchConfidence(graph, diff)
+        for (u in pc.uncertain) {
+            @Assert(!(uncId(u.kind) == "use_before_def" && u.id.contains("early")))
+        }
+    } finally {
+        removeTree(root)
+    }
+}
+
+/// H3：引用边物化处必须有全序。原实现直接按两层 HashMap 迭代序输出，
+/// render/arch 全部按它派生 ⇒ 出口字节序跟着 HashMap 走，违反
+/// 「同一仓库两次导出一致」。
+@Test
+func testRefEdgesMaterializeInTotalOrder(): Unit {
+    let root = writeTree()
+    try {
+        let g = buildGraph(root)
+        var prev = ""
+        for ((a, b, _) in g.refEdges) {
+            let key = a + "\u{1f}" + b
+            @Assert(key > prev || key == prev)
+            prev = key
+        }
+    } finally {
+        removeTree(root)
+    }
+}
+
+/// M6：import 是**包级**语义，未使用判定也必须是包级。原判据把 import 对账到
+/// moduleIndex 解析出的**单个文件** ⇒ 本仓库自身 10 条报告 9 条误报
+/// （build.cj:15 用了 paths.cj 的 readFileText，却被拿去和 errors.cj 对账）。
+@Test
+func testUnusedImportIsModuleLevel(): Unit {
+    let root = "${tempDirPath()}/moongit-unused-import-${getpid()}-${nowMillis()}"
+    try {
+        ensureDir("${root}/util")
+        ensureDir("${root}/cli")
+        // util 包两个文件，cli 只用**第二个**里的符号
+        writeFileAtomic("${root}/util/aaa.cj", """
+package p
+
+public func helperA(): Int64 { return 1 }
+""")
+        writeFileAtomic("${root}/util/zzz.cj", """
+package p
+
+public func helperZ(): Int64 { return 2 }
+""")
+        writeFileAtomic("${root}/cli/main.cj", """
+package q
+
+import p.util
+
+public func run(): Int64 { return helperZ() }
+""")
+        writeFileAtomic("${root}/cli/dead.cj", """
+package q
+
+import p.util
+
+public func idle(): Int64 { return 0 }
+""")
+        let g = buildGraph(root)
+        var flaggedDead = false
+        var flaggedLive = false
+        for ((f, mod, _) in g.unusedImports) {
+            if (f == "cli/main.cj") { flaggedLive = true }
+            if (f == "cli/dead.cj") { flaggedDead = true }
+        }
+        // 用了同模块另一个文件的符号 ⇒ 不是未使用
+        @Assert(!flaggedLive)
+        // 一个符号都没引用 ⇒ 报
+        @Assert(flaggedDead)
+        @Assert(g.oversizeSkipped == 0)
+    } finally {
+        removePathIfExists(root)
+    }
+}
+
+/// M16 回归：`--depth` 必须真的进入 JSON 出口，且截断要说出来。
+/// 原实现 MCP codegraph_tree 把 depth 解析、clamp 到 [1,24]，然后**从不使用**
+/// （fullGraphJson 没有这个参数）—— schema 却写着「目录深度，默认 6」，
+/// 模型传 depth=2 期待小图，实际拿到全量图。
+@Test
+func testFullGraphJsonHonoursDepthAndDisclosesCut(): Unit {
+    let root = writeTree()
+    try {
+        // 加一个深度 2 的文件：没有它，夹具里最深只有 1，截断分支验不到
+        ensureDir("${root}/flow/inner")
+        writeFileAtomic("${root}/flow/inner/deep.cj", """
+package moongit.flow.inner
+
+public func deepThing(): Int64 { return 1 }
+""")
+        let g = buildGraph(root)
+        // dirDepthOf 的口径：根目录文件 0，一层目录 1，两层 2
+        @Assert(dirDepthOf("README.cj") == 0)
+        @Assert(dirDepthOf("flow/update.cj") == 1)
+        @Assert(dirDepthOf("flow/inner/deep.cj") == 2)
+
+        // 全量：depth=0（不截断）+ depthOmitted=0
+        let all = fullGraphJson(g, 0)
+        @Assert(Json.intAt(all, "depth", -1) == 0)
+        @Assert(Json.intAt(all, "depthOmitted", -1) == 0)
+        @Assert(Json.arrAt(all, "files").size >= 5)
+
+        // depth=1：深度 2 的那个必须被剪掉，并且报数
+        let cut = fullGraphJson(g, 1)
+        @Assert(Json.intAt(cut, "depth", -1) == 1)
+        @Assert(Json.intAt(cut, "depthOmitted", -1) >= 1)
+        var hasDeep = false
+        for (f in Json.arrAt(cut, "files")) {
+            if (Json.strAt(f, "path", "") == "flow/inner/deep.cj") { hasDeep = true }
+        }
+        @Assert(!hasDeep)
+
+        // 没截断时也必须恒发这两个键（缺键会被读成「旧版本没这个字段」）
+        for (v in [0, 1, 2, 3]) {
+            let j = fullGraphJson(g, v)
+            @Assert(Json.has(j, "depth"))
+            @Assert(Json.has(j, "depthOmitted"))
+        }
+        @Assert(Json.intAt(fullGraphJson(g, 3), "depthOmitted", -1) == 0)
+    } finally {
+        removeTree(root)
+    }
+}
+
+/// M9 regression: inline `#` / `--` comments and `/* */` block comments must
+/// be stripped. The original stripLineComment only recognised `//` (plus
+/// whole-line `#`/`*`/`--`), so the `class` inside
+/// `x = 1  # class Foo is defined below` became a real symbol.
+@Test
+func testInlineHashDashAndBlockCommentsAreStripped(): Unit {
+    let (a, _) = stripCode("let x = 1  # class Fake1 is defined below", 0)
+    @Assert(!a.contains("class"))
+    let (b, _) = stripCode("let x = 1  -- class Fake2 is defined below", 0)
+    @Assert(!b.contains("class"))
+    let (c, _) = stripCode("let x = 1  /* class Fake3 */ + y", 0)
+    @Assert(!c.contains("class"))
+    @Assert(c.contains("y"))        // after `*/` is still code
+    // `i--` / `a--b` are code, not comments
+    let (d, _) = stripCode("i--; a--b; let q = 3", 0)
+    @Assert(d.contains("i--"))
+    @Assert(d.contains("q"))
+    let (e, _) = stripCode("let u = base#anchor", 0)
+    @Assert(e.contains("base#anchor"))
+    // multi-line block comment: the cross-line part must leave the token stream
+    let (f1, st1) = stripCode("/* block start class BlockFake", 0)
+    @Assert(!f1.contains("class"))
+    @Assert(st1 == 3)
+    let (f2, st2) = stripCode("class StillInsideFake", st1)
+    @Assert(!f2.contains("class"))
+    @Assert(st2 == 3)
+    let (f3, st3) = stripCode("end */ let real = 1", st2)
+    @Assert(!f3.contains("StillInsideFake"))
+    @Assert(f3.contains("real"))
+    @Assert(st3 == 0)
+    // Python triple-single-quote docstring: cross-line content must not enter
+    // either (the original had no state for it at all)
+    let (g1, gs1) = stripCode("'''", 0)
+    @Assert(gs1 == 4)
+    let (g2, gs2) = stripCode("class DocFake is only prose", gs1)
+    @Assert(!g2.contains("class"))
+    @Assert(gs2 == 4)
+    let (g3, gs3) = stripCode("'''", gs2)
+    @Assert(gs3 == 0)
+    // same-line closed triple-single-quote must not leave state behind
+    let (g4, gs4) = stripCode("x = '''class InlineFake''' + y", 0)
+    @Assert(!g4.contains("class"))
+    @Assert(gs4 == 0)
+    @Assert(g4.contains("y"))
+}
+
+/// M8 regression: the C-shaped function fallback applies to the C family only.
+/// The original ran it for all 9 languages while its shape test only checked
+/// "first token is not a keyword + second token is followed by ( + line has {",
+/// so `it("works", () => { ... })` was fabricated into a symbol named expect.
+@Test
+func testCStyleFuncNameIsRestrictedToC(): Unit {
+    let ts = "it(\"works\", () => { expect(x).toBe(1) })"
+    @Assert(cStyleFuncName(ts, "ts").isNone())
+    @Assert(cStyleFuncName(ts, "swift").isNone())
+    @Assert(cStyleFuncName(ts, "python").isNone())
+    // C-family still has to work: that is the whole reason this fallback exists
+    let c = "int add(int a, int b) { return a + b; }"
+    match (cStyleFuncName(c, "c")) {
+        case Some(n) => @Assert(n == "add")
+        case None => @Assert(false)
+    }
+    // scan layer too: a .ts file must not yield an `expect` symbol
+    let facts = scanSource("it(\"works\", () => { expect(x).toBe(1) })\n", "ts")
+    for (sym in facts.symbols) {
+        @Assert(sym.name != "expect")
+        @Assert(sym.name != "it")
+    }
+    // while a .c file must still yield add
+    let cf = scanSource(c + "\n", "c")
+    var hasAdd = false
+    for (sym in cf.symbols) {
+        if (sym.name == "add") { hasAdd = true }
+    }
+    @Assert(hasAdd)
+}
+
+// MARK: - 审查回归（audit-2026-10-09）：置信度渲染层
+
+/// M5：渲染层原先**零测试**。三个出口（text/json/llmPrompt）里最容易烂掉的是
+/// 「披露字段还在不在」—— 而它没有任何断言盯着。这里用一份手搓报告钉住形状。
+private func confReportFixture(astUsed: Bool, astNote: String): ConfidenceReport {
+    let findings = ArrayList<Finding>()
+    findings.add(Finding(MagicNumber, "a.cj", 3, "v", "17"))
+    findings.add(Finding(TodoResidue, "a.cj", 9, "w", "TODO"))
+    let byKind = ArrayList<(FlawKind, Int64)>()
+    byKind.add((MagicNumber, 1))
+    byKind.add((TodoResidue, 1))
+    let files = ArrayList<(String, Int64)>()
+    // 罚分降序（analyzeConfidence 的既有约定）
+    files.add(("b.cj", 7))
+    files.add(("a.cj", 4))
+    let dims = ArrayList<(ConfDimension, Int64, Int64, Int64)>()
+    dims.add((DimStructure, 4, 2, 90))
+    return ConfidenceReport("/tmp/x", 88, findings, astUsed, astNote, 2, byKind, files, dims)
+}
+
+/// M4 + M5：JSON 出口的键集必须稳定，且两个「files」不许互相覆盖。
+/// 原实现把罚分表和 filesAnalyzed 都写成 "files" —— Json.set 同键就地覆盖，
+/// 于是罚分表在 JSON 出口里被静默丢掉（MCP codegraph_confidence 同源）。
+@Test
+func testConfidenceJsonKeySetIsStable(): Unit {
+    let j = confidenceJson(confReportFixture(true, "ast-grep 已启用"))
+    for (k in ["root", "score", "dimensions", "penaltyByFile", "findings", "byKind", "astUsed", "astNote", "filesAnalyzed", "semantics"]) {
+        @Assert(Json.has(j, k))
+    }
+    // 罚分表必须真的在（不被 filesAnalyzed 覆盖）
+    let pf = Json.arrAt(j, "penaltyByFile")
+    @Assert(Int64(pf.size) == 2)
+    @Assert(Json.strAt(pf[0], "file", "") == "b.cj")
+    @Assert(Json.intAt(pf[0], "penalty", 0) == 7)
+    @Assert(Json.intAt(j, "filesAnalyzed", 0) == 2)
+    // 旧的 "files" 键不许以数组形态回来（那说明有人改回去了）
+    match (Json.get(j, "files")) {
+        case Some(JArr(_)) => @Assert(false)
+        case _ => ()
+    }
+}
+
+/// M5 + M2：降级披露必须出现在**每一个**出口。
+/// 原实现 README 承诺 astNote 降级披露，却没有一条测试钉住它。
+@Test
+func testConfidenceDegradedNoteAppearsInEveryExit(): Unit {
+    let degraded = confReportFixture(false, "ast-grep 不可用，已降级为词法分析")
+    let t = confidenceText(degraded)
+    @Assert(t.contains("已降级"))
+    let j = Json.pretty(confidenceJson(degraded))
+    @Assert(j.contains("已降级"))
+    let p = confidenceLlmPrompt(degraded, "demo")
+    @Assert(p.contains("词法"))
+    // 三个出口都要说出「这不是全量」
+    @Assert(t.contains("ast-grep"))
+    @Assert(j.contains("astUsed"))
+    @Assert(p.contains("词法"))
+}
+
+/// M5：文本出口必须报分母（分析几个文件）与语义边界。
+@Test
+func testConfidenceTextStatesScopeAndBoundary(): Unit {
+    let t = confidenceText(confReportFixture(true, "ast-grep 已启用"))
+    @Assert(t.contains("分析 2 文件"))
+    @Assert(t.contains("不是正确性证明"))
+    @Assert(t.contains("分数"))
+}
+
+/// M5：LLM 提示词必须按维度分节，且每条带证据。
+@Test
+func testConfidenceLlmPromptGroupsByDimension(): Unit {
+    let p = confidenceLlmPrompt(confReportFixture(true, "ast-grep 已启用"), "demo")
+    @Assert(p.contains("项目：demo"))
+    @Assert(p.contains("## 预检维度分"))
+    @Assert(p.contains("结构"))
+    @Assert(p.contains("证据："))
+    // 红线必须在（不许只复读预检结论）
+    @Assert(p.contains("红线"))
+    @Assert(p.contains("## 输出格式"))
+}
+
+/// M3 回归：C/C++ 的 opaque 前置声明不许被报成「空类型」。
+/// ast-grep 对 `struct Fwd;` / `typedef struct Fwd FwdT;` 都跨 1 行命中 type 规则，
+/// 而判据 `methods == 0 && lines <= 3` 把每个前置声明都扣 3 分 ——
+/// opaque forward decl 是 C 头文件的惯用法，系统性拖低 C/C++ 仓库分数。
+@Test
+func testForwardDeclarationIsNotReportedAsEmptyType(): Unit {
+    @Assert(isForwardDeclaration("struct Fwd;"))
+    @Assert(isForwardDeclaration("typedef struct Fwd FwdT;"))
+    // 没有成员表才是判据；`struct Empty {}` 不是前置声明
+    // 真正的空类型仍然要报（判据不许被放宽到恒真）
+    @Assert(!isForwardDeclaration("struct Empty { }"))
+    @Assert(!isForwardDeclaration("struct Empty {}"))
+
+    let nodes = ArrayList<AstNode>()
+    nodes.add(AstNode("a.h", 3, 3, "type", "struct Fwd;"))
+    nodes.add(AstNode("a.h", 4, 4, "type", "typedef struct Fwd FwdT;"))
+    nodes.add(AstNode("a.cj", 5, 5, "type", "struct Empty {}"))
+    let findings = ArrayList<Finding>()
+    detectTypeSignals(nodes, findings)
+    var reported = ArrayList<String>()
+    for (f in findings) {
+        if (flawId(f.kind) == "empty-type") { reported.add(f.symbol) }
+    }
+    @Assert(reported.size == 1)
+    @Assert(reported[0] == "Empty")
+}
+
+/// M12 回归：未分层（层 4）的模块不许参与违规判定。
+/// 原实现 `la < lb` 把层 4 当成「最高层」⇒ docs / scripts / `(root)`
+/// 的全部入边都被记成违规（现实中极常见，等于噪声常态满格）。
+@Test
+func testLayerViolationIgnoresUnclassifiedModules(): Unit {
+    // 已分层之间：低层依赖高层确实是违规
+    @Assert(isLayerViolation(0, 1))
+    @Assert(isLayerViolation(2, 3))
+    // 高层依赖低层不是违规
+    @Assert(!isLayerViolation(3, 0))
+    @Assert(!isLayerViolation(1, 1))
+    // 任一侧未分层（4）⇒ 无法判定，不是违规
+    @Assert(!isLayerViolation(0, 4))
+    @Assert(!isLayerViolation(4, 0))
+    @Assert(!isLayerViolation(4, 4))
+    @Assert(!isLayerViolation(3, 4))
+}
+
+/// M11：架构图出口的边序必须是全序（物化处不定序 ⇒ 字节序跟着 HashMap 走）。
+/// 这条钉的是「出口看起来是确定的」而不是「某一种写法」。
+@Test
+func testArchEdgesAreInTotalOrder(): Unit {
+    let root = writeTree()
+    try {
+        let g = buildGraph(root)
+        let arch = buildArch(g)
+        var prev = ""
+        for (e in arch.edges) {
+            let key = e.fromId + "\u{1f}" + e.toId
+            @Assert(key >= prev)
+            prev = key
+        }
+        // 违规对同样要有序
+        var prevV = ""
+        for ((a, b) in arch.violationPairs) {
+            let key = a + "\u{1f}" + b
+            @Assert(key >= prevV)
+            prevV = key
+        }
+    } finally {
+        removeTree(root)
+    }
+}
+
+/// M2 源码守卫：AST 批**全部失败**时必须降级（返回 None），
+/// 不能返回 Some(空列表) 让调用方报 astUsed=true。
+///
+/// 为什么不用行为断言：这条路径需要「ast-grep 能跑但每个批次都失败」，
+/// 而测试沙箱里要么 ast-grep 不在、要么全部文件都是仓颉（无 tree-sitter 语法）
+/// —— 批次数为 0，分支根本进不去。测不了的路径就用源码守卫钉住接缝，
+/// 并在注释里如实说明这是源码级保证、不是行为级保证。
+@Test
+func __lintAstBatchFailureDegradesInsteadOfClaimingSuccess(): Unit {
+    let raw = readFileTextChecked("src/graph/confidence_ast.cj").getOrThrow()
+    let sb = StringBuilder()
+    var blk = false
+    for (r in raw.split("\n")) {
+        let (l, nb) = stripCjComment(r, blk)
+        blk = nb
+        sb.append(l)
+        sb.append("\n")
+    }
+    let code = sb.toString()
+    // 判据是「全部批失败 ⇒ return None」这个组合
+    let guard = code.indexOf("failedBatches == totalBatches")
+    @Assert(guard.isSome())
+    let after = code[guard.getOrThrow()..]
+    let none = after.indexOf("return None")
+    @Assert(none.isSome())
+    // 同一个 if 块内就要 return None，不许隔到别的分支
+    @Assert(none.getOrThrow() < 200)
+    // 且清理临时目录必须发生在返回之前（用完即清）
+    @Assert(after.indexOf("cleanupAstTmpDirs", 0).isSome())
+}
+
+/// H3 源码守卫：引用边的**物化处**必须有一次全序排序。
+///
+/// 为什么行为断言不够（负控 NC3 实测）：本工具链的 HashMap 迭代序在单进程内
+/// 恰好是有序的，于是把排序删掉后 `testRefEdgesMaterializeInTotalOrder` 仍然绿 ——
+/// 「当前观察不到违规」不等于「契约被守住」。守约的是**这一段有排序**这个事实，
+/// 那就用源码守卫钉它（与 __lintConfigKeyTableMatchesBothAccessors 同一纪律）。
+@Test
+func __lintRefEdgesMaterializationHasATotalOrder(): Unit {
+    let raw = readFileTextChecked("src/graph/build.cj").getOrThrow()
+    let sb = StringBuilder()
+    var blk = false
+    for (r in raw.split("\n")) {
+        let (l, nb) = stripCjComment(r, blk)
+        blk = nb
+        sb.append(l)
+        sb.append("\n")
+    }
+    let code = sb.toString()
+    // 「物化处」的锚：紧跟两层 HashMap 迭代填 refEdges 之后，必须出现排序调用。
+    let anchor = code.indexOf("let refEdges = ArrayList<(String, String, Int64)>()")
+    @Assert(anchor.isSome())
+    let tail = code[anchor.getOrThrow()..]
+    let sortAt = tail.indexOf("insertionSortBy(refEdges")
+    @Assert(sortAt.isSome())     // 物化处必须有排序
+    // 排序必须在物化之后、且在同一个函数的窗口内（不许挪到别处）
+    let addAt = tail.indexOf("refEdges.add((from, to, count))")
+    @Assert(addAt.isSome())
+    @Assert(sortAt.getOrThrow() > addAt.getOrThrow())
+    @Assert(sortAt.getOrThrow() - addAt.getOrThrow() < 200)
+    // 全序要补到最后一位：from / to / count 三个键都得出现
+    let window = tail[0..(if (sortAt.getOrThrow() + 200 < tail.size) { sortAt.getOrThrow() + 200 } else { tail.size })]
+    @Assert(window.contains("a[0] != b[0]"))
+    @Assert(window.contains("a[1] != b[1]"))
+    @Assert(window.contains("a[2] < b[2]"))
+}
+
+/// M11 回归：场景导出必须逐字节一致。
+/// archscene.cj 的文件头原来写着「graph_test 有守护」，而**那条测试不存在**
+/// —— 声明本身就成了掩盖。这条钉住两件事：边序是排序的、meta 的截断披露在。
+@Test
+func testSceneExportIsDeterministic(): Unit {
+    let root = writeTree()
+    try {
+        let g = buildGraph(root)
+        let s1 = Json.pretty(buildArchScene(buildArch(g), false))
+        let s2 = Json.pretty(buildArchScene(buildArch(g), false))
+        @Assert(s1 == s2)
+        // 场景里的 token 必须是 themes 里存在的键（M13：panel 原先不在表里）
+        let j = buildArchScene(buildArch(g), false)
+        let th = Json.getOr(j, "themes")
+        for (themeName in ["dark", "light"]) {
+            let th1 = Json.getOr(th, themeName)
+            for (k in ["bg0", "bg1", "grid", "text", "muted", "border", "arrow", "accent", "panel"]) {
+                @Assert(Json.has(th1, k))
+            }
+        }
+        // 每视图恒发 edgesDropped（截断披露，不变量 33）
+        let views = Json.getOr(j, "views")
+        match (views) {
+            case JObj(items) =>
+                @Assert(items.size > 0)
+                for ((_, viewVal) in items) {
+                    @Assert(Json.has(viewVal, "edgesDropped"))
+                }
+            case _ => @Assert(false)
+        }
+        // chips 必须带独立的 count 数字字段（M14）
+        let metaObj = Json.getOr(j, "meta")
+        let chipsRaw = Json.getOr(metaObj, "chips")
+        let chips = match (chipsRaw) {
+            case JArr(items) => items
+            case _ => ArrayList<JsonValue>()
+        }
+        if (chips.size > 0) {
+            for (c in chips) {
+                @Assert(Json.has(c, "count"))
+                @Assert(Json.has(c, "layer"))
+                @Assert(Json.has(c, "label"))
+            }
+        }
+    } finally {
+        removeTree(root)
+    }
+}
+

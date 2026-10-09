@@ -103,6 +103,11 @@ public func buildGraph(root: String): CodeGraph {
 
     // ── 第一遍：声明事实 ──
     let facts = ArrayList<FileEntry>()
+    // ⚠️ M7：超大文件原来是 `continue` 且**不计数**，任何出口都看不出它被跳过了
+    // （对比：文件数上限有 truncated + skipped 双字段并输出 ⚠，scene 边截断恒发
+    // edgesDropped）。「看了但没留下痕迹」与「这里没有文件」在响应里同构 ——
+    // 截断必须披露，否则语言分布/影响面都在一份未声明的残缺样本上说话。
+    let oversize = ReferVar(0)
     for ((absDir, rel) in files) {
         let lang = detectLang(rel)
         if (lang.isEmpty()) { continue }
@@ -110,9 +115,10 @@ public func buildGraph(root: String): CodeGraph {
         match (content) {
             case Some(text) =>
                 if (Int64(text.size) > GRAPH_MAX_FILE_BYTES) {
-                    continue   // 超大文件不是分析目标（生成物/打包产物）
+                    oversize.value += 1
+                    continue
                 }
-                let f = scanSource(text)
+                let f = scanSource(text, lang)
                 facts.add(FileEntry(rel, lang, f.lineCount, f.symbols, f.imports, f.importLines))
             case None => ()   // 读不出 ≠ 有害；跳过且不计数（权限噪音不该污染统计）
         }
@@ -315,46 +321,68 @@ public func buildGraph(root: String): CodeGraph {
         }
     }
 
+    // 物化处：**顺序由这里决定**，出口只是照抄（render/arch 都按本序列输出）。
+    // 源码守卫 __lintRefEdgesMaterializationHasATotalOrder 钉住「这一处有排序」。
     let refEdges = ArrayList<(String, String, Int64)>()
     for ((from, inner) in refCount) {
         for ((to, count) in inner) {
             refEdges.add((from, to, count))
         }
     }
+    // ⚠️ H3：refCount 是两层 HashMap，两层迭代都无序；而 render.cj 的
+    // fullGraphJson 直接按本序列输出 referenceEdges，arch.cj 的 rawPairs /
+    // violationPairs / mermaid / dot 也全部按它派生。物化处不定序 ⇒ 出口字节序
+    // 跟着 HashMap 走，违反「同一仓库两次导出一致」这个 agent 对账前提
+    // （AGENTS.md 不变量 126：任何 HashMap 迭代 + 排序都要问并列时按什么定序）。
+    // scene 路径有 sceneEdgesArch、confidence 有 sortFindings，唯独这里没有。
+    // 补齐到最后一位：from↑ → to↑ → count↑。
+    insertionSortBy(refEdges, { a, b =>
+        if (a[0] != b[0]) { return a[0] < b[0] }
+        if (a[1] != b[1]) { return a[1] < b[1] }
+        return a[2] < b[2]
+    })
 
     // ── 未使用 import：import 解析到了 g，但 g 的任何符号都没在 f 出现过 ──
     // （行号来自 FileEntry.importLines，与 imports 平行）
+    //
+    // ⚠️ M6（引擎自食其果）：原判据是「f 是否引用了**解析出的那一个文件**」。
+    // 仓颉/Swift 的 import 是**包级**语义（`import moongit.util` 引入整个 util
+    // 模块），而 moduleIndex 按目录段取「排序序前两个」里的第一个 ⇒ import 到
+    // util 的 build.cj 被拿去对账 util/errors.cj，真正用到的 readFileText
+    // 在 util/paths.cj —— 于是「用了」被报成未使用。实测本仓库 10 条报告里
+    // 至少 9 条是误报。粒度必须与 import 本身的粒度一致：**引用到同一模块的
+    // 任一文件即视为已用**。
+    // 「(文件 \u{1f} 模块) 在仓内解析得到目标」的集合（L4：一次建好，别按 import 逐条扫边）
+    let importResolves = HashSet<String>()
+    for ((from, to) in importEdges) {
+        if (from == to) { continue }
+        importResolves.add(from + "\u{1f}" + moduleOfPath(to))
+    }
     let unusedImports = ArrayList<(String, String, Int64)>()
     for (f in facts) {
         var idx = 0
         for (mod in f.imports) {
             let impLine = if (idx < Int64(f.importLines.size)) { f.importLines[idx] } else { 1 }
             idx += 1
-            // 该 import 是否解析到目标文件
-            // moduleOfPath（arch.cj）与建索引时的段规则一致
-            var target: Option<String> = None
-            for ((from, to) in importEdges) {
-                if (from == f.relPath && to != f.relPath
-                    && moduleOfPath(to) == mod) {
-                    target = Some(to)
-                    break
-                }
+            // 同模块被引用即可（见上：包级 import 的判定也必须是包级）
+            var used = false
+            match (refCount.get(f.relPath)) {
+                case Some(inner) =>
+                    for ((to, _) in inner) {
+                        if (to != f.relPath && moduleOfPath(to) == mod) { used = true }
+                    }
+                case None => ()
             }
-            match (target) {
-                case Some(to) =>
-                    var used = false
-                    match (refCount.get(f.relPath)) {
-                        case Some(inner) =>
-                            match (inner.get(to)) {
-                                case Some(_) => used = true
-                                case None => ()
-                            }
-                        case None => ()
-                    }
-                    if (!used) {
-                        unusedImports.add((f.relPath, mod, impLine))
-                    }
-                case None => ()   // 解析不到目标 = 无法判定，不报
+            if (used) { continue }
+            // 解析不到任何仓内目标 = 无法判定（外部依赖），不报；
+            // 解析到而一个符号都没引用 = 真的没用这个模块
+            //
+            // L4：判定原先是「每个 (文件×import) × 扫全部 importEdges」
+            // = O(F×I×E)。moduleIndex 的同类老问题早就建过一次索引治好了，
+            // 这里照同一办法：一次建好「(文件, 模块) 能否解析」的集合，
+            // 之后纯查表。语义不变 —— 仍然是「这个 import 在仓内有没有命中目标」。
+            if (importResolves.contains(f.relPath + "\u{1f}" + mod)) {
+                unusedImports.add((f.relPath, mod, impLine))
             }
         }
     }
@@ -374,10 +402,19 @@ public func buildGraph(root: String): CodeGraph {
             }
         }
     }
+    // ⚠️ M10：本列表的顺序决定 confidence_detect 的**每文件每类限流留下哪 6 条**，
+    // 而它源自两层 HashMap 迭代 ⇒ 「报哪几条」由偶然顺序决定。AST 路径对同类
+    // 限流做了顺序无关处理（sortAstNodes），词法路径必须补上同一件事。
+    insertionSortBy(unresolvedList, { a, b =>
+        if (a[0] != b[0]) { return a[0] < b[0] }
+        if (a[1] != b[1]) { return a[1] < b[1] }
+        return a[2] < b[2]
+    })
 
     return CodeGraph(root, facts, importEdges, refEdges,
                      files.size >= Int64(GRAPH_MAX_FILES), skipped.value,
-                     referencedNames, unresolvedList, unusedImports)
+                     referencedNames, unresolvedList, unusedImports,
+                     oversize.value)
 }
 
 // 泛型排序：**共享给全 graph 包**（render/arch 都在用）。

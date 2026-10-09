@@ -8,12 +8,15 @@
 
 ```
 setTransform  fillRect  beginPath  moveTo  lineTo  arcTo  closePath
-fill  stroke  arc  bezierCurveTo  fillText
+fill  stroke  rect  strokeRect  arc  bezierCurveTo  fillText
 createLinearGradient  addColorStop
 setLineDash  lineDashOffset
 shadowBlur  shadowColor  globalAlpha
 lineWidth  strokeStyle  fillStyle  font  textAlign
 ```
+
+（`strokeRect` 在册：自带 Web 驱动的 `archhtml.cj` 用它画侧栏/图例的描边。
+清单少一项，照清单移植的驱动就跑不完这个渲染器。）
 
 因此：**任何技术栈，只要它是标准 Canvas API 的移植实现**（浏览器 Canvas2D、
 OffscreenCanvas、node-canvas、Skia 绑定、Qt QPainter 包装、CoreGraphics 包装……），
@@ -41,7 +44,8 @@ MoongitArch.scene                              // 场景数据
 {
   "v": 1, "gen": "moongit-graph",
   "meta":  { "title","sub","stats","hint","root","search","fit","themeBtn",
-             "panel": {...文案}, "chips": [{"layer","label","count"}] },
+             "panel": {...文案}, "chips": [{"layer","label","count"}],
+             "warnings": {"violations","cycleEdges","violationPairs":[...],"cycleModules":[...]} },
   "themes": { "dark": {...}, "light": {...} },
   "views": {
     "<viewId>": {
@@ -49,16 +53,35 @@ MoongitArch.scene                              // 场景数据
       "labels":{...}, "nodeTheme":{...}, "nodeLayer":{...}, "order":{...},
       "shapes":   [ {"t":"frame|rrect|rect|text|edge", ...} ],
       "particles":[ {"p":[8 数],"n","sp","color"} ],
-      "hits":     [ {"id","x","y","w","h","drill"?,"jump"?} ]
+      "hits":     [ {"id","x","y","w","h","drill"?,"jump"?} ],
+      "edgesDropped": 0
     }
   },
-  "panels": { "<view>:<node>": {"title","sub","stats","langs","out","in"} }
+  "panels": { "<view>:<node>": {"title","sub","stats","langs"?,"out","in"} }
 }
 ```
 
 shape 类型：`frame`（层框）、`rrect`（圆角矩形）、`rect`、`text`、`edge`
-（三次贝塞尔 + 渐变 + 箭头）。颜色一律 token（`cols.0`、`text`、`node:<id>`、
-`#hex`），驱动绘制时按当前主题解析。
+（三次贝塞尔 + 渐变 + 箭头）。颜色一律 token（`cols.0`、`text`、`muted`、
+`panel`、`node:<id>`、`langs.<lang>`、`#hex`），驱动绘制时按当前主题解析。
+token 表即 `themes` 的键（含 `langs` 下的每种语言）—— **引擎只会发 token 表里
+存在的键**；遇到不认识的 token 一律按「引擎违约」处理，不要静默回退。
+
+### 恒发字段（截断与降级必须披露，缺键不得当作「没有」）
+
+- `views.<viewId>.edgesDropped`：视图内边数超过上限被丢弃的条数，**恒发**（0 也发）。
+- `meta.warnings`：层 4 未分层模块不参与违规判定，这里恒发违规/环的计数与
+  具体模块对 —— 空也要发，否则调用方无从区分「没有违规」与「这个版本没这个字段」。
+- `chips[*].count`：分层条目的**数字**字段；label 只是给读的人看的文案。
+  按数量做布局/汇总一律读 count，不要从 label 里抠数字。
+
+### panels 的两级形状
+
+- 架构级（`arch:<模块>`）：`title / sub / stats / langs / out / in`
+- 文件级（`module:<文件>`）：`title / sub / stats / out / in` —— **没有 langs**
+  （文件只有一种语言，`sub` 里已经写了）
+
+照抄文档实现驱动时注意这个差异：把 `langs` 读成数组必须允许它缺席。
 
 ## 动画（声明式）
 

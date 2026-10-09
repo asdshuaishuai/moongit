@@ -112,7 +112,17 @@ let DECL_KEYWORDS: Array<(UInt8, Array<UInt8>)> = declKeywordBytes()
 /// 关键词表扫不到 ⇒ 同文件函数互调全被幻觉调用误报（实测 conc-demo）。
 /// 形态判定：剥注释后行匹配「返回类型 name(」，即 `标识符 标识符(` 开头
 /// 且首个标识符非关键字、行含 `{`（定义而非声明）。声明（以 ; 结尾）不算。
-func cStyleFuncName(line: String): Option<String> {
+func cStyleFuncName(line: String, lang: String): Option<String> {
+    // ⚠️ M8：C 形态兜底只对 **C 系**语言生效。原来它对全部 9 种语言都生效，
+    // 而形态判定只看「首 token 非关键字 + 次 token 后跟 ( + 行含 {」——
+    // 于是 `it("works", () => { ... })` 这种「方法调用 + 花括号块」被编出
+    // 一个叫 expect 的假符号（推演见审查记录）。假符号还会进 defFiles，
+    // 把真实的调用点掩盖掉，让 unresolved 检测漏报。
+    // 与 extract.cj 自己写的那句「误截的后果是少一个符号，不会编一个」相反。
+    // 只有 C/C++（无函数关键字）需要这个兜底；其余语言有 func/fn/def/...
+    if (lang != "c") {
+        return None
+    }
     let toks = tokenize(line)
     if (toks.size < 2) { return None }
     // 首 token = 返回类型（非关键字）；次 token = 函数名；其后必须紧跟 "("
@@ -220,7 +230,10 @@ public func tokenize(line: String): ArrayList<String> {
 ///   ③ 行尾注释里的引号同理 —— 代码态遇到 `//` 直接截断，不再向后看
 ///
 /// 状态：0 = 代码；1 = 单行字符串内（EOL 自动复位——常规串不跨行）；
-///       2 = 多行字符串内（碰 """ 才结束）。
+///       2 = 多行字符串内（碰 """ 才结束）；3 = 块注释内（碰 */ 才结束）；
+///       4 = Python 三单引号字符串内（碰 ''' 才结束）。
+/// 后两个是 M9 补的：原先块注释与 `'''` 完全没接，
+/// 注释里的“代码”被提成真符号、跨行 docstring 把后续整段拉进 token 流。
 /// 返回 (清洗后的代码, 新状态)。
 public func stripCode(line: String, inState: Int64): (String, Int64) {
     let n = Int64(line.size)
@@ -230,19 +243,32 @@ public func stripCode(line: String, inState: Int64): (String, Int64) {
     // 实测动机：`graph tree deepAutoTest --json` 仅 0.25s，却在一次构建里吃掉 137 MB ——
     // 峰值不是「算得慢」，是**逐行分配**把 GC 峰值推上去的（并发只会同时放大它）。
     if (inState == 0) {
-        var hasQuote = false
+        var special = false
         var i: Int64 = 0
         while (i < n) {
             let b = line[i]
-            if (b == 34 || b == 39) { hasQuote = true; break }   // " 或 '
+            if (b == 34 || b == 39) { special = true; break }   // " 或 '
+            if (b == 47 && i + 1 < n && line[i + 1] == 42) { special = true; break }   // /*
             i += 1
         }
-        if (!hasQuote) { return (stripLineComment(line), 0) }
+        if (!special) { return (stripLineComment(line), 0) }
     }
     let trimmed = line.trimAscii()
     // ① 整行注释：不参与剥串、不改状态（文档注释里的引号不该影响代码扫描）
+    //
+    // ⚠️ M9 的例外：「整行就是一个**不闭合**的 /*」必须把状态改成 3。
+    // 否则这一行之后的所有内容都被当成代码，块注释里的“代码”全进 token 流。
     if (wholeLineComment(trimmed)) {
-        return ("", inState)
+        if (inState == 0 && trimmed.startsWith("/*")) {
+            // 整行以 `/*` 开头有两种：不闭合（要置状态 3），以及**同行闭合**
+            // —— 后者后面可能还有代码（`/* 注 */ let z = 2`），整行丢弃会把
+            // 真代码吃掉。所以只有不闭合的那种提前返回，其余交给下面的状态机。
+            if (findSubstr(trimmed[2..], "*/").isNone()) {
+                return ("", 3)
+            }
+        } else {
+            return ("", inState)
+        }
     }
     let out = ArrayList<UInt8>()
     var state = inState
@@ -252,6 +278,21 @@ public func stripCode(line: String, inState: Int64): (String, Int64) {
         if (state == 0) {
             // 行内注释：截断（②的修法）
             if (b == 47 && i + 1 < n && line[i + 1] == 47) { break }   // //
+            // M9：`/* */` 块注释原先完全没接 —— 注释里的代码被当成真符号。
+            // 同行闭合就跳过去（后面的仍是代码）；不闭合则进入块注释状态。
+            if (b == 47 && i + 1 < n && line[i + 1] == 42) {
+                match (findSubstr(line[i + 2..], "*/")) {
+                    case Some(rel) => i = i + 2 + rel + 2; continue
+                    case None => state = 3; break
+                }
+            }
+            // M9：行内 `#` / `--` 注释也没剥（`x = 1  # class Foo ...`
+            // 里的 class 被提成真符号）。**必须前导空白才认** ——
+            // `i--` / `a--b` 是合法代码，见到就切会把代码吃掉。
+            if (i > 0 && (line[i - 1] == 32 || line[i - 1] == 9)) {
+                if (b == 35) { break }
+                if (b == 45 && i + 1 < n && line[i + 1] == 45) { break }
+            }
             // 多行字符串开
             if (b == 34 && i + 2 < n && line[i + 1] == 34 && line[i + 2] == 34) {
                 var closedSameLine = false
@@ -268,6 +309,26 @@ public func stripCode(line: String, inState: Int64): (String, Int64) {
                     continue
                 }
                 state = 2
+                i += 3
+                continue
+            }
+            // M9：Python 的三单引号字符串原先只按单引号处理 —— 跨行 docstring
+            // 的后续整段内容进入 token 流，把里面的英文词当标识符。
+            if (b == 39 && i + 2 < n && line[i + 1] == 39 && line[i + 2] == 39) {
+                var closedSameLine4 = false
+                var j4 = i + 3
+                while (j4 + 2 < n) {
+                    if (line[j4] == 39 && line[j4 + 1] == 39 && line[j4 + 2] == 39) {
+                        closedSameLine4 = true
+                        break
+                    }
+                    j4 += 1
+                }
+                if (closedSameLine4) {
+                    i = j4 + 3
+                    continue
+                }
+                state = 4
                 i += 3
                 continue
             }
@@ -297,10 +358,26 @@ public func stripCode(line: String, inState: Int64): (String, Int64) {
                 continue
             }
             i += 1
-        } else {
+        } else if (state == 2) {
             if (b == 34 && i + 2 < n && line[i + 1] == 34 && line[i + 2] == 34) {
                 state = 0
                 i += 3
+                continue
+            }
+            i += 1
+        } else if (state == 4) {
+            // 三单引号字符串内
+            if (b == 39 && i + 2 < n && line[i + 1] == 39 && line[i + 2] == 39) {
+                state = 0
+                i += 3
+                continue
+            }
+            i += 1
+        } else {
+            // state == 3：块注释内。只找 */，其余一律不当代码。
+            if (b == 42 && i + 1 < n && line[i + 1] == 47) {
+                state = 0
+                i += 2
                 continue
             }
             i += 1
@@ -329,6 +406,21 @@ func stripLineComment(line: String): String {
     var i: Int64 = 0
     while (i + 1 < n) {
         if (line[i] == 47 && line[i + 1] == 47) { return line[0..i] }   // 行内 //
+        // M9：同行闭合的 `/* ... */`（不闭合的那种走 stripCode 的块注释状态）
+        if (line[i] == 47 && line[i + 1] == 42) {
+            match (findSubstr(line[i + 2..], "*/")) {
+                case Some(rel) =>
+                    // `*/` 之后仍是代码：拼回来继续剥（尾部可能还有 // 或 # 注释）
+                    return stripLineComment(line[0..i] + " " + line[i + 2 + rel + 2..])
+                case None => return line[0..i]
+            }
+        }
+        // M9：行内 `#` / `--`。前导空白才认 —— `i--` 与 URL 里的 `#`
+        // 都不该切（那会把代码吃掉）。
+        if (i > 0 && (line[i - 1] == 32 || line[i - 1] == 9)) {
+            if (line[i] == 35) { return line[0..i] }
+            if (line[i] == 45 && line[i + 1] == 45) { return line[0..i] }
+        }
         i += 1
     }
     return line
@@ -565,7 +657,7 @@ func quotedPart(t: String): String {
 }
 
 /// 扫描整份源码。
-public func scanSource(content: String): SourceFacts {
+public func scanSource(content: String, lang: String): SourceFacts {
     let symbols = ArrayList<SymDecl>()
     let imports = ArrayList<String>()
     let importLines = ArrayList<Int64>()
@@ -593,7 +685,7 @@ public func scanSource(content: String): SourceFacts {
         // 前置过滤：不含声明关键词的行免去 tokenize 的整行分配
         if (!mayDeclare(t)) {
             // C 系函数没有声明关键字——形态兜底（否则同文件互调全成幻觉调用）
-            match (cStyleFuncName(t)) {
+            match (cStyleFuncName(t, lang)) {
                 case Some(name) => symbols.add(SymDecl(Func, name, lineNo))
                 case None => ()
             }
@@ -603,7 +695,7 @@ public func scanSource(content: String): SourceFacts {
             case Some((kind, name)) =>
                 symbols.add(SymDecl(kind, name, lineNo))
             case None =>
-                match (cStyleFuncName(t)) {
+                match (cStyleFuncName(t, lang)) {
                     case Some(name) => symbols.add(SymDecl(Func, name, lineNo))
                     case None => ()
                 }

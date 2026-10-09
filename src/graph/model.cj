@@ -129,6 +129,9 @@ public class CodeGraph {
     public let unresolvedCalls: ArrayList<(String, String, Int64)>
     /// 未使用 import：(file, 模块名, import 行号)。
     public let unusedImports: ArrayList<(String, String, Int64)>
+    /// 因超限被跳过的文件数（> GRAPH_MAX_FILE_BYTES）。**恒发**——「没扫描到」
+    /// 与「这里没有文件」在响应里完全不同，缺这个键下游只能当成没有（M7）。
+    public let oversizeSkipped: Int64
 
     public init(root: String, files: ArrayList<FileEntry>,
                 importEdges: ArrayList<(String, String)>,
@@ -136,7 +139,8 @@ public class CodeGraph {
                 truncated: Bool, skipped: Int64,
                 referencedNames: HashSet<String>,
                 unresolvedCalls: ArrayList<(String, String, Int64)>,
-                unusedImports: ArrayList<(String, String, Int64)>) {
+                unusedImports: ArrayList<(String, String, Int64)>,
+                oversizeSkipped: Int64) {
         this.root = root
         this.files = files
         this.importEdges = importEdges
@@ -146,6 +150,7 @@ public class CodeGraph {
         this.referencedNames = referencedNames
         this.unresolvedCalls = unresolvedCalls
         this.unusedImports = unusedImports
+        this.oversizeSkipped = oversizeSkipped
     }
 
     /// 符号名 → 定义处列表（同名符号可能多处定义，全部列出，不装作唯一）。

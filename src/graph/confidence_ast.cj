@@ -19,6 +19,10 @@ import moongit.util.*
 
 /// tmpDirRoot 的包级持有（runAstGrep 设置；parse 阶段做路径映回）
 var C_AS_CPP_ROOT: String = ""
+/// 仓库根的包级持有：parse 阶段把绝对路径映回 relPath 用（M1）
+var AST_SCAN_ROOT: String = ""
+/// 本次运行创建的临时目录（扫完即清，M2）
+let tmpDirs = ArrayList<String>()
 
 /// ast-grep 可执行文件路径（None = 不可用）。
 public func findAstGrep(): Option<String> {
@@ -173,6 +177,13 @@ func runAstGrep(graph: CodeGraph): Option<ArrayList<AstNode>> {
     let groups = ArrayList<(String, ArrayList<String>)>()
     for ((al, files) in byLang) { groups.add((al, files)) }
     insertionSortBy(groups, { a, b => a[0] < b[0] })
+    // M2：批失败的计数。原来 `!ok && stdout 空` 就静默 continue ——
+    // 全部批失败时仍返回 Some(空列表)，调用方于是报 astUsed=true、
+    // astNote 只说「命中 0 个结构节点」：读者无从分辨「没有疑点」与
+    // 「工具根本没跑成」。「降级必须如实披露」在这里被违反。
+    var totalBatches: Int64 = 0
+    var failedBatches: Int64 = 0
+    AST_SCAN_ROOT = graph.root
     for ((al, files) in groups) {
         let rules = rulesYamlFor(al)
         if (rules.isEmpty()) { continue }
@@ -181,6 +192,7 @@ func runAstGrep(graph: CodeGraph): Option<ArrayList<AstNode>> {
         ensureDir(tmpDir)
         let rulePath = "${tmpDir}/rule.yml"
         writeFileAtomic(rulePath, rules)
+        tmpDirs.add(tmpDir)
         // 文件列表分批传给 ast-grep（argv 有长度上限，500 个一批）
         var start = 0
         while (start < Int64(files.size)) {
@@ -200,8 +212,11 @@ func runAstGrep(graph: CodeGraph): Option<ArrayList<AstNode>> {
             // 导致 scan 报 exit 2、stdout 全空 —— 首次实跑「命中 0 节点」的根因。
             for (p in batch) { args.add(p) }
             let r = execCapture(bin, args.toArray(), None, 120000)
+            totalBatches += 1
             if (!r.ok() && r.stdout.trimAscii().isEmpty()) {
-                // 单批失败不炸整体：继续其它批（覆盖度由 astNote 之外的总数对账）
+                // 单批失败不炸整体：继续其它批，但要计数 —— 计数决定
+                // 最后是「降级」还是「照常」。
+                failedBatches += 1
                 start = i
                 continue
             }
@@ -209,7 +224,31 @@ func runAstGrep(graph: CodeGraph): Option<ArrayList<AstNode>> {
             start = i
         }
     }
+    // M2：全部批都失败 ⇒ 这不是「没有疑点」，是「AST 这一路没跑成」。
+    // 返回 None 让调用方如实降级（astUsed=false + astNote 说清原因）。
+    if (totalBatches > 0 && failedBatches == totalBatches) {
+        Log.warn("ast-grep 全部 ${totalBatches} 个批次失败，本次降级为纯词法分析")
+        cleanupAstTmpDirs()
+        return None
+    }
+    if (failedBatches > 0) {
+        Log.warn("ast-grep ${failedBatches}/${totalBatches} 个批次失败，AST 覆盖面不完整")
+    }
+    cleanupAstTmpDirs()
     return Some(all)
+}
+
+/// M2：临时目录（.c→.cpp 副本 + 每语言规则目录）扫完即清。
+/// 原来没有任何清理路径 —— 每次进程运行在 /tmp 残留一组（含 pid，非无限累积），
+/// 而没人会去扫 /tmp 里的 moongit-* 目录。用完即清才是「工具」的礼貌。
+func cleanupAstTmpDirs(): Unit {
+    for (d in tmpDirs) {
+        removePathIfExists(d)
+    }
+    tmpDirs.clear()
+    if (!C_AS_CPP_ROOT.isEmpty()) {
+        removePathIfExists(C_AS_CPP_ROOT)
+    }
 }
 
 /// 路径 → 文件名安全编码（"/" → "__"；避免嵌套临时目录）
@@ -316,6 +355,13 @@ func parseOneAstNode(item: JsonValue, out: ArrayList<AstNode>): Unit {
     let rule = Json.strAt(item, "ruleId", "")
     let text = Json.strAt(item, "text", "")
     if (file.isEmpty() || rule.isEmpty()) { return }
+    // ⚠️ M1：AstNode.file 必须是**统一的 relPath**。原来只有 .c→.cpp 那条
+    // 做了映回，其余语言把绝对路径原样带出 ⇒ 同一份报告里 findings.file 与
+    // 罚分表（用 relPath）混着两种形态，与 graph tree/symbol 出口对不上账；
+    // 一个被 AST 和词法同时命中的文件还会在罚分表里拆成两行、罚分被分散。
+    if (!AST_SCAN_ROOT.isEmpty() && file.startsWith(AST_SCAN_ROOT + "/")) {
+        file = file[AST_SCAN_ROOT.size + 1..]
+    }
     // .c → .cpp 临时副本的映回：tmp/x_y.cpp → 原始 x/y.c（目录名即路径编码）
     if (!C_AS_CPP_ROOT.isEmpty() && file.startsWith(C_AS_CPP_ROOT + "/")) {
         let stem = lastSeg(file)

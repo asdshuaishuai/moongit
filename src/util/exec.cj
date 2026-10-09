@@ -50,6 +50,13 @@ public class ExecResult {
 /// 所以真实上界是 `timeoutMs + KILL_GRACE_MS`（单段，不是两段 2000）。
 private const KILL_GRACE_MS: Int64 = 2000
 
+/// GIT_SSH_COMMAND 的兜底值：只在用户**没有**自己设置时使用（M21）。
+/// BatchMode 禁掉口令交互（ssh 会直接失败而不是挂住等输入），
+/// ConnectTimeout=5 让连不上的Host在 5 秒内放弃而不是卡满整个超时预算。
+/// ⚠️ 这是兜底不是覆盖：用户 export 的 ProxyJump / Host 别名 / 非标准端口
+/// 必须原样传下去（见 execCapture 里那段注释）。
+public const DEFAULT_SSH_COMMAND: String = "ssh -oBatchMode=yes -oConnectTimeout=5"
+
 /// 执行命令（同步，带真实超时）。
 ///
 /// 设计：
@@ -94,8 +101,16 @@ public func execCapture(
     // 继承当前环境（否则丢失 PATH/HOME 等），再叠加防挂守卫。
     // std.env 没有枚举全部变量的 API，逐个拷贝已知关键项；
     // git 需要的就是 PATH/HOME/USER 这类基础变量。
+    //
+    // ⚠️ M21：代理变量（http_proxy / https_proxy / no_proxy，含大写形态）必须
+    // 一起传下去。原先漏了它们 ⇒ 公司内网/代理环境下的 pull/fetch/push 连不上
+    // 远端，而报出来的只有 git 自己的 "Permission denied"（真实原因是代理没生效），
+    // 排查方向被完全引错。
     let guardEnv = HashMap<String, String>()
-    for (key in ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "SHELL", "LANG", "LC_ALL", "TERM", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "SSH_AUTH_SOCK"]) {
+    for (key in ["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "SHELL", "LANG", "LC_ALL", "TERM",
+        "XDG_CONFIG_HOME", "XDG_DATA_HOME", "SSH_AUTH_SOCK",
+        "http_proxy", "https_proxy", "no_proxy", "all_proxy", "ftp_proxy",
+        "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "FTP_PROXY"]) {
         match (getVariable(key)) {
             case Some(v) => guardEnv[key] = v
             case None => ()
@@ -103,7 +118,23 @@ public func execCapture(
     }
     guardEnv["GIT_TERMINAL_PROMPT"] = "0"
     guardEnv["GIT_ASKPASS"] = "/bin/true"
-    guardEnv["GIT_SSH_COMMAND"] = "ssh -oBatchMode=yes -oConnectTimeout=5"
+    // ⚠️ M21：GIT_SSH_COMMAND **不再无条件覆盖**。用户 export 的自定义配置
+    // （跳板机 ProxyJump、非 22 端口的 Host 别名、指定 IdentityFile）是既有事实，
+    // 覆盖它 ⇒ 内网/自定义密钥环境下的 pull/fetch/push 必败，而错误只有一句
+    // git 的 Permission denied。原本的用意（BatchMode 防挂）仍然保留 ——
+    // 只是改成「用户没设时才兜底」。
+    //
+    // 与 GIT_TERMINAL_PROMPT / GIT_ASKPASS 的区别：那两个是**防挂守卫**
+    // （不让 git 弹凭据框把 GUI 客户端的交互卡死），没有用户既有配置要保护。
+    match (getVariable("GIT_SSH_COMMAND")) {
+        case Some(userCmd) =>
+            if (!userCmd.trimAscii().isEmpty()) {
+                guardEnv["GIT_SSH_COMMAND"] = userCmd
+            } else {
+                guardEnv["GIT_SSH_COMMAND"] = DEFAULT_SSH_COMMAND
+            }
+        case None => guardEnv["GIT_SSH_COMMAND"] = DEFAULT_SSH_COMMAND
+    }
 
     let sub: SubProcess
     try {
@@ -111,7 +142,11 @@ public func execCapture(
             cmd, args,
             workingDirectory: workDir,
             environment: Some(guardEnv),
-            stdIn: ProcessRedirect.Inherit,
+            // L12：原来是 Inherit —— 子进程与父进程共享同一个 stdin。
+            // MCP 模式下 stdin 是 JSON-RPC 流，任何读 stdin 的子进程
+            // （自定义 credential helper 之类）会**抢食 RPC 输入**，
+            // 表现为协议消息莫名丢失。改 Null 的成本是零。
+            stdIn: ProcessRedirect.Discard,
             stdOut: ProcessRedirect.Pipe,
             stdErr: ProcessRedirect.Pipe,
         )
@@ -162,7 +197,8 @@ public func execCapture(
     // execCapture 是全仓唯一的进程执行入口，一旦挂死就是整条命令挂死，
     // 而且每次泄漏两个读取线程（长驻 serve/mcp 下会累积）。
     if (timedOut) {
-        Log.warn("子进程超时或管道未关闭，终止：${cmd} ${joinStrings(args, " ")}（${timeoutMs}ms）")
+        Log.warn(pickText("Subprocess timed out or pipe never closed; terminating: ${cmd} ${joinStrings(args, " ")} (${timeoutMs}ms)",
+            "子进程超时或管道未关闭，终止：${cmd} ${joinStrings(args, " ")}（${timeoutMs}ms）"))
         // 必须杀掉再返回。放任不管会留下孤儿进程，而 runGitOp 的 commit 路径会先跑
         // `git add -A` —— 超时的 git add 会留下 .git/index.lock，之后用户仓库里
         // 所有 git 操作都报 "Unable to create index.lock: File exists"。
@@ -598,4 +634,47 @@ func testGitRunTolerateSilentlySwallowsFailure(): Unit {
     @Assert(gitRun(base, ["init", "-q"], false).isEmpty())   // init 无输出但不失败
     @Assert(gitRun(base, ["rev-parse", "--is-inside-work-tree"], false) == "true")
     removePathIfExists(base)
+}
+
+/// M21 回归：代理变量必须传给子进程。原先白名单漏了 http_proxy 一族 ⇒
+/// 内网/代理环境下的 git pull/push 连不上远端，而报出来的只有一句 git 的
+/// "Permission denied"，排查方向被整个引错。
+@Test
+func testExecCapturePassesProxyVariablesThrough(): Unit {
+    setVariable("all_proxy", "socks5://127.0.0.1:8899")
+    setVariable("NO_PROXY", "internal.example")
+    let r = execCapture("/usr/bin/env", [], None, 10000)
+    @Assert(r.exitCode == 0)
+    @Assert(r.stdout.contains("socks5://127.0.0.1:8899"))
+    @Assert(r.stdout.contains("internal.example"))
+    // 还原：测试不该把环境留给后续用例
+    setVariable("all_proxy", "")
+    setVariable("NO_PROXY", "")
+}
+
+/// M21 回归：用户自己 export 的 GIT_SSH_COMMAND 必须原样传下去。
+/// 原来无条件覆盖成 BatchMode 默认值 ⇒ 跳板机/非标准端口/指定密钥环境下
+/// pull/fetch/push 必败。
+@Test
+func testExecCaptureDoesNotOverrideUserSshCommand(): Unit {
+    setVariable("GIT_SSH_COMMAND", "ssh -oProxyJump=bastion -p 2222")
+    let r = execCapture("/usr/bin/env", [], None, 10000)
+    @Assert(r.exitCode == 0)
+    @Assert(r.stdout.contains("ProxyJump=bastion"))
+    setVariable("GIT_SSH_COMMAND", "")
+
+    // 用户没设 ⇒ 兜底的 BatchMode 守卫仍然生效（防挂的那一半不许丢）
+    let r2 = execCapture("/usr/bin/env", [], None, 10000)
+    @Assert(r2.stdout.contains("BatchMode=yes"))
+}
+
+/// L12 回归：子进程的 stdin 必须是 Null 而不是 Inherit。
+/// MCP 模式下 stdin 是 JSON-RPC 流，读 stdin 的子进程会抢食协议输入。
+@Test
+func testExecCaptureChildGetsNullStdin(): Unit {
+    // /bin/cat 会把 stdin 原样吐到 stdout。Inherit 模式下它会读到父进程的
+    // stdin（测试里通常是终端或 /dev/null，行为不确定）；Null 模式下立刻 EOF。
+    let r = execCapture("/bin/cat", [], None, 5000)
+    @Assert(r.exitCode == 0)
+    @Assert(r.stdout.isEmpty())
 }

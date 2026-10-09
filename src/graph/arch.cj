@@ -189,6 +189,22 @@ public func moduleOfPath(relPath: String): String {
     return "(root)"
 }
 
+/// 分层违规判定。**纯函数**。
+///
+/// M12：原来这里是裸的 `la < lb`，而未命中启发式词表的模块拿层 **4**
+///（`inferLayer` 的兜底）⇒ 层 4 被当成「最高层」参与 `la < lb`：
+/// 目录名不含词表词的模块（现实中极常见：docs、scripts、`(root)`——
+/// `moduleOfPath("main.cj")` 即得层 4）的所有入边，从 util(0)/kernel(1)/
+/// flow(2)/cli(3) 过来**全部**被记成违规。「其他」既不高于也不低于任何层，
+/// 它压根不在这个坐标系里 —— 参与排序就是把它塞到最高层。
+/// 判据：两侧都必须是已分层（<4）的模块，才算违规。
+public func isLayerViolation(la: Int64, lb: Int64): Bool {
+    if (la >= 4 || lb >= 4) {
+        return false
+    }
+    return la < lb
+}
+
 public func buildArch(graph: CodeGraph): ArchData {
     let mods = HashMap<String, ArchModule>()
     func modOf(dir: String): ArchModule {
@@ -302,7 +318,7 @@ public func buildArch(graph: CodeGraph): ArchData {
             case Some(v) => v
             case None => 4
         }
-        let isViol = la < lb
+        let isViol = isLayerViolation(la, lb)
         let isCycle = reaches(b, a)
         if (isViol) {
             violationCount += 1
@@ -701,11 +717,16 @@ public func archMermaid(data: ArchData, en: Bool): String {
         }
         i += 1
     }
+    // ⚠️ L5：治理标签原先硬编码中文（`⚠违规` / `环`）—— mermaid/dot 也接了
+    // `en` 参数，英文模式下这两个字照样中文，输出成半英半中的图。文案只有一处
+    // 来源（ArchUi），这里按 en 取。
+    let violWord = if (en) { "violation" } else { "违规" }
+    let cycleWord = if (en) { "cycle" } else { "环" }
     for (e in data.edges) {
         if (e.violation) {
-            sb.append("  ${mermaidNodeId(ids, e.fromId)} -.->|⚠违规 ${e.weight}| ${mermaidNodeId(ids, e.toId)}\n")
+            sb.append("  ${mermaidNodeId(ids, e.fromId)} -.->|⚠${violWord} ${e.weight}| ${mermaidNodeId(ids, e.toId)}\n")
         } else if (e.cycle) {
-            sb.append("  ${mermaidNodeId(ids, e.fromId)} -->|环 ${e.weight}| ${mermaidNodeId(ids, e.toId)}\n")
+            sb.append("  ${mermaidNodeId(ids, e.fromId)} -->|${cycleWord} ${e.weight}| ${mermaidNodeId(ids, e.toId)}\n")
         } else {
             sb.append("  ${mermaidNodeId(ids, e.fromId)} -->|${e.weight}| ${mermaidNodeId(ids, e.toId)}\n")
         }
@@ -716,15 +737,22 @@ public func archMermaid(data: ArchData, en: Bool): String {
 public func archDot(data: ArchData, en: Bool): String {
     let sb = StringBuilder()
     sb.append("digraph architecture {\n  rankdir=LR;\n  node [shape=box, style=\"rounded,filled\", fillcolor=\"#eef2ff\", color=\"#6366f1\", fontname=\"Helvetica\"];\n")
+    // L5：dot 的节点标签原先反向硬编码英文 "files / symbols"（mermaid 那边是
+    // 中文「文件/符号」）。同一张图两种语言的结果是半中半英 —— 文案只有一处
+    // 来源（ArchUi），这里按 en 取。
+    let nodeWordF = if (en) { "files" } else { "文件" }
+    let nodeWordS = if (en) { "symbols" } else { "符号" }
+    let violWord2 = if (en) { "violation" } else { "违规" }
+    let cycleWord2 = if (en) { "cycle" } else { "环" }
     for (m in data.modules) {
-        let label = "${m.id}\\n${m.files} files / ${m.symbols} symbols"
+        let label = "${m.id}\\n${m.files} ${nodeWordF} / ${m.symbols} ${nodeWordS}"
         sb.append("  \"${m.id}\" [label=\"${label}\", group=\"L${m.layer}\"];\n")
     }
     for (e in data.edges) {
         if (e.violation) {
-            sb.append("  \"${e.fromId}\" -> \"${e.toId}\" [label=\"⚠违规 ${e.weight}\", color=red, style=dashed];\n")
+            sb.append("  \"${e.fromId}\" -> \"${e.toId}\" [label=\"⚠${violWord2} ${e.weight}\", color=red, style=dashed];\n")
         } else if (e.cycle) {
-            sb.append("  \"${e.fromId}\" -> \"${e.toId}\" [label=\"环 ${e.weight}\", color=orange];\n")
+            sb.append("  \"${e.fromId}\" -> \"${e.toId}\" [label=\"${cycleWord2} ${e.weight}\", color=orange];\n")
         } else {
             sb.append("  \"${e.fromId}\" -> \"${e.toId}\" [label=\"${e.weight}\", penwidth=${if (e.weight > 8) { 3 } else { if (e.weight > 3) { 2 } else { 1 } }}];\n")
         }

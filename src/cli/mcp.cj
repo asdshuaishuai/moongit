@@ -85,7 +85,10 @@ public func mcpToolList(): JsonValue {
     arr.add(mcpTool("git_op", "面板级 git 操作（白名单：pull/push/commit/stash/unstash/fetch）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("op", "string", "pull|push|commit|stash|unstash|fetch"), ("message", "string", "commit 时的提交信息")], ["name", "op"])))
     arr.add(mcpTool("list_milestones", "列出全部里程碑及 git 感知进度", mcpSchemaObject([], [])))
     arr.add(mcpTool("milestone_add", "新增里程碑（tag 存在即自动达成）", mcpSchemaObject([("project", "string", "项目名或 ID"), ("name", "string", "里程碑名"), ("tag", "string", "绑定 tag"), ("target_date", "string", "YYYY-MM-DD"), ("description", "string", "描述")], ["project", "name"])))
-    arr.add(mcpTool("milestone_action", "里程碑状态操作", mcpSchemaObject([("project", "string", "项目名或 ID"), ("name", "string", "里程碑名"), ("action", "string", "done|open|drop|remove")], ["project", "name", "action"])))
+    // ⚠️ L3：action 清单原来漏了 reopen（处理器在 567 行支持 done|open|reopen|
+    // drop|remove）—— schema 比处理器窄，模型于是不会去用那个能力。
+    // schema 是给模型看的契约，不是附注：少一项就是少一个能力。
+    arr.add(mcpTool("milestone_action", "里程碑状态操作", mcpSchemaObject([("project", "string", "项目名或 ID"), ("name", "string", "里程碑名"), ("action", "string", "done|open|reopen|drop|remove")], ["project", "name", "action"])))
     arr.add(mcpTool("add_project", "注册一个项目目录", mcpSchemaObject([("path", "string", "项目绝对路径"), ("name", "string", "项目名（缺省取目录名）")], ["path"])))
     // ── CodeGraph：代码图谱（仓颉引擎的确定性词法分析，零依赖）──
     arr.add(mcpTool("codegraph_overview", "代码图谱概览：文件/符号/引用边统计，按语言与符号种类分桶", mcpSchemaObject([("name", "string", "项目名或 ID")], ["name"])))
@@ -247,8 +250,9 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                         // 同上：全部采集失败时正文会写「项目 0 个」并列出全是
                         // 「状态获取失败」的小节。isError 必须为 true，
                         // 否则模型读到一个自称空的项目群。
-                        return mcpText(ctx, groupExitCode(okCountOf(allProjectStatuses(reg.projects, config, true)),
-                                                          Int64(reg.projects.size)) != 0)
+                        // M18：退出码与 isError 用 AgentContext 带回的那一次采集，
+                        // 不再为算退出码重跑一遍 allProjectStatuses。
+                        return mcpText(ctx.text, groupExitCode(ctx.okCount, ctx.listed) != 0)
                     case None =>
                         return mcpErr("budget 需要整数")
                 }
@@ -265,7 +269,9 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                 let b = getBudget()
                 match (b) {
                     case Some(n) =>
-                        return mcpOk(buildAgentContext(reg.projects, config, "project", getStr("name"), n))
+                        // M18：MCP 出口回的是**裸 markdown**，不是 JSON 信封
+                        // （不变量 42），所以这里取 .text。
+                        return mcpOk(buildAgentContext(reg.projects, config, "project", getStr("name"), n).text)
                     case None =>
                         return mcpErr("budget 需要整数")
                 }
@@ -282,7 +288,10 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                         depth = if (d < 1) { 1 } else { if (d > 24) { 24 } else { d } }
                     case None => ()
                 }
-                mcpOk(Json.pretty(fullGraphJson(g)))
+                // M16：depth 必须真的进入输出。原实现 clamp 完就丢掉 ——
+                // schema 写着「目录深度，默认 6」，模型据此规划 context 预算，
+                // 拿到的却是全量图。
+                mcpOk(Json.pretty(fullGraphJson(g, depth)))
             case "codegraph_symbol" =>
                 let p = mcpRequireProject(getStr("name"))
                 let sym = getStr("symbol")
@@ -836,7 +845,10 @@ func testMcpInitializeAndTools(): Unit {
     Json.set(req2, "method", Json.of("tools/list"))
     let resp2 = mcpHandle(req2).getOrThrow()
     let tools = Json.arrAt(Json.getOr(resp2, "result"), "tools")
-    @Assert(tools.size >= 14)
+    // ⚠️ M25：README 写「提供 21 个工具」，实测 23；`tools --json` 写 10 与 17，
+    // 实测 18。两处都不等。文档数字是 agent 与人共同的能力认知，宁可少说不可多说。
+    // 这条 `>= 14` 是老下限，仍然成立；真正防止再漂的是 README 的数字与它同步。
+    @Assert(tools.size >= 23)
 }
 
 @Test

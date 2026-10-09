@@ -53,12 +53,17 @@ public func confidenceJson(r: ConfidenceReport): JsonValue {
     Json.set(o, "root", Json.of(r.root))
     Json.set(o, "score", Json.of(r.score))
     Json.set(o, "dimensions", JArr(dims))
-    Json.set(o, "files", JArr(fl))
+    // ⚠️ M4：这两个键原来**都叫 "files"** —— 罚分表（数组）先写，
+    // filesAnalyzed（计数）后写，而 Json.set 同键就地覆盖 ⇒ JSON 出口里
+    // 罚分表被静默丢掉。MCP codegraph_confidence 与 CLI --json 都只受这一份影响。
+    // 罚分表可由 findings 重新聚合复原，所以原来是「中等严重度的契约缺陷」而非
+    // 数据丢失，但两个含义共用一个键本身就是错：消费方无从同时拿到两者。
+    Json.set(o, "penaltyByFile", JArr(fl))
     Json.set(o, "findings", JArr(fs))
     Json.set(o, "byKind", JArr(ks))
     Json.set(o, "astUsed", Json.of(r.astUsed))
     Json.set(o, "astNote", Json.of(r.astNote))
-    Json.set(o, "files", Json.of(r.filesAnalyzed))
+    Json.set(o, "filesAnalyzed", Json.of(r.filesAnalyzed))
     // 语义边界恒发：分数是结构级度量，不是正确性证明
     Json.set(o, "semantics", Json.of(
         "score = 100·S/(S+每文件疑点权重)（S=${Int64(CONF_SCORE_SCALE)}，与仓库规模无关），"

@@ -1057,7 +1057,7 @@ func testDashboardTextDisclosesListedCountAndStoreDegradation(): Unit {
     Json.set(projs, "active7d", Json.of(2))
     Json.set(projs, "active30d", Json.of(2))
     Json.set(projs, "dirty", Json.of(0))
-    let line = dashboardProjectLine(projs)
+    let line = dashboardProjectLine(projs, "zh")
     @Assert(line.contains("共 3 个"))
     @Assert(line.contains("1 个读取失败"))
     // 关键：不能出现「共 2 个」
@@ -1068,7 +1068,7 @@ func testDashboardTextDisclosesListedCountAndStoreDegradation(): Unit {
     Json.set(allBad, "total", Json.of(0))
     Json.set(allBad, "listed", Json.of(4))
     Json.set(allBad, "failed", Json.of(4))
-    let badLine = dashboardProjectLine(allBad)
+    let badLine = dashboardProjectLine(allBad, "zh")
     @Assert(badLine.contains("共 4 个"))
     @Assert(badLine.contains("4 个读取失败"))
 
@@ -1077,7 +1077,7 @@ func testDashboardTextDisclosesListedCountAndStoreDegradation(): Unit {
     Json.set(clean, "total", Json.of(2))
     Json.set(clean, "listed", Json.of(2))
     Json.set(clean, "failed", Json.of(0))
-    @Assert(!dashboardProjectLine(clean).contains("读取失败"))
+    @Assert(!dashboardProjectLine(clean, "zh").contains("读取失败"))
 
     // 二、milestones.json 损坏：四个计数全是 0，但那不是「没有里程碑」
     let broken = Json.obj()
@@ -1088,7 +1088,7 @@ func testDashboardTextDisclosesListedCountAndStoreDegradation(): Unit {
     Json.set(broken, "degraded", Json.of(true))
     Json.set(broken, "storeHealth", Json.of("corrupt"))
     Json.set(broken, "readCount", Json.of(0))
-    let msLine = dashboardMilestoneLine(broken)
+    let msLine = dashboardMilestoneLine(broken, "zh")
     @Assert(msLine.contains("读不出来"))
     @Assert(msLine.contains("不是「没有」"))
     @Assert(msLine.contains("corrupt"))
@@ -1099,7 +1099,7 @@ func testDashboardTextDisclosesListedCountAndStoreDegradation(): Unit {
     Json.set(ok, "done", Json.of(0))
     Json.set(ok, "dropped", Json.of(0))
     Json.set(ok, "unknown", Json.of(0))
-    @Assert(!dashboardMilestoneLine(ok).contains("读不出来"))
+    @Assert(!dashboardMilestoneLine(ok, "zh").contains("读不出来"))
 
     // unknown（仓库读不出来）必须与 degraded（存储读不出来）分开说
     let both = Json.obj()
@@ -1108,7 +1108,7 @@ func testDashboardTextDisclosesListedCountAndStoreDegradation(): Unit {
     Json.set(both, "dropped", Json.of(0))
     Json.set(both, "unknown", Json.of(2))
     Json.set(both, "degraded", Json.of(false))
-    let bothLine = dashboardMilestoneLine(both)
+    let bothLine = dashboardMilestoneLine(both, "zh")
     @Assert(bothLine.contains("无法核验 2"))
     @Assert(!bothLine.contains("milestones.json"))
 }
@@ -1180,27 +1180,27 @@ func testMilestoneEmptyStateDistinguishesOrphansFromNothing(): Unit {
     //   存储坏 + 一条也没读到   → 必须说「一条也没读到」且 exit 1
     //   有条目但列不出来（孤儿） → **绝不能**说「无里程碑」
     //   文件里确实一条都没有     → 才可以说「（无里程碑）」
-    let (line1, rc1) = milestoneEmptyState(0, 0, "ok", 0)
+    let (line1, rc1) = milestoneEmptyState(0, 0, "ok", 0, "zh")
     @Assert(line1 == "（无里程碑）")
     @Assert(rc1 == 0)
 
     // 核心：孤儿存在时不能说「无里程碑」
-    let (line2, rc2) = milestoneEmptyState(0, 1, "ok", 0)
+    let (line2, rc2) = milestoneEmptyState(0, 1, "ok", 0, "zh")
     @Assert(!line2.contains("无里程碑"))
     @Assert(line2 == "")          // 什么都不打印，交给孤儿告警那一段
     @Assert(rc2 == 0)
 
     // 列得出条目时同样不是空态
-    let (line3, _) = milestoneEmptyState(2, 0, "ok", 0)
+    let (line3, _) = milestoneEmptyState(2, 0, "ok", 0, "zh")
     @Assert(line3 == "")
 
     // 存储坏：优先级最高，且退出码必须非零
-    let (line4, rc4) = milestoneEmptyState(0, 0, "corrupt", 0)
+    let (line4, rc4) = milestoneEmptyState(0, 0, "corrupt", 0, "zh")
     @Assert(line4.contains("一条也没读到"))
     @Assert(!line4.contains("（无里程碑）"))
     @Assert(rc4 == 1)
     // 存储坏 + 同时有孤儿：仍然是「读不出来」，不能说无里程碑
-    let (line5, rc5) = milestoneEmptyState(0, 3, "corrupt", 0)
+    let (line5, rc5) = milestoneEmptyState(0, 3, "corrupt", 0, "zh")
     @Assert(!line5.contains("（无里程碑）"))
     @Assert(rc5 == 1)
 }
@@ -1240,14 +1240,14 @@ func testListSkipsCollectionForDisabledProjects(): Unit {
 @Test
 func testListSummaryLineDisclosesDisabledCount(): Unit {
     // 无停用时不能凭空多出括号
-    @Assert(listSummaryLine(2, 0) == "共 2 个项目。用 `moongit status <项目>` 看详情。")
+    @Assert(listSummaryLine(2, 0, "zh") == "共 2 个项目。用 `moongit status <项目>` 看详情。")
     // 有停用时必须写明，并且写清是「不参与统计」——否则用户以为坏掉了
-    let line = listSummaryLine(2, 1)
+    let line = listSummaryLine(2, 1, "zh")
     @Assert(line.contains("共 2 个项目"))
     @Assert(line.contains("1 个已停用"))
     @Assert(line.contains("不参与统计"))
     // 全部停用也要照实说，不能变成「共 0 个」
-    let all = listSummaryLine(1, 1)
+    let all = listSummaryLine(1, 1, "zh")
     @Assert(all.contains("共 1 个项目"))
     @Assert(all.contains("1 个已停用"))
 }
@@ -1264,7 +1264,7 @@ func testDashboardMilestoneLineDisclosesExcludedAndOrphaned(): Unit {
     Json.set(c, "unknown", Json.of(0))
     Json.set(c, "excludedDisabled", Json.of(2))
     Json.set(c, "orphaned", Json.of(1))
-    let line = dashboardMilestoneLine(c)
+    let line = dashboardMilestoneLine(c, "zh")
     @Assert(line.contains("已停用项目的 2 条未计入"))
     @Assert(line.contains("1 条所属项目已不存在"))
 
@@ -1276,7 +1276,7 @@ func testDashboardMilestoneLineDisclosesExcludedAndOrphaned(): Unit {
     Json.set(clean, "unknown", Json.of(0))
     Json.set(clean, "excludedDisabled", Json.of(0))
     Json.set(clean, "orphaned", Json.of(0))
-    let cl = dashboardMilestoneLine(clean)
+    let cl = dashboardMilestoneLine(clean, "zh")
     @Assert(!cl.contains("已停用"))
     @Assert(!cl.contains("已不存在"))
     // 四种口径必须能同时出现，互不吞掉
@@ -1290,7 +1290,7 @@ func testDashboardMilestoneLineDisclosesExcludedAndOrphaned(): Unit {
     Json.set(all, "readCount", Json.of(0))
     Json.set(all, "excludedDisabled", Json.of(1))
     Json.set(all, "orphaned", Json.of(1))
-    let al = dashboardMilestoneLine(all)
+    let al = dashboardMilestoneLine(all, "zh")
     @Assert(al.contains("无法核验 4"))
     @Assert(al.contains("milestones.json"))
     @Assert(al.contains("已停用项目的 1 条未计入"))
@@ -1311,25 +1311,25 @@ func testDashboardMilestoneLineDisclosesExcludedAndOrphaned(): Unit {
 @Test
 func testMilestoneEmptyStateDistinguishesAllDisabledFromNone(): Unit {
     // 存储健康、读得到 0 条、孤儿 0 条、但有 1 条挂在停用项目上
-    let (line, rc) = milestoneEmptyState(0, 0, "ok", 1)
+    let (line, rc) = milestoneEmptyState(0, 0, "ok", 1, "zh")
     @Assert(!line.contains("无里程碑"))
     @Assert(line.contains("已停用"))
     @Assert(line.contains("1 条"))
     @Assert(rc == 0)          // 不是故障，只是被筛掉了
 
     // 真的什么都没有，才可以说「（无里程碑）」
-    let (noneLine, noneRc) = milestoneEmptyState(0, 0, "ok", 0)
+    let (noneLine, noneRc) = milestoneEmptyState(0, 0, "ok", 0, "zh")
     @Assert(noneLine == "（无里程碑）")
     @Assert(noneRc == 0)
 
     // 存储坏优先级最高：即使同时有停用项目的条数，也必须说「一条也没读到」
-    let (badLine, badRc) = milestoneEmptyState(0, 0, "corrupt", 2)
+    let (badLine, badRc) = milestoneEmptyState(0, 0, "corrupt", 2, "zh")
     @Assert(badLine.contains("一条也没读到"))
     @Assert(!badLine.contains("无里程碑"))
     @Assert(badRc == 1)
 
     // 孤儿优先于停用：孤儿段有自己的告警文案，空态不该抢话
-    let (orphLine, _) = milestoneEmptyState(0, 1, "ok", 1)
+    let (orphLine, _) = milestoneEmptyState(0, 1, "ok", 1, "zh")
     @Assert(orphLine == "")
 }
 
@@ -1539,18 +1539,18 @@ func testScanJsonAlwaysCarriesUnreadableAndCoverage(): Unit {
     }
 
     // 覆盖程度：三种「没扫全」的成因一个都不能少（#197 加了 depthCapped）
-    @Assert(scanCoverage(false, 0, false) == "完整")
-    @Assert(scanCoverage(true, 0, false).contains("目录上限"))
-    @Assert(scanCoverage(false, 1, false).contains("读不出来"))
-    @Assert(scanCoverage(true, 1, false).contains("读不出来"))
-    @Assert(scanCoverage(false, 0, true).contains("--depth"))
+    @Assert(scanCoverage(false, 0, false, "zh") == "完整")
+    @Assert(scanCoverage(true, 0, false, "zh").contains("目录上限"))
+    @Assert(scanCoverage(false, 1, false, "zh").contains("读不出来"))
+    @Assert(scanCoverage(true, 1, false, "zh").contains("读不出来"))
+    @Assert(scanCoverage(false, 0, true, "zh").contains("--depth"))
 
     // 全部可读时 unreadable 必须是空数组，而不是缺键
     let okResult = scanRoots(ArrayList<String>([base]), SCAN_DEFAULT_DEPTH, false)
     let okO = scanResultJson(okResult, 0, 0)
     @Assert(Json.has(okO, "unreadable"))
     @Assert(Json.arrAt(okO, "unreadable").size == 0)
-    @Assert(scanCoverage(okResult.truncated, okResult.unreadable.size, okResult.depthCapped) == "完整")
+    @Assert(scanCoverage(okResult.truncated, okResult.unreadable.size, okResult.depthCapped, "zh") == "完整")
 
     removePathIfExists(base)
 }
@@ -1602,12 +1602,12 @@ func testDashboardMilestoneLineDisclosesOtherStatus(): Unit {
     Json.set(c, "dropped", Json.of(0))
     Json.set(c, "unknown", Json.of(0))
     Json.set(c, "other", Json.of(0))
-    let clean = dashboardMilestoneLine(c)
+    let clean = dashboardMilestoneLine(c, "zh")
     @Assert(!clean.contains("认不出来"))
     @Assert(!clean.contains("无法核验"))
 
     Json.set(c, "other", Json.of(1))
-    let dirty = dashboardMilestoneLine(c)
+    let dirty = dashboardMilestoneLine(c, "zh")
     @Assert(dirty.contains("认不出来"))
     @Assert(dirty.contains("1"))
 }
@@ -1816,13 +1816,13 @@ func testScanMustDiscloseThatItStoppedAtTheDepthLimit(): Unit {
     @Assert(shallow.candidates.size == 0)
     @Assert(!shallow.truncated)          // 没撞目录上限
     @Assert(shallow.depthCapped)          // 撞的是深度上限
-    @Assert(scanCoverage(shallow.truncated, shallow.unreadable.size, shallow.depthCapped).contains("--depth"))
+    @Assert(scanCoverage(shallow.truncated, shallow.unreadable.size, shallow.depthCapped, "zh").contains("--depth"))
 
     // 深度 5：看得见 ⇒ 找到，且**不得**说被截断
     let deep = scanRoots(ArrayList<String>([base]), 5, false)
     @Assert(deep.candidates.size == 1)
     @Assert(!deep.depthCapped)
-    @Assert(scanCoverage(deep.truncated, deep.unreadable.size, deep.depthCapped) == "完整")
+    @Assert(scanCoverage(deep.truncated, deep.unreadable.size, deep.depthCapped, "zh") == "完整")
 
     // 叶子目录不算「被截断」：撞到深度上限时下面**确实没有子目录**
     // 就是真的看全了，置位 depthCapped 反而是谎报。
@@ -2198,4 +2198,52 @@ public func collectCaseKeys(code: String, header: String, acc: ArrayList<String>
                 }
         }
     }
+}
+
+// MARK: - 审查回归（audit-2026-10-09）：外壳层双语与语言链路
+
+/// M15：English 模式下这些渲染函数必须真的给英文，不能仍然中文。
+/// 原实现整段中文硬编码，`DEEPGIT_LANG=en` 时数据是英文、话术是中文。
+@Test
+func testChromeRenderersHonourEnglish(): Unit {
+    let projs = Json.parse("{\"listed\":3,\"failed\":1,\"active7d\":2,\"active30d\":3,\"dirty\":1}").getOrThrow()
+    let pl = dashboardProjectLine(projs, "en")
+    @Assert(pl.contains("Projects:"))
+    @Assert(pl.contains("unreadable"))
+    @Assert(!pl.contains("项目群"))
+
+    let counts = Json.parse("{\"open\":2,\"done\":1,\"dropped\":0,\"unknown\":1,\"other\":1,\"degraded\":true,\"storeHealth\":\"corrupt\",\"readCount\":0,\"excludedDisabled\":2,\"orphaned\":1}").getOrThrow()
+    let ml = dashboardMilestoneLine(counts, "en")
+    @Assert(ml.contains("Milestones:"))
+    @Assert(ml.contains("unverifiable"))
+    @Assert(ml.contains("does not mean none"))
+    @Assert(!ml.contains("里程碑"))
+
+    let (emptyEn, _) = milestoneEmptyState(0, 0, "ok", 0, "en")
+    @Assert(emptyEn.contains("no milestones"))
+    let (emptyZh, _) = milestoneEmptyState(0, 0, "ok", 0, "zh")
+    @Assert(emptyZh.contains("无里程碑"))
+
+    let ls = listSummaryLine(2, 1, "en")
+    @Assert(ls.contains("2 projects"))
+    @Assert(ls.contains("disabled"))
+    @Assert(!ls.contains("个项目"))
+
+    let cov = scanCoverage(true, 1, true, "en")
+    @Assert(cov.contains("partial coverage"))
+    @Assert(!cov.contains("部分覆盖"))
+    // 中文键集一个都不许丢
+    @Assert(!scanCoverage(true, 1, true, "zh").contains("partial coverage"))
+}
+
+/// L9：env 覆盖必须走同一份 language 判据。`DEEPGIT_LANG=fr` 原来被静默接受，
+/// 而 isEnglish("fr") == false ⇒ 全输出中文且零提示。
+@Test
+func testEnvLanguageOverrideRejectsUnsupported(): Unit {
+    setVariable("DEEPGIT_LANG", "fr")
+    let cfg = applyEnvOverrides(Config.defaults())
+    @Assert(cfg.language == "zh")     // 不接受引擎不会兑现的值
+    setVariable("DEEPGIT_LANG", "en")
+    @Assert(applyEnvOverrides(Config.defaults()).language == "en")
+    setVariable("DEEPGIT_LANG", "")
 }
