@@ -713,7 +713,27 @@ func buildBuiltinNames(): HashSet<String> {
         "ArrayList", "HashMap", "HashSet", "StringBuilder", "Path", "FileInfo",
         "Directory", "Char", "UInt8", "Int64", "Float64", "Float32", "Rune",
         "Unit", "Comparable", "Runnable", "Iterator", "Optional",
-        "describe", "it", "expect", "beforeEach", "afterEach", "main"
+        "describe", "it", "expect", "beforeEach", "afterEach", "main",
+        // node/Browser API（AI 高频使用、非项目内定义）
+        "hypot", "alloc", "writeUInt32BE", "readUInt32BE", "writeInt32BE",
+        "concat", "Buffer", "from", "toString", "slice", "splice", "indexOf",
+        "includes", "replace", "match", "test", "split", "trim", "padStart",
+        "padEnd", "entries", "keys", "values", "forEach", "reduce", "push",
+        "pop", "shift", "unshift", "find", "findIndex", "some", "every",
+        "flat", "fill", "join", "reverse", "sort", "at", "includes",
+        "keys", "assign", "freeze", "create", "defineProperty", "getPrototypeOf",
+        "preventExtensions", "isFrozen", "seal",
+        "writeFileSync", "readFileSync", "existsSync", "mkdirSync", "readdirSync",
+        "statSync", "unlinkSync", "appendFileSync", "copyFileSync", "rmSync",
+        "writeFile", "readFile", "mkdir", "readdir", "stat", "unlink",
+        "resolve", "join", "dirname", "basename", "extname", "relative",
+        "createServer", "listen", "request", "get", "post", "put", "delete",
+        "setTimeout", "setInterval", "clearTimeout", "clearInterval",
+        "queueMicrotask", "structuredClone", "fetch",
+        // Swift 协议必需方法（框架回调，永不显式调用）
+        "makeNSView", "updateNSView", "makeCoordinator", "effectValue",
+        "body", "onAppear", "onDisappear", "task", "onChange", "deref",
+        "hash", "isEqual", "compareTo", "description"
     ]
     for (w in words) {
         let t = w.trimAscii()
@@ -738,6 +758,15 @@ func isBuiltinName(name: String): Bool {
 func detectUnresolvedCalls(graph: CodeGraph, findings: ArrayList<Finding>): Unit {
     let perFile = HashMap<String, Int64>()
     for ((file, name, line) in graph.unresolvedCalls) {
+        // 清单/配置文件豁免：Package.swift 的 Package()/macOS() 是 SwiftPM DSL，
+        // build.gradle 的 android() 同理——这些"调用"是宿主框架注入的。
+        let base = lastSeg(file)
+        if (base == "Package.swift" || base == "Package.resolved"
+            || base == "build.gradle" || base == "build.gradle.kts"
+            || base == "settings.gradle" || base == "Podfile"
+            || base == "Cargo.toml" || base == "Makefile") {
+            continue
+        }
         let key = file
         let c = match (perFile.get(key)) {
             case Some(v) => v
@@ -816,3 +845,290 @@ func detectCommentedCode(graph: CodeGraph, findings: ArrayList<Finding>): Unit {
         }
     }
 }
+
+// MARK: - 变量级 / 类型级 / 指针 / 并发（维度补齐：评审要求的完整覆盖）
+
+/// 未使用变量：函数体内 `let/var/val x =` 声明后，同名标识符在该函数体内
+/// 再未出现（声明行除外）。AST 函数边界内的词法统计——精确到函数作用域。
+func detectUnusedVariables(nodes: ArrayList<AstNode>, findings: ArrayList<Finding>): Unit {
+    let perFile = HashMap<String, Int64>()
+    for (n in nodes) {
+        if (n.nodeRule != "fn") { continue }
+        let body = bodyText(n.text)
+        if (body.isEmpty()) { continue }
+        // 候选声明：逐行扫 let/var/val 前缀
+        var lineNo = n.startLine
+        for (line in body.lazySplit("\n")) {
+            lineNo += 1
+            let t = line.trimAscii()
+            var name = ""
+            if (t.startsWith("let ")) { name = firstIdentAfter(t, 4) }
+            else if (t.startsWith("var ")) { name = firstIdentAfter(t, 4) }
+            else if (t.startsWith("val ")) { name = firstIdentAfter(t, 4) }
+            if (name.isEmpty()) { continue }
+            // 计数：函数体内该名字的出现次数（含声明行）。1 次 = 声明后从未使用。
+            // ⚠️ 仓颉 lambda 不能捕获可变局部变量——用可变集合容器绕（容器本身是引用）。
+            // ⚠️ 仓颉 lambda 不能捕获可变绑定（容器下标写也算）——手写扫描循环
+            var hits: Int64 = 0
+            for (l2 in body.lazySplit("\n")) {
+                let b2 = l2.toArray()
+                let n2 = Int64(b2.size)
+                var i2: Int64 = 0
+                while (i2 < n2) {
+                    if (isIdentByte(b2[i2])) {
+                        let st2 = i2
+                        while (i2 < n2 && isIdentByte(b2[i2])) { i2 += 1 }
+                        if (fromUtf8Lossy(b2[st2..i2]) == name) { hits += 1 }
+                    } else {
+                        i2 += 1
+                    }
+                }
+            }
+            if (hits <= 1) {
+                let key = n.file
+                let c = match (perFile.get(key)) {
+                    case Some(v) => v
+                    case None => 0
+                }
+                if (c >= CONF_MAX_PER_KIND_PER_FILE) { continue }
+                perFile[key] = c + 1
+                findings.add(Finding(UnusedVariable, n.file, lineNo, name,
+                    "变量 ${name} 声明后在本函数体内未再出现——死变量（AI 常留的中间产物）"))
+            }
+        }
+    }
+}
+
+/// 行内第 n 个字符后的第一个标识符
+func firstIdentAfter(line: String, fromByte: Int64): String {
+    let b = line.toArray()
+    var i = fromByte
+    let n = Int64(b.size)
+    while (i < n && !isIdentByte(b[i])) { i += 1 }
+    let st = i
+    while (i < n && isIdentByte(b[i])) { i += 1 }
+    if (i > st) { return fromUtf8Lossy(b[st..i]) }
+    return ""
+}
+
+/// 类型级信号：空类型（无成员）与上帝类（行数/方法数超阈）。
+func detectTypeSignals(nodes: ArrayList<AstNode>, findings: ArrayList<Finding>): Unit {
+    for (n in nodes) {
+        if (n.nodeRule != "type") { continue }
+        let lines = n.endLine - n.startLine + 1
+        let body = bodyText(n.text)
+        // 方法数：体内 func/def/function 关键词计数
+        var methods: Int64 = 0
+        for (line in body.lazySplit("\n")) {
+            if (mayDeclare(line)) { methods += 1 }
+        }
+        let name = typeNameOf(n)
+        if (methods == 0 && lines <= 3) {
+            findings.add(Finding(EmptyType, n.file, n.startLine, name,
+                "类型 ${name} 没有任何成员（${lines} 行）——占位类型或被掏空"))
+        } else if (lines > CONF_GOD_CLASS_LINES || methods > CONF_GOD_CLASS_METHODS) {
+            findings.add(Finding(GodClass, n.file, n.startLine, name,
+                "类型 ${name}：${lines} 行 / ${methods} 个声明（阈值 ${CONF_GOD_CLASS_LINES} 行或 ${CONF_GOD_CLASS_METHODS} 个）——拆分候选"))
+        }
+    }
+}
+
+/// 类型名：文本首个标识符（class Foo → Foo）
+func typeNameOf(n: AstNode): String {
+    for (tok in tokenize(n.text)) {
+        if (looksLikeName(tok)) { return tok }
+    }
+    return ""
+}
+
+/// 指针风险（C/C++）：文件级 malloc/calloc 与 free 计数不配对；返回栈地址 `return &`。
+/// 词法级——指针语义（别名/所有权）超出静态词法能力，如实标注为启发式。
+func detectPointerRisks(graph: CodeGraph, findings: ArrayList<Finding>): Unit {
+    for (f in graph.files) {
+        if (f.lang != "c") { continue }
+        let content = readFileText("${graph.root}/${f.relPath}")
+        match (content) {
+            case Some(text) =>
+                var allocs: Int64 = 0
+                var frees: Int64 = 0
+                var stackReturnLine: Int64 = 0
+                var lineNo: Int64 = 0
+                for (line in text.lazySplit("\n")) {
+                    lineNo += 1
+                    let (t, _) = stripCode(line, 0)
+                    if (t.contains("malloc(") || t.contains("calloc(") || t.contains("realloc(")) {
+                        allocs += 1
+                    }
+                    if (t.contains("free(")) { frees += 1 }
+                    if (t.trimAscii().startsWith("return &") && stackReturnLine == 0) {
+                        stackReturnLine = lineNo
+                    }
+                }
+                if (allocs > frees) {
+                    findings.add(Finding(PointerRisk, f.relPath, 1, "",
+                        "分配 ${allocs} 次（malloc/calloc/realloc）但 free 仅 ${frees} 次——疑似内存泄漏"))
+                }
+                if (stackReturnLine > 0) {
+                    findings.add(Finding(PointerRisk, f.relPath, stackReturnLine, "",
+                        "return &… 返回栈上地址——函数返回后悬垂指针（若取的是参数/堆地址则为误报）"))
+                }
+            case None => ()
+        }
+    }
+}
+
+/// 并发链路/细节：
+///   ① 全局可变状态：顶层 var/static var（无同步的共享状态起点）
+///   ② 锁不平衡：同函数内 lock/acquire 无对应 unlock/release
+///   ③ 持锁调用：lock 到 unlock 区间内调用**非本函数定义**的函数（死锁经典形态）
+/// AST 可用时按函数节点判；降级时按文件词法近似（①仍准确——顶层判定不依赖函数边界）。
+func detectConcurrencyRisks(graph: CodeGraph, nodes: ArrayList<AstNode>, astUsed: Bool, findings: ArrayList<Finding>): Unit {
+    // ① 全局可变（语言关键词：Swift/Cangjie var、Rust static mut、Kotlin var）
+    for (f in graph.files) {
+        let content = readFileText("${graph.root}/${f.relPath}")
+        match (content) {
+            case Some(text) =>
+                var depth: Int64 = 0
+                var strState: Int64 = 0
+                var lineNo: Int64 = 0
+                let perFile = HashMap<String, Int64>()
+                for (line in text.lazySplit("\n")) {
+                    lineNo += 1
+                    let (t, nextState) = stripCode(line, strState)
+                    strState = nextState
+                    if (depth == 0) {
+                        let trimmed = t.trimAscii()
+                        var hit = false
+                        if (trimmed.startsWith("var ") || trimmed.startsWith("public var ")
+                            || trimmed.startsWith("static var ") || trimmed.startsWith("internal var ")) {
+                            hit = true
+                        }
+                        if (trimmed.startsWith("static mut ")) { hit = true }
+                        if (hit) {
+                            let c = match (perFile.get(f.relPath)) {
+                                case Some(v) => v
+                                case None => 0
+                            }
+                            if (c < 3) {
+                                perFile[f.relPath] = c + 1
+                                findings.add(Finding(GlobalMutable, f.relPath, lineNo, "",
+                                    "顶层可变全局（${oneLineClamped(trimmed, 50)}）——多线程共享状态的起点，需同步或改不可变"))
+                            }
+                        }
+                    }
+                    depth += braceDelta(t)
+                    if (depth < 0) { depth = 0 }
+                }
+            case None => ()
+        }
+    }
+    // ② ③ 锁分析（函数边界内）
+    if (!astUsed) { return }
+    let perFile = HashMap<String, Int64>()
+    for (n in nodes) {
+        if (n.nodeRule != "fn") { continue }
+        let body = bodyText(n.text)
+        if (body.isEmpty()) { continue }
+        // 找 lock 区间
+        var lockLine: Int64 = 0
+        var unlockLine: Int64 = 0
+        var lineNo = n.startLine
+        var locked = false
+        for (line in body.lazySplit("\n")) {
+            lineNo += 1
+            if (!locked) {
+                if (containsLockAcquire(line)) {
+                    locked = true
+                    lockLine = lineNo
+                }
+            } else {
+                if (containsLockRelease(line)) {
+                    unlockLine = lineNo
+                    // 持锁区间（lockLine..unlockLine）内调用外部函数
+                    checkLockCalls(n, lockLine, unlockLine, findings, perFile)
+                    locked = false
+                }
+            }
+        }
+        if (locked && lockLine > 0) {
+            // 函数结束仍持锁：不平衡（泄漏锁 / 死锁风险）
+            let c = match (perFile.get(n.file)) {
+                case Some(v) => v
+                case None => 0
+            }
+            if (c < CONF_MAX_PER_KIND_PER_FILE) {
+                perFile[n.file] = c + 1
+                findings.add(Finding(LockImbalance, n.file, lockLine, nodeName(n),
+                    "函数 ${nodeName(n)} 在 L${lockLine} 获取锁后到函数结束没有释放——锁泄漏或依赖外部释放"))
+            }
+        }
+    }
+}
+
+/// 行内花括号净增量（剥注释/字符串后）——与 build.cj 的 braceDelta 同语义。
+func braceDelta(line: String): Int64 {
+    let (t, _) = stripCode(line, 0)
+    var d: Int64 = 0
+    for (b in t) {
+        if (b == 123) { d += 1 }
+        if (b == 125) { d -= 1 }
+    }
+    return d
+}
+
+func containsLockAcquire(line: String): Bool {
+    return line.contains(".lock(") || line.contains(".acquire(") || line.contains("pthread_mutex_lock")
+        || line.contains("EnterCriticalSection") || line.contains("mutex.lock")
+}
+
+func containsLockRelease(line: String): Bool {
+    return line.contains(".unlock(") || line.contains(".release(") || line.contains("pthread_mutex_unlock")
+        || line.contains("LeaveCriticalSection") || line.contains("mutex.unlock")
+}
+
+/// 持锁区间内的外部调用：调用名既非语言内建、也非本函数内定义、也非锁 API 本身。
+func checkLockCalls(n: AstNode, lockLine: Int64, unlockLine: Int64,
+                    findings: ArrayList<Finding>, perFile: HashMap<String, Int64>): Unit {
+    // ⚠️ 仓颉 lambda 不允许写捕获环境——手写扫描，不用闭包。
+    var idx: Int64 = 0
+    for (line in n.text.lazySplit("\n")) {
+        idx += 1
+        if (idx < lockLine - n.startLine + 1 || idx > unlockLine - n.startLine + 1) { continue }
+        let (t, _) = stripCode(line, 0)
+        let b = t.toArray()
+        let ln = Int64(b.size)
+        var i: Int64 = 0
+        var prevDot = false
+        while (i < ln) {
+            let ch = b[i]
+            if (isIdentByte(ch)) {
+                let st = i
+                while (i < ln && isIdentByte(b[i])) { i += 1 }
+                let isCall = i < ln && b[i] == 40
+                if (isCall && !prevDot) {
+                    let name = fromUtf8Lossy(b[st..i])
+                    if (!isBuiltinName(name)
+                        && name != "lock" && name != "unlock"
+                        && name != "acquire" && name != "release"
+                        && !n.text.contains("func ${name}(")
+                        && !n.text.contains("def ${name}(")) {
+                        let c = match (perFile.get(n.file)) {
+                            case Some(v) => v
+                            case None => 0
+                        }
+                        if (c < CONF_MAX_PER_KIND_PER_FILE) {
+                            perFile[n.file] = c + 1
+                            findings.add(Finding(LockUnknownCall, n.file, n.startLine + idx - 1, name,
+                                "持锁区间内调用 ${name}(…)（L${lockLine} 获取锁）——若被调方再取同一把锁即死锁"))
+                        }
+                    }
+                }
+                prevDot = false
+            } else {
+                prevDot = (ch == 46)
+                i += 1
+            }
+        }
+    }
+}
+

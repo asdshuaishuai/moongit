@@ -108,6 +108,51 @@ func declKeywordBytes(): Array<(UInt8, Array<UInt8>)> {
 
 let DECL_KEYWORDS: Array<(UInt8, Array<UInt8>)> = declKeywordBytes()
 
+/// C 系函数定义的词法识别：C 没有函数关键字（`type name(args) {`），
+/// 关键词表扫不到 ⇒ 同文件函数互调全被幻觉调用误报（实测 conc-demo）。
+/// 形态判定：剥注释后行匹配「返回类型 name(」，即 `标识符 标识符(` 开头
+/// 且首个标识符非关键字、行含 `{`（定义而非声明）。声明（以 ; 结尾）不算。
+func cStyleFuncName(line: String): Option<String> {
+    let toks = tokenize(line)
+    if (toks.size < 2) { return None }
+    // 首 token = 返回类型（非关键字）；次 token = 函数名；其后必须紧跟 "("
+    // tokenize 丢掉了括号——用原始字节判定 name 后是否紧跟 '('
+    let name = toks[1]
+    if (KEYWORDS.contains(toks[0])) { return None }
+    if (KEYWORDS.contains(name)) { return None }
+    if (!looksLikeName(name)) { return None }
+    // 原始行找 "name("（name 后紧跟 '('，允许空白）
+    let idx = findSubstr(line, name + "(")
+    if (idx.isNone()) {
+        // name ( 带空格
+        if (findSubstr(line, name + " (").isNone()) { return None }
+    }
+    // 必须是定义（含 {）而非声明（; 结尾）
+    if (!line.contains("{")) { return None }
+    // static inline 等多词返回类型：把首关键词剥掉再看一次
+    return Some(name)
+}
+
+func findSubstr(hay: String, needle: String): Option<Int64> {
+    let h = hay.toArray()
+    let nd = needle.toArray()
+    let n = Int64(h.size)
+    let m = Int64(nd.size)
+    if (m == 0 || m > n) { return None }
+    var i: Int64 = 0
+    while (i + m <= n) {
+        var ok = true
+        var j: Int64 = 0
+        while (j < m) {
+            if (h[i + j] != nd[j]) { ok = false; break }
+            j += 1
+        }
+        if (ok) { return Some(i) }
+        i += 1
+    }
+    return None
+}
+
 /// 这一行**可能**含声明关键词（字节级词扫描，零分配）。
 /// scanSource 用它做前置过滤：绝大多数代码行直接跳过 tokenize，
 /// 把「每行一个 ArrayList」的分配压到只剩候选行。
@@ -547,12 +592,21 @@ public func scanSource(content: String): SourceFacts {
         if (blankLine(t)) { continue }
         // 前置过滤：不含声明关键词的行免去 tokenize 的整行分配
         if (!mayDeclare(t)) {
+            // C 系函数没有声明关键字——形态兜底（否则同文件互调全成幻觉调用）
+            match (cStyleFuncName(t)) {
+                case Some(name) => symbols.add(SymDecl(Func, name, lineNo))
+                case None => ()
+            }
             continue
         }
         match (scanDeclLine(tokenize(t))) {
             case Some((kind, name)) =>
                 symbols.add(SymDecl(kind, name, lineNo))
-            case None => ()
+            case None =>
+                match (cStyleFuncName(t)) {
+                    case Some(name) => symbols.add(SymDecl(Func, name, lineNo))
+                    case None => ()
+                }
         }
     }
     return SourceFacts(symbols, imports, importLines, lineCount)

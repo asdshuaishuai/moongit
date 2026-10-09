@@ -17,6 +17,9 @@ import moongit.util.*
 
 // MARK: - 工具发现
 
+/// tmpDirRoot 的包级持有（runAstGrep 设置；parse 阶段做路径映回）
+var C_AS_CPP_ROOT: String = ""
+
 /// ast-grep 可执行文件路径（None = 不可用）。
 public func findAstGrep(): Option<String> {
     match (getVariable("MOONGIT_AST_GREP")) {
@@ -84,6 +87,22 @@ func fnKindsFor(astLang: String): Array<String> {
     }
 }
 
+/// 每种语言的**类型声明节点 kind**（类/结构体/接口/枚举）——类型级检测用。
+/// 之前只抓 fn/catch，类级信号（空类、上帝类）没有数据源。
+func typeKindsFor(astLang: String): Array<String> {
+    match (astLang) {
+        case "swift" => ["class_declaration", "struct_declaration", "protocol_declaration", "enum_declaration"]
+        case "typescript" => ["class_declaration", "interface_declaration", "type_alias_declaration"]
+        case "python" => ["class_definition"]
+        case "go" => ["type_declaration"]
+        case "rust" => ["struct_item", "enum_item", "trait_item"]
+        case "java" => ["class_declaration", "interface_declaration", "enum_declaration"]
+        case "kotlin" => ["class_declaration", "object_declaration"]
+        case "cpp" => ["class_specifier", "struct_specifier"]
+        case _ => []
+    }
+}
+
 /// 每种语言的 catch 节点 kind（没有的返回空 → 该语言不做吞错检测）。
 func catchKindsFor(astLang: String): Array<String> {
     match (astLang) {
@@ -113,14 +132,33 @@ func runAstGrep(graph: CodeGraph): Option<ArrayList<AstNode>> {
     }
     // 按 ast-grep 语言分组文件（一次 scan 处理一种语言，规则集按语言生成）
     let byLang = HashMap<String, ArrayList<String>>()
+    // .c 文件 ast-grep 只认后缀（Cpp 规则不扫 .c）——复制为 .cpp 临时副本再扫，
+    // 扫完把结果里的 .cpp 路径映回原 .c（Cpp 是 C 的超集，解析结果可靠）。
+    let tmpDirRoot = "${tempBase()}/moongit-c-as-cpp-${getpid()}"
+    C_AS_CPP_ROOT = tmpDirRoot
+    var tmpPrepared = false
     for (f in graph.files) {
-        let al = astGrepLang(f.lang)
+        var al = astGrepLang(f.lang)
         if (al.isEmpty()) { continue }
+        var scanPath = "${graph.root}/${f.relPath}"
+        if (f.lang == "c") {
+            al = "cpp"
+            if (!tmpPrepared) {
+                ensureDir(tmpDirRoot)
+                tmpPrepared = true
+            }
+            let dst = "${tmpDirRoot}/${sanitizePathToName(f.relPath)}.cpp"
+            match (readFileText(scanPath)) {
+                case Some(text) => writeFileAtomic(dst, text)
+                case None => continue
+            }
+            scanPath = dst
+        }
         match (byLang.get(al)) {
-            case Some(list) => list.add("${graph.root}/${f.relPath}")
+            case Some(list) => list.add(scanPath)
             case None =>
                 let list = ArrayList<String>()
-                list.add("${graph.root}/${f.relPath}")
+                list.add(scanPath)
                 byLang[al] = list
         }
     }
@@ -174,6 +212,11 @@ func runAstGrep(graph: CodeGraph): Option<ArrayList<AstNode>> {
     return Some(all)
 }
 
+/// 路径 → 文件名安全编码（"/" → "__"；避免嵌套临时目录）
+func sanitizePathToName(relPath: String): String {
+    return relPath.replace("/", "__")
+}
+
 func tempBase(): String {
     match (getVariable("TMPDIR")) {
         case Some(v) => if (!v.trimAscii().isEmpty()) { return normalizePath(v) }
@@ -182,8 +225,8 @@ func tempBase(): String {
     return "/tmp"
 }
 
-/// 按语言生成规则集：函数/方法节点 + catch 节点。
-/// 规则 id 约定：`fn` / `catch`（消费方按 id 分派语义）。
+/// 按语言生成规则集：函数/方法 + 类型声明 + catch 节点。
+/// 规则 id 约定：`fn` / `type` / `catch`（消费方按 id 分派语义）。
 func rulesYamlFor(astLang: String): String {
     let sb = StringBuilder()
     let fns = fnKindsFor(astLang)
@@ -198,6 +241,22 @@ func rulesYamlFor(astLang: String): String {
                 sb.append("    - kind: ${k}\n")
             }
             sb.append("message: fn\n")
+            sb.append("severity: info\n")
+        }
+    }
+    let types = typeKindsFor(astLang)
+    if (types.size > 0) {
+        let ymlLang = yamlLang(astLang)
+        if (!ymlLang.isEmpty()) {
+            if (sb.toString().size > 0) { sb.append("---\n") }
+            sb.append("id: type\n")
+            sb.append("language: ${ymlLang}\n")
+            sb.append("rule:\n")
+            sb.append("  any:\n")
+            for (k in types) {
+                sb.append("    - kind: ${k}\n")
+            }
+            sb.append("message: type\n")
             sb.append("severity: info\n")
         }
     }
@@ -253,10 +312,20 @@ func parseAstGrepJson(raw: String, out: ArrayList<AstNode>): Unit {
 }
 
 func parseOneAstNode(item: JsonValue, out: ArrayList<AstNode>): Unit {
-    let file = Json.strAt(item, "file", "")
+    var file = Json.strAt(item, "file", "")
     let rule = Json.strAt(item, "ruleId", "")
     let text = Json.strAt(item, "text", "")
     if (file.isEmpty() || rule.isEmpty()) { return }
+    // .c → .cpp 临时副本的映回：tmp/x_y.cpp → 原始 x/y.c（目录名即路径编码）
+    if (!C_AS_CPP_ROOT.isEmpty() && file.startsWith(C_AS_CPP_ROOT + "/")) {
+        let stem = lastSeg(file)
+        let dot = stem.lastIndexOf(".")
+        if (dot.isSome()) {
+            let encoded = stem[0..dot.getOrThrow()]
+            // sanitizePathToName 用 "__" 编码 "/"，还原之
+            file = encoded.replace("__", "/") + ".c"
+        }
+    }
     let rng = Json.getOr(item, "range")
     let start = Json.getOr(rng, "start")
     let end = Json.getOr(rng, "end")

@@ -36,6 +36,13 @@ public enum FlawKind {
     | UnresolvedCall  // 幻觉调用：调用全仓不存在的自由函数（AI 编造 API 的标志）
     | UnusedImport    // 未使用 import：解析到目标文件但符号从未出现
     | CommentedCode   // 注释掉的代码块（AI 生成后手动禁用的残留）
+    | UnusedVariable  // 变量级：声明后函数体内未再出现（死变量）
+    | GodClass        // 类型级：超大类（方法数/行数超阈）
+    | EmptyType       // 类型级：空类/空结构体（只有声明没有成员）
+    | PointerRisk     // 指针级：malloc/free 不配对、返回栈地址（C/C++）
+    | GlobalMutable   // 并发级：顶层可变全局（无同步的共享状态起点）
+    | LockImbalance   // 并发级：锁 acquire 后同函数无 release（泄漏/死锁风险）
+    | LockUnknownCall // 并发级：锁持有区间内调用外部函数（死锁经典形态）
 }
 
 public func flawId(k: FlawKind): String {
@@ -52,6 +59,13 @@ public func flawId(k: FlawKind): String {
         case UnresolvedCall => "unresolved-call"
         case UnusedImport => "unused-import"
         case CommentedCode => "commented-code"
+        case UnusedVariable => "unused-variable"
+        case GodClass => "god-class"
+        case EmptyType => "empty-type"
+        case PointerRisk => "pointer-risk"
+        case GlobalMutable => "global-mutable"
+        case LockImbalance => "lock-imbalance"
+        case LockUnknownCall => "lock-unknown-call"
     }
 }
 
@@ -70,6 +84,13 @@ public func flawLabel(k: FlawKind, en: Bool): String {
             case UnresolvedCall => "Unresolved call (hallucinated API?)"
             case UnusedImport => "Unused import"
             case CommentedCode => "Commented-out code"
+            case UnusedVariable => "Unused variable"
+            case GodClass => "God class"
+            case EmptyType => "Empty type"
+            case PointerRisk => "Pointer risk"
+            case GlobalMutable => "Global mutable state"
+            case LockImbalance => "Lock imbalance"
+            case LockUnknownCall => "Call while holding lock"
         }
     } else {
         match (k) {
@@ -85,6 +106,13 @@ public func flawLabel(k: FlawKind, en: Bool): String {
             case UnresolvedCall => "幻觉调用"
             case UnusedImport => "未使用 import"
             case CommentedCode => "注释掉的代码"
+            case UnusedVariable => "未使用变量"
+            case GodClass => "上帝类"
+            case EmptyType => "空类型"
+            case PointerRisk => "指针风险"
+            case GlobalMutable => "全局可变状态"
+            case LockImbalance => "锁不平衡"
+            case LockUnknownCall => "持锁调用"
         }
     }
 }
@@ -100,6 +128,13 @@ public func flawWeight(k: FlawKind): Int64 {
         case SwallowedError => 10
         case DuplicateBody => 8
         case UnresolvedCall => 8
+        case LockImbalance => 9
+        case LockUnknownCall => 9
+        case GlobalMutable => 6
+        case GodClass => 6
+        case PointerRisk => 9
+        case EmptyType => 3
+        case UnusedVariable => 3
         case UnusedImport => 5
         case CommentedCode => 3
         case MagicNumber => 3
@@ -110,6 +145,76 @@ public func flawWeight(k: FlawKind): Int64 {
     }
 }
 
+/// 置信度的分析维度。评审要求的分层：变量 → 函数/对象 → 类型（类/实体/结构体）
+/// → 指针 → 并发链路/并发细节 → 结构。每条 Finding 归属且仅归属一个维度，
+/// 报告按维度出分（LLM 复核也按维度分节裁决）。
+public enum ConfDimension {
+    | DimVariable      // 变量级
+    | DimFunction      // 函数/方法/对象级
+    | DimType          // 类/结构体/接口/实体级
+    | DimPointer       // 指针与内存（C/C++）
+    | DimConcurrency   // 并发链路与并发细节
+    | DimStructure     // 模块/文件级结构
+}
+
+public func dimensionId(d: ConfDimension): String {
+    match (d) {
+        case DimVariable => "variable"
+        case DimFunction => "function"
+        case DimType => "type"
+        case DimPointer => "pointer"
+        case DimConcurrency => "concurrency"
+        case DimStructure => "structure"
+    }
+}
+
+public func dimensionLabel(d: ConfDimension, en: Bool): String {
+    if (en) {
+        match (d) {
+            case DimVariable => "Variables"
+            case DimFunction => "Functions & objects"
+            case DimType => "Types (class/entity/struct)"
+            case DimPointer => "Pointers & memory"
+            case DimConcurrency => "Concurrency"
+            case DimStructure => "Structure"
+        }
+    } else {
+        match (d) {
+            case DimVariable => "变量级"
+            case DimFunction => "函数/对象级"
+            case DimType => "类型级（类/实体/结构体）"
+            case DimPointer => "指针/内存级"
+            case DimConcurrency => "并发链路/并发细节"
+            case DimStructure => "结构级"
+        }
+    }
+}
+
+/// FlawKind → 维度（穷尽 match：新增疑点不配维度就编译红）。
+public func flawDimension(k: FlawKind): ConfDimension {
+    match (k) {
+        case UnusedVariable => DimVariable
+        case SuspiciousName => DimVariable
+        case StubBody => DimFunction
+        case LongFunction => DimFunction
+        case DuplicateBody => DimFunction
+        case UnresolvedCall => DimFunction
+        case MagicNumber => DimFunction
+        case GodClass => DimType
+        case EmptyType => DimType
+        case PointerRisk => DimPointer
+        case GlobalMutable => DimConcurrency
+        case LockImbalance => DimConcurrency
+        case LockUnknownCall => DimConcurrency
+        case Orphan => DimStructure
+        case UnusedImport => DimStructure
+        case CommentedCode => DimStructure
+        case DeepNesting => DimStructure
+        case TodoResidue => DimStructure
+        case SwallowedError => DimConcurrency   // 吞错误归并发/可靠性：出错时无人知晓
+    }
+}
+
 /// 阈值。**全部集中在这里**，输出里逐条披露（不许隐藏口径）。
 public let CONF_LONG_FUNCTION_LINES: Int64 = 80
 public let CONF_DEEP_NESTING: Int64 = 5
@@ -117,6 +222,9 @@ public let CONF_DEEP_NESTING: Int64 = 5
 public let CONF_MAX_PER_KIND_PER_FILE: Int64 = 6
 /// 单次分析最多报多少条 findings（防止巨型仓库输出爆炸）
 public let CONF_MAX_FINDINGS: Int64 = 400
+/// 上帝类：类型节点行数或方法数超过即报
+public let CONF_GOD_CLASS_LINES: Int64 = 400
+public let CONF_GOD_CLASS_METHODS: Int64 = 30
 
 /// 一条疑点：类别 + 位置 + 证据。证据必须自足（人不开编辑器就能判断）。
 public struct Finding {
@@ -164,12 +272,16 @@ public class ConfidenceReport {
     public let byKind: ArrayList<(FlawKind, Int64)>
     /// 按文件聚合的罚分表（罚分降序）——「哪个文件不可信」的直接答案
     public let files: ArrayList<(String, Int64)>
+    /// 按维度的 (罚分, 条数, 0..100 维度分)——评审要求的「评分细节」：
+    /// 总分之外每个维度单独可读，LLM 复核按此分节。
+    public let dimensions: ArrayList<(ConfDimension, Int64, Int64, Int64)>
 
     public init(root: String, score: Int64, findings: ArrayList<Finding>,
                 astUsed: Bool, astNote: String,
                 filesAnalyzed: Int64,
                 byKind: ArrayList<(FlawKind, Int64)>,
-                files: ArrayList<(String, Int64)>) {
+                files: ArrayList<(String, Int64)>,
+                dimensions: ArrayList<(ConfDimension, Int64, Int64, Int64)>) {
         this.root = root
         this.score = score
         this.findings = findings
@@ -178,6 +290,7 @@ public class ConfidenceReport {
         this.filesAnalyzed = filesAnalyzed
         this.byKind = byKind
         this.files = files
+        this.dimensions = dimensions
     }
 }
 
@@ -252,6 +365,18 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
     detectUnresolvedCalls(graph, findings)
     detectUnusedImports(graph, findings)
     detectCommentedCode(graph, findings)
+    // ── ⑨ 变量级（未使用变量，需 AST 函数边界）──
+    if (astUsed) {
+        detectUnusedVariables(astNodes, findings)
+    }
+    // ── ⑩ 类型级（空类型 / 上帝类，需 AST type 节点）──
+    if (astUsed) {
+        detectTypeSignals(astNodes, findings)
+    }
+    // ── ⑪ 指针风险（C/C++：malloc/free 配对、返回栈地址）──
+    detectPointerRisks(graph, findings)
+    // ── ⑫ 并发链路/细节（全局可变、锁不平衡、持锁调用）──
+    detectConcurrencyRisks(graph, astNodes, astUsed, findings)
 
     // 排序：全序（见 sortFindings），确定性 + 重要的在前
     sortFindings(findings)
@@ -310,6 +435,44 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
         return a[0] < b[0]
     })
 
+    // 按维度 (罚分, 条数, 维度分)。维度分复用密度分标度——但分母用「该维度
+    // 相关文件数」不可得（一个文件可属多维度），改用总文件数：维度间的
+    // 相对可比性保持，绝对读数与总分同标度。
+    let dimPen = HashMap<String, Int64>()
+    let dimCount = HashMap<String, Int64>()
+    let dimById = HashMap<String, ConfDimension>()
+    for (f in findings) {
+        let d = flawDimension(f.kind)
+        let did = dimensionId(d)
+        dimById[did] = d
+        match (dimPen.get(did)) {
+            case Some(v) => dimPen[did] = v + flawWeight(f.kind)
+            case None => dimPen[did] = flawWeight(f.kind)
+        }
+        match (dimCount.get(did)) {
+            case Some(v) => dimCount[did] = v + 1
+            case None => dimCount[did] = 1
+        }
+    }
+    let nFilesDim = Int64(graph.files.size)
+    let dims = ArrayList<(ConfDimension, Int64, Int64, Int64)>()
+    for ((did, pen) in dimPen) {
+        match (dimById.get(did)) {
+            case Some(d) =>
+                var cnt: Int64 = 0
+                match (dimCount.get(did)) {
+                    case Some(v) => cnt = v
+                    case None => ()
+                }
+                dims.add((d, pen, cnt, confidenceScore(pen, nFilesDim)))
+            case None => ()
+        }
+    }
+    insertionSortBy(dims, { a, b =>
+        if (a[1] != b[1]) { return a[1] > b[1] }
+        return dimensionId(a[0]) < dimensionId(b[0])
+    })
+
     // 分数：由「惩罚总量」与「文件数」算的**密度分**（见 confidenceScore）。
     // ⚠️ 旧公式 `100 − 惩罚/√文件数` 与仓库规模相关：惩罚随文件数线性增长、
     // 而 √ 增长更慢 ⇒ 大仓库必然趋近 0（实测 276 文件的仓库、每文件仅 4.3 点却只得 28 分；
@@ -320,7 +483,7 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
     let score = confidenceScore(penalty, nFiles)
 
     return ConfidenceReport(graph.root, score, findings, astUsed,
-                            astNote + truncatedNote, nFiles, byKind, files)
+                            astNote + truncatedNote, nFiles, byKind, files, dims)
 }
 
 /// findings 的**全序**排序（`AGENTS.md` 契约：同一仓库两次运行逐字节一致）。

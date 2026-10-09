@@ -32,9 +32,28 @@ public func confidenceJson(r: ConfidenceReport): JsonValue {
         Json.set(o, "weight", Json.of(flawWeight(k)))
         ks.add(o)
     }
+    let dims = ArrayList<JsonValue>()
+    for ((d, pen, cnt, dScore) in r.dimensions) {
+        let dd = Json.obj()
+        Json.set(dd, "id", Json.of(dimensionId(d)))
+        Json.set(dd, "label", Json.of(dimensionLabel(d, false)))
+        Json.set(dd, "penalty", Json.of(pen))
+        Json.set(dd, "findings", Json.of(cnt))
+        Json.set(dd, "score", Json.of(dScore))
+        dims.add(dd)
+    }
+    let fl = ArrayList<JsonValue>()
+    for (f in r.files) {
+        let fo = Json.obj()
+        Json.set(fo, "file", Json.of(f[0]))
+        Json.set(fo, "penalty", Json.of(f[1]))
+        fl.add(fo)
+    }
     let o = Json.obj()
     Json.set(o, "root", Json.of(r.root))
     Json.set(o, "score", Json.of(r.score))
+    Json.set(o, "dimensions", JArr(dims))
+    Json.set(o, "files", JArr(fl))
     Json.set(o, "findings", JArr(fs))
     Json.set(o, "byKind", JArr(ks))
     Json.set(o, "astUsed", Json.of(r.astUsed))
@@ -60,6 +79,10 @@ public func confidenceText(r: ConfidenceReport): String {
         sb.append("\n未发现结构性疑点。\n")
         return sb.toString()
     }
+    sb.append("\n按维度：\n")
+    for ((d, pen, cnt, dScore) in r.dimensions) {
+        sb.append("  ${dimensionLabel(d, false)}：${dScore}/100（罚分 ${pen} · ${cnt} 条）\n")
+    }
     sb.append("\n按类别：\n")
     for ((k, v) in r.byKind) {
         sb.append("  ${flawLabel(k, false)} × ${v}（权重 ${flawWeight(k)}/条）\n")
@@ -81,37 +104,60 @@ public func confidenceText(r: ConfidenceReport): String {
 // MARK: - LLM 提示词包
 
 /// 把确定性事实打包成一段可直接喂给模型的复核提示词。
-/// 要求模型**逐条裁决**（确认/驳回/无法判定），并强制引用代码原文作为依据 ——
-/// 防止模型顺着 findings 复读而不是独立核查。
+/// **按维度分节**（评审要求）：变量/函数/类型/指针/并发/结构各一节，
+/// LLM 逐维度逐条裁决（confirm/dismiss/unsure），维度分让它知道预检
+/// 认为哪里最弱。红线不变：必须引用代码原文，禁止复读预检结论。
 public func confidenceLlmPrompt(r: ConfidenceReport, projectName: String): String {
     let sb = StringBuilder()
     sb.append("# 代码置信度复核任务\n\n")
     sb.append("项目：${projectName}\n")
-    sb.append("结构化预检：${Int64(r.findings.size)} 条疑点（引擎词法/语法树级），")
-    sb.append("启发式评分 ${r.score}/100。\n\n")
-    sb.append("## 你的任务\n\n")
-    sb.append("对下面每一条预检疑点**独立复核**，逐条给出裁决：\n")
+    sb.append("引擎预检：总分 ${r.score}/100 · ${Int64(r.findings.size)} 条疑点（词法+语法树级）。\n\n")
+    sb.append("## 预检维度分\n\n")
+    for ((d, pen, cnt, dScore) in r.dimensions) {
+        sb.append("- ${dimensionLabel(d, true)}：${dScore}/100（${cnt} findings）\n")
+    }
+    sb.append("\n## 你的任务\n\n")
+    sb.append("按**维度分节**独立复核下面每一条预检疑点，逐条给出裁决：\n")
     sb.append("- `confirm`：确认为真问题。必须引用**代码原文**（≤3 行）作为依据。\n")
-    sb.append("- `dismiss`：误报。说明为什么（如：是协议实现、被反射调用、公共 API 等）。\n")
-    sb.append("- `unsure`：无法从静态信息判定。说明缺什么信息。\n\n")
+    sb.append("- `dismiss`：误报。说明为什么（协议实现/反射调用/公共 API/语言惯用法等）。\n")
+    sb.append("- `unsure`：无法从静态信息判定。说明缺什么信息（运行时/业务语义）。\n\n")
     sb.append("**红线**：不许只复述预检结论；每条裁决必须基于你自己读到的代码。\n")
-    sb.append("最后给出：`realScore`（0-100，你复核后的置信度）、`topRisks`（最值得先修的 3 条）。\n\n")
-    sb.append("## 预检疑点\n\n")
-    var i: Int64 = 0
-    for (f in r.findings) {
-        i += 1
-        if (i > 80) {
-            sb.append("… 其余 ${Int64(r.findings.size) - 80} 条略（按类别聚合见 byKind）\n")
+    sb.append("对并发维度额外要求：指出是否存在静态分析看不到的竞争窗口（如回调重入/异步序）。\n\n")
+    sb.append("## 预检疑点（按维度）\n\n")
+    // 按维度分节输出（≤80 条总量）
+    var shown: Int64 = 0
+    let LIMIT: Int64 = 80
+    for ((d, _, _, _) in r.dimensions) {
+        let did = dimensionId(d)
+        var dimCount: Int64 = 0
+        for (f in r.findings) {
+            if (dimensionId(flawDimension(f.kind)) == did) { dimCount += 1 }
+        }
+        if (dimCount == 0) { continue }
+        sb.append("### ${dimensionLabel(d, false)}（${dimCount} 条）\n\n")
+        var i: Int64 = 0
+        for (f in r.findings) {
+            if (dimensionId(flawDimension(f.kind)) != did) { continue }
+            i += 1
+            shown += 1
+            if (shown > LIMIT) { break }
+            sb.append("${i}. [${flawId(f.kind)}] ${f.file}:${f.line}\n")
+            sb.append("   证据：${f.evidence}\n")
+        }
+        sb.append("\n")
+        if (shown > LIMIT) {
+            sb.append("… 其余维度条目略（总量截断）\n")
             break
         }
-        sb.append("${i}. [${flawId(f.kind)}] ${f.file}:${f.line}\n")
-        sb.append("   证据：${f.evidence}\n")
     }
-    sb.append("\n## 输出格式\n\n")
+    sb.append("## 输出格式\n\n")
     sb.append("```json\n")
-    sb.append("{\"verdicts\": [{\"n\": 1, \"verdict\": \"confirm|dismiss|unsure\", ")
-    sb.append("\"reason\": \"...\", \"quote\": \"代码原文\"}], ")
+    sb.append("{\"dimensions\": {\"variable\": {\"verdicts\": [...], \"score\": 0-100}, ")
+    sb.append("\"function\": {...}, \"type\": {...}, \"pointer\": {...}, ")
+    sb.append("\"concurrency\": {...}, \"structure\": {...}}, ")
     sb.append("\"realScore\": 0-100, \"topRisks\": [\"...\", \"...\", \"...\"]}\n")
     sb.append("```\n")
+    sb.append("verdicts 元素：{\"n\": 序号, \"verdict\": \"confirm|dismiss|unsure\", ")
+    sb.append("\"reason\": \"...\", \"quote\": \"代码原文\"}\n")
     return sb.toString()
 }
