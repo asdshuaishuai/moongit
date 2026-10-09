@@ -84,14 +84,18 @@ public struct FileEntry {
     /// import 的模块名（首段）：`import moongit.util` → `moongit`；
     /// `from x import y` → `x`；`use a::b` → `a`；go `import "a/b/c"` → `c`
     public let imports: ArrayList<String>
+    /// 与 imports 平行的行号（未使用 import 的证据定位）
+    public let importLines: ArrayList<Int64>
 
     public init(relPath: String, lang: String, lines: Int64,
-                symbols: ArrayList<SymDecl>, imports: ArrayList<String>) {
+                symbols: ArrayList<SymDecl>, imports: ArrayList<String>,
+                importLines: ArrayList<Int64>) {
         this.relPath = relPath
         this.lang = lang
         this.lines = lines
         this.symbols = symbols
         this.imports = imports
+        this.importLines = importLines
     }
 }
 
@@ -120,12 +124,19 @@ public class CodeGraph {
     /// 供符号级孤儿检测（confidence_detect.detectOrphans）使用。
     /// 同文件内的使用也算（私有 helper 只要在本文件被调用过就不算孤儿）。
     public let referencedNames: HashSet<String>
+    /// 未解析调用（幻觉 API）：file → (函数名 → 首现行号)。
+    /// 自由函数调用、名字全仓无定义、非内建、非接收者调用。
+    public let unresolvedCalls: ArrayList<(String, String, Int64)>
+    /// 未使用 import：(file, 模块名, import 行号)。
+    public let unusedImports: ArrayList<(String, String, Int64)>
 
     public init(root: String, files: ArrayList<FileEntry>,
                 importEdges: ArrayList<(String, String)>,
                 refEdges: ArrayList<(String, String, Int64)>,
                 truncated: Bool, skipped: Int64,
-                referencedNames: HashSet<String>) {
+                referencedNames: HashSet<String>,
+                unresolvedCalls: ArrayList<(String, String, Int64)>,
+                unusedImports: ArrayList<(String, String, Int64)>) {
         this.root = root
         this.files = files
         this.importEdges = importEdges
@@ -133,6 +144,8 @@ public class CodeGraph {
         this.truncated = truncated
         this.skipped = skipped
         this.referencedNames = referencedNames
+        this.unresolvedCalls = unresolvedCalls
+        this.unusedImports = unusedImports
     }
 
     /// 符号名 → 定义处列表（同名符号可能多处定义，全部列出，不装作唯一）。

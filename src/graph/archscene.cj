@@ -107,6 +107,24 @@ func sceneEdges(edges: ArrayList<(String, String, Int64)>, max: Int64): (ArrayLi
     return (kept, Int64(sorted.size) - Int64(kept.size))
 }
 
+/// ArchEdge 版本的容量截断（按权重降序，tie 按 from/to）。
+func sceneEdgesArch(edges: ArrayList<ArchEdge>, max: Int64): (ArrayList<ArchEdge>, Int64) {
+    let sorted = ArrayList<ArchEdge>()
+    for (e in edges) { sorted.add(e) }
+    insertionSortBy(sorted, { a, b =>
+        if (a.weight != b.weight) { return a.weight > b.weight }
+        if (a.fromId != b.fromId) { return a.fromId < b.fromId }
+        return a.toId < b.toId
+    })
+    let kept = ArrayList<ArchEdge>()
+    var i: Int64 = 0
+    while (i < Int64(sorted.size) && i < max) {
+        kept.add(sorted[i])
+        i += 1
+    }
+    return (kept, Int64(sorted.size) - Int64(kept.size))
+}
+
 /// 视图构建的中间态：攒 shapes/particles/hits，最后装配成 view JSON。
 class SceneView {
     let id: String
@@ -231,34 +249,36 @@ public func buildArchScene(data: ArchData, en: Bool): JsonValue {
         col += 1
     }
     // 边（渐变 + 箭头 + 生长动画声明）。受 SCENE_MAX_EDGES_PER_VIEW 限制并披露丢弃数。
-    let (archEdges, archDropped) = sceneEdges(data.edges, SCENE_MAX_EDGES_PER_VIEW)
+    let (archEdges, archDropped) = sceneEdgesArch(data.edges, SCENE_MAX_EDGES_PER_VIEW)
     arch.dropped = archDropped
-    for ((a, b, w) in archEdges) {
-        match ((findModule(sorted, a), findModule(sorted, b))) {
+    for (ae in archEdges) {
+        match ((findModule(sorted, ae.fromId), findModule(sorted, ae.toId))) {
             case (Some(am), Some(bm)) =>
         let x1 = am.x + am.w
         let y1 = am.y + am.h / 2.0
         let x2 = bm.x
         let y2 = bm.y + bm.h / 2.0
         let mx = (x1 + x2) / 2.0
-        let e = Json.obj()
-        Json.set(e, "t", Json.of("edge"))
-        Json.set(e, "p", numsJson([x1, y1, mx, y1, mx, y2, x2, y2]))
-        Json.set(e, "c0", Json.of("node:${a}"))
-        Json.set(e, "c1", Json.of("node:${b}"))
-        Json.set(e, "sw", Json.of(if (w > 8) { 3.0 } else { if (w > 3) { 2.2 } else { 1.4 } }))
-        Json.set(e, "alpha", Json.of(if (w > 8) { 0.9 } else { if (w > 3) { 0.7 } else { 0.5 } }))
-        Json.set(e, "arrow", Json.of(9.0))
-        Json.set(e, "edge", Json.strArray([a, b]))
-        Json.set(e, "delay", Json.of(300.0 + Float64(am.layer + bm.layer) * 50.0))
-        arch.addShape(e)
+        let shape = Json.obj()
+        Json.set(shape, "t", Json.of("edge"))
+        Json.set(shape, "p", numsJson([x1, y1, mx, y1, mx, y2, x2, y2]))
+        Json.set(shape, "c0", Json.of("node:${ae.fromId}"))
+        Json.set(shape, "c1", Json.of("node:${ae.toId}"))
+        Json.set(shape, "sw", Json.of(if (ae.weight > 8) { 3.0 } else { if (ae.weight > 3) { 2.2 } else { 1.4 } }))
+        Json.set(shape, "alpha", Json.of(if (ae.weight > 8) { 0.9 } else { if (ae.weight > 3) { 0.7 } else { 0.5 } }))
+        Json.set(shape, "arrow", Json.of(9.0))
+        Json.set(shape, "edge", Json.strArray([ae.fromId, ae.toId]))
+        Json.set(shape, "delay", Json.of(300.0 + Float64(am.layer + bm.layer) * 50.0))
+        if (ae.violation) { Json.set(shape, "viol", Json.of(true)) }
+        if (ae.cycle) { Json.set(shape, "cyc", Json.of(true)) }
+        arch.addShape(shape)
         // 粒子（密度 ∝ 权重；相位确定性）
-        let n = if (1 + w / 5 < 6) { 1 + w / 5 } else { 6 }
+        let n = if (1 + ae.weight / 5 < 6) { 1 + ae.weight / 5 } else { 6 }
         let parts = Json.obj()
         Json.set(parts, "p", numsJson([x1, y1, mx, y1, mx, y2, x2, y2]))
         Json.set(parts, "n", Json.of(n))
-        Json.set(parts, "sp", Json.of(0.00012 + Float64(w) * 0.000004))
-        Json.set(parts, "color", Json.of("node:${b}"))
+        Json.set(parts, "sp", Json.of(0.00012 + Float64(ae.weight) * 0.000004))
+        Json.set(parts, "color", Json.of("node:${ae.toId}"))
         arch.particles.add(parts)
             case _ => ()
         }
@@ -347,17 +367,17 @@ public func buildArchScene(data: ArchData, en: Bool): JsonValue {
         Json.set(po, "langs", Json.strArray(m.langs.toArray()))
         let o = ArrayList<JsonValue>()
         let i2 = ArrayList<JsonValue>()
-        for ((a, b, w) in data.edges) {
-            if (a == m.id) {
+        for (e in data.edges) {
+            if (e.fromId == m.id) {
                 let d = Json.obj()
-                Json.set(d, "id", Json.of(b))
-                Json.set(d, "w", Json.of(w))
+                Json.set(d, "id", Json.of(e.toId))
+                Json.set(d, "w", Json.of(e.weight))
                 o.add(d)
             }
-            if (b == m.id) {
+            if (e.toId == m.id) {
                 let d = Json.obj()
-                Json.set(d, "id", Json.of(a))
-                Json.set(d, "w", Json.of(w))
+                Json.set(d, "id", Json.of(e.fromId))
+                Json.set(d, "w", Json.of(e.weight))
                 i2.add(d)
             }
         }
@@ -501,8 +521,21 @@ public func buildArchScene(data: ArchData, en: Bool): JsonValue {
         }
         col += 1
     }
+    let warnings = Json.obj()
+    Json.set(warnings, "violations", Json.of(data.violationCount))
+    Json.set(warnings, "cycleEdges", Json.of(data.cycleEdgeCount))
+    let vps = ArrayList<JsonValue>()
+    for (p in data.violationPairs) {
+        let po = Json.obj()
+        Json.set(po, "from", Json.of(p[0]))
+        Json.set(po, "to", Json.of(p[1]))
+        vps.add(po)
+    }
+    Json.set(warnings, "violationPairs", JArr(vps))
+    Json.set(warnings, "cycleModules", Json.strArray(data.cycleModules.toArray()))
     let meta = Json.obj()
     Json.set(meta, "title", Json.of(ui.title))
+    Json.set(meta, "warnings", warnings)
     Json.set(meta, "sub", Json.of(ui.sub))
     Json.set(meta, "stats", Json.of("${data.totalFiles} ${ui.filesWord} / ${data.totalSymbols} ${ui.symWord} / ${data.totalLines} ${ui.lineWord}"))
     Json.set(meta, "hint", Json.of(ui.hint))

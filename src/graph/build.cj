@@ -113,7 +113,7 @@ public func buildGraph(root: String): CodeGraph {
                     continue   // 超大文件不是分析目标（生成物/打包产物）
                 }
                 let f = scanSource(text)
-                facts.add(FileEntry(rel, lang, f.lineCount, f.symbols, f.imports))
+                facts.add(FileEntry(rel, lang, f.lineCount, f.symbols, f.imports, f.importLines))
             case None => ()   // 读不出 ≠ 有害；跳过且不计数（权限噪音不该污染统计）
         }
     }
@@ -185,6 +185,13 @@ public func buildGraph(root: String): CodeGraph {
     // 计数用嵌套 map，字符串 key 只在外层文件对首次建立时出现。
     let refCount = HashMap<String, HashMap<String, Int64>>()
     let referencedNames = HashSet<String>()
+    // 未解析调用：文件 → (函数名 → 首现行号)。构建后平坦化进 CodeGraph。
+    let unresolvedCalls = HashMap<String, HashMap<String, Int64>>()
+    let tokBuf = ArrayList<String>()
+    let dotBuf = ArrayList<Bool>()
+    let parenBuf = ArrayList<Bool>()
+    // 名字 → 出现它的文件集合（幻觉调用的 FP 过滤：标准库函数被多文件调用）
+    let nameFiles = HashMap<String, HashSet<String>>()
     for (f in facts) {
         // 本文件各行的声明符号名（声明位置自身不算「使用」）
         let declAtLine = HashMap<Int64, HashSet<String>>()
@@ -203,6 +210,11 @@ public func buildGraph(root: String): CodeGraph {
                 let seen = HashSet<String>()
                 var strState: Int64 = 0
                 var lineNo: Int64 = 0
+                // 未解析调用（幻觉 API）检测的逐文件缓存
+                let seenUnresolved = HashSet<String>()
+                // 每行 token 缓冲（复用容量；带前导点标志，供接收者调用豁免）
+                let tokBuf = ArrayList<String>()
+                let dotBuf = ArrayList<Bool>()
                 for (line in text.lazySplit("\n")) {
                     lineNo += 1
                     // 注释与字符串内的标识符都不算引用（与 scanSource 同一套）
@@ -221,10 +233,64 @@ public func buildGraph(root: String): CodeGraph {
                         if (!isDecl && defFiles.get(tok).isSome()) { referencedNames.add(tok) }
                     }
                     if (blankLine(t)) { continue }
+                    // ── 未解析调用（幻觉 API）：`name(` 形态的**自由函数调用**，
+                    // 名字既不在全仓定义里，也不是语言内建/常见类型。接收者调用
+                    // （a.b()）豁免——方法可能定义在别的仓库/库里。
+                    // ⚠️ 位置感知扫描：tokenize 会丢掉括号，无法判断「后面是不是 (」。
+                    tokBuf.clear()
+                    dotBuf.clear()
+                    parenBuf.clear()
+                    let lb = line.toArray()
+                    let ln2 = Int64(lb.size)
+                    var i2: Int64 = 0
+                    var prevDot = false
+                    while (i2 < ln2) {
+                        let b = lb[i2]
+                        if (isIdentByte(b)) {
+                            let st = i2
+                            while (i2 < ln2 && isIdentByte(lb[i2])) { i2 += 1 }
+                            tokBuf.add(fromUtf8Lossy(lb[st..i2]))
+                            dotBuf.add(prevDot)
+                            parenBuf.add(i2 < ln2 && lb[i2] == 40)   // '('
+                            prevDot = false
+                        } else {
+                            prevDot = (b == 46)   // '.'
+                            i2 += 1
+                        }
+                    }
+                    var ti: Int64 = 0
+                    while (ti < Int64(tokBuf.size)) {
+                        let tok = tokBuf[ti]
+                        let isCall = parenBuf[ti]
+                        let prevDotTok = if (ti > 0) { dotBuf[ti - 1] } else { false }
+                        if (isCall && !prevDotTok && !isBuiltinName(tok)
+                            && defFiles.get(tok).isNone()) {
+                            let ukey = f.relPath + "|" + tok
+                            if (!seenUnresolved.contains(ukey)) {
+                                seenUnresolved.add(ukey)
+                                match (unresolvedCalls.get(f.relPath)) {
+                                    case Some(inner) => inner[tok] = lineNo
+                                    case None =>
+                                        let inner = HashMap<String, Int64>()
+                                        inner[tok] = lineNo
+                                        unresolvedCalls[f.relPath] = inner
+                                }
+                            }
+                        }
+                        ti += 1
+                    }
+
                     // 引用计数：同一文件里同一符号只计一次（复刻原 pairNames 的集合语义）
                     forEachToken(t) { tok =>
                         if (seen.contains(tok)) { return }
                         seen.add(tok)
+                        match (nameFiles.get(tok)) {
+                            case Some(fs) => fs.add(f.relPath)
+                            case None =>
+                                let fs = HashSet<String>()
+                                fs.add(f.relPath)
+                                nameFiles[tok] = fs
+                        }
                         match (defFiles.get(tok)) {
                             case Some(list) =>
                                 for (defFile in list) {
@@ -256,9 +322,62 @@ public func buildGraph(root: String): CodeGraph {
         }
     }
 
+    // ── 未使用 import：import 解析到了 g，但 g 的任何符号都没在 f 出现过 ──
+    // （行号来自 FileEntry.importLines，与 imports 平行）
+    let unusedImports = ArrayList<(String, String, Int64)>()
+    for (f in facts) {
+        var idx = 0
+        for (mod in f.imports) {
+            let impLine = if (idx < Int64(f.importLines.size)) { f.importLines[idx] } else { 1 }
+            idx += 1
+            // 该 import 是否解析到目标文件
+            // moduleOfPath（arch.cj）与建索引时的段规则一致
+            var target: Option<String> = None
+            for ((from, to) in importEdges) {
+                if (from == f.relPath && to != f.relPath
+                    && moduleOfPath(to) == mod) {
+                    target = Some(to)
+                    break
+                }
+            }
+            match (target) {
+                case Some(to) =>
+                    var used = false
+                    match (refCount.get(f.relPath)) {
+                        case Some(inner) =>
+                            match (inner.get(to)) {
+                                case Some(_) => used = true
+                                case None => ()
+                            }
+                        case None => ()
+                    }
+                    if (!used) {
+                        unusedImports.add((f.relPath, mod, impLine))
+                    }
+                case None => ()   // 解析不到目标 = 无法判定，不报
+            }
+        }
+    }
+
+    // unresolvedCalls 的嵌套 map → 平坦列表（file, name, firstLine）。
+    // ⚠️ FP 过滤：名字在 ≥2 个文件出现 ⇒ 大概率是标准库/依赖的函数（多文件共用），
+    // 不报；只在唯一文件出现的自由调用才报——那才是「幻觉 API」的形态。
+    let unresolvedList = ArrayList<(String, String, Int64)>()
+    for ((file, inner) in unresolvedCalls) {
+        for ((name, ln) in inner) {
+            match (nameFiles.get(name)) {
+                case Some(fs) =>
+                    if (Int64(fs.size) == 1) {
+                        unresolvedList.add((file, name, ln))
+                    }
+                case None => ()
+            }
+        }
+    }
+
     return CodeGraph(root, facts, importEdges, refEdges,
                      files.size >= Int64(GRAPH_MAX_FILES), skipped.value,
-                     referencedNames)
+                     referencedNames, unresolvedList, unusedImports)
 }
 
 // 泛型排序：**共享给全 graph 包**（render/arch 都在用）。

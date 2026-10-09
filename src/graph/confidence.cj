@@ -33,6 +33,9 @@ public enum FlawKind {
     | TodoResidue     // TODO/FIXME/XXX 残留
     | SuspiciousName  // 可疑命名（tmp/foo/单字符/new+old 等 AI 习惯）
     | DuplicateBody   // 完全相同的函数体（复制粘贴，多处出现）
+    | UnresolvedCall  // 幻觉调用：调用全仓不存在的自由函数（AI 编造 API 的标志）
+    | UnusedImport    // 未使用 import：解析到目标文件但符号从未出现
+    | CommentedCode   // 注释掉的代码块（AI 生成后手动禁用的残留）
 }
 
 public func flawId(k: FlawKind): String {
@@ -46,6 +49,9 @@ public func flawId(k: FlawKind): String {
         case TodoResidue => "todo-residue"
         case SuspiciousName => "suspicious-name"
         case DuplicateBody => "duplicate-body"
+        case UnresolvedCall => "unresolved-call"
+        case UnusedImport => "unused-import"
+        case CommentedCode => "commented-code"
     }
 }
 
@@ -61,6 +67,9 @@ public func flawLabel(k: FlawKind, en: Bool): String {
             case TodoResidue => "TODO residue"
             case SuspiciousName => "Suspicious name"
             case DuplicateBody => "Duplicate body"
+            case UnresolvedCall => "Unresolved call (hallucinated API?)"
+            case UnusedImport => "Unused import"
+            case CommentedCode => "Commented-out code"
         }
     } else {
         match (k) {
@@ -73,6 +82,9 @@ public func flawLabel(k: FlawKind, en: Bool): String {
             case TodoResidue => "TODO 残留"
             case SuspiciousName => "可疑命名"
             case DuplicateBody => "重复函数体"
+            case UnresolvedCall => "幻觉调用"
+            case UnusedImport => "未使用 import"
+            case CommentedCode => "注释掉的代码"
         }
     }
 }
@@ -87,6 +99,9 @@ public func flawWeight(k: FlawKind): Int64 {
         case StubBody => 12
         case SwallowedError => 10
         case DuplicateBody => 8
+        case UnresolvedCall => 8
+        case UnusedImport => 5
+        case CommentedCode => 3
         case MagicNumber => 3
         case LongFunction => 4
         case DeepNesting => 4
@@ -147,11 +162,14 @@ public class ConfidenceReport {
     public let astNote: String         // 降级原因或覆盖说明
     public let filesAnalyzed: Int64
     public let byKind: ArrayList<(FlawKind, Int64)>
+    /// 按文件聚合的罚分表（罚分降序）——「哪个文件不可信」的直接答案
+    public let files: ArrayList<(String, Int64)>
 
     public init(root: String, score: Int64, findings: ArrayList<Finding>,
                 astUsed: Bool, astNote: String,
                 filesAnalyzed: Int64,
-                byKind: ArrayList<(FlawKind, Int64)>) {
+                byKind: ArrayList<(FlawKind, Int64)>,
+                files: ArrayList<(String, Int64)>) {
         this.root = root
         this.score = score
         this.findings = findings
@@ -159,6 +177,7 @@ public class ConfidenceReport {
         this.astNote = astNote
         this.filesAnalyzed = filesAnalyzed
         this.byKind = byKind
+        this.files = files
     }
 }
 
@@ -228,6 +247,11 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
     if (astUsed) {
         detectDuplicateBodies(astNodes, findings)
     }
+    // ── ⑥ 幻觉调用 / ⑦ 未使用 import / ⑧ 注释掉的代码 ──
+    // 图数据直接支撑：unresolvedCalls / unusedImports 在 buildGraph 两遍扫描时产出
+    detectUnresolvedCalls(graph, findings)
+    detectUnusedImports(graph, findings)
+    detectCommentedCode(graph, findings)
 
     // 排序：全序（见 sortFindings），确定性 + 重要的在前
     sortFindings(findings)
@@ -271,6 +295,21 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
         return flawId(ka) < flawId(kb)
     })
 
+    // 按文件罚分表（「哪个文件不可信」的直接答案；罚分降序，tie 按 path）
+    let byFile = HashMap<String, Int64>()
+    for (f in findings) {
+        match (byFile.get(f.file)) {
+            case Some(v) => byFile[f.file] = v + flawWeight(f.kind)
+            case None => byFile[f.file] = flawWeight(f.kind)
+        }
+    }
+    let files = ArrayList<(String, Int64)>()
+    for ((fp, pen) in byFile) { files.add((fp, pen)) }
+    insertionSortBy(files, { a, b =>
+        if (a[1] != b[1]) { return a[1] > b[1] }
+        return a[0] < b[0]
+    })
+
     // 分数：由「惩罚总量」与「文件数」算的**密度分**（见 confidenceScore）。
     // ⚠️ 旧公式 `100 − 惩罚/√文件数` 与仓库规模相关：惩罚随文件数线性增长、
     // 而 √ 增长更慢 ⇒ 大仓库必然趋近 0（实测 276 文件的仓库、每文件仅 4.3 点却只得 28 分；
@@ -281,7 +320,7 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
     let score = confidenceScore(penalty, nFiles)
 
     return ConfidenceReport(graph.root, score, findings, astUsed,
-                            astNote + truncatedNote, nFiles, byKind)
+                            astNote + truncatedNote, nFiles, byKind, files)
 }
 
 /// findings 的**全序**排序（`AGENTS.md` 契约：同一仓库两次运行逐字节一致）。

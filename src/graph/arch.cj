@@ -123,19 +123,46 @@ public struct DrillGraph {
     }
 }
 
+/// 模块依赖边（带治理信号）。
+public struct ArchEdge {
+    public let fromId: String
+    public let toId: String
+    public let weight: Int64
+    /// 分层违规：低层依赖高层（基础层 ← 接口层方向为正；反向即违规）
+    public let violation: Bool
+    /// 该边处于某个模块依赖环上（a→b 且 b 可达 a）
+    public let cycle: Bool
+
+    public init(fromId: String, toId: String, weight: Int64, violation: Bool, cycle: Bool) {
+        this.fromId = fromId
+        this.toId = toId
+        this.weight = weight
+        this.violation = violation
+        this.cycle = cycle
+    }
+}
+
 public class ArchData {
     public let modules: ArrayList<ArchModule>
-    public let edges: ArrayList<(String, String, Int64)>   // fromModule, toModule, weight
+    public let edges: ArrayList<ArchEdge>
     public let totalFiles: Int64
     public let totalSymbols: Int64
     public let totalLines: Int64
     public let truncated: Bool
     /// 每模块的文件级下钻子图（引擎算好布局，Canvas 只负责画）
     public let drilldown: ArrayList<DrillGraph>
+    /// 治理信号（渲染与 JSON 出口共用）：违规边数 / 环上边数 / 违规对 / 环上模块
+    public let violationCount: Int64
+    public let cycleEdgeCount: Int64
+    public let violationPairs: ArrayList<(String, String)>
+    public let cycleModules: ArrayList<String>
 
-    public init(modules: ArrayList<ArchModule>, edges: ArrayList<(String, String, Int64)>,
+    public init(modules: ArrayList<ArchModule>, edges: ArrayList<ArchEdge>,
                 totalFiles: Int64, totalSymbols: Int64, totalLines: Int64, truncated: Bool,
-                drilldown: ArrayList<DrillGraph>) {
+                drilldown: ArrayList<DrillGraph>,
+                violationCount: Int64, cycleEdgeCount: Int64,
+                violationPairs: ArrayList<(String, String)>,
+                cycleModules: ArrayList<String>) {
         this.modules = modules
         this.edges = edges
         this.totalFiles = totalFiles
@@ -143,6 +170,10 @@ public class ArchData {
         this.totalLines = totalLines
         this.truncated = truncated
         this.drilldown = drilldown
+        this.violationCount = violationCount
+        this.cycleEdgeCount = cycleEdgeCount
+        this.violationPairs = violationPairs
+        this.cycleModules = cycleModules
     }
 }
 
@@ -202,12 +233,7 @@ public func buildArch(graph: CodeGraph): ArchData {
     for ((from, to) in graph.importEdges) { bump(from, to, 1) }
     for ((from, to, w) in graph.refEdges) { bump(from, to, w) }
 
-    let edges = ArrayList<(String, String, Int64)>()
-    for ((key, w) in weight) {
-        let segs = key.split("|")
-        if (segs.size == 2) { edges.add((segs[0], segs[1], w)) }
-    }
-
+    // 先装配模块列表（治理信号需要每模块的层）
     var totalFiles: Int64 = 0
     var totalSymbols: Int64 = 0
     var totalLines: Int64 = 0
@@ -219,8 +245,80 @@ public func buildArch(graph: CodeGraph): ArchData {
         totalSymbols += m.symbols
         totalLines += m.lines
     }
+
+    // ── 边装配 + 治理信号（一个循环内完成）──
+    // 分层违规 = 低层依赖高层（如 util → cli）；环 = b 可达 a 的边。
+    // ⚠️ 仓颉坑：字段名不能用 `from`（保留字）；命名实参前缀同样不能用 ——
+    // reaches 的调用一律位置传参。
+    let layerOf = HashMap<String, Int64>()
+    for (m in list) { layerOf[m.id] = m.layer }
+    let rawPairs = ArrayList<(String, String, Int64)>()
+    for ((key, w) in weight) {
+        let segs = key.split("|")
+        if (segs.size == 2) { rawPairs.add((segs[0], segs[1], w)) }
+    }
+    let adj = HashMap<String, ArrayList<String>>()
+    for ((a, b, _) in rawPairs) {
+        match (adj.get(a)) {
+            case Some(l) => l.add(b)
+            case None =>
+                let l = ArrayList<String>()
+                l.add(b)
+                adj[a] = l
+        }
+    }
+    func reaches(startNode: String, goalNode: String): Bool {
+        let seenL = HashSet<String>()
+        let stack = ArrayList<String>()
+        stack.add(startNode)
+        while (stack.size > 0) {
+            let cur = stack[stack.size - 1]
+            stack.remove(at: stack.size - 1)
+            match (adj.get(cur)) {
+                case Some(nexts) =>
+                    for (nx in nexts) {
+                        if (nx == goalNode) { return true }
+                        if (!seenL.contains(nx)) {
+                            seenL.add(nx)
+                            stack.add(nx)
+                        }
+                    }
+                case None => ()
+            }
+        }
+        return false
+    }
+    let edges = ArrayList<ArchEdge>()
+    var violationCount: Int64 = 0
+    var cycleEdgeCount: Int64 = 0
+    let violationPairs = ArrayList<(String, String)>()
+    let cycleModules = ArrayList<String>()
+    for ((a, b, w) in rawPairs) {
+        let la = match (layerOf.get(a)) {
+            case Some(v) => v
+            case None => 4
+        }
+        let lb = match (layerOf.get(b)) {
+            case Some(v) => v
+            case None => 4
+        }
+        let isViol = la < lb
+        let isCycle = reaches(b, a)
+        if (isViol) {
+            violationCount += 1
+            violationPairs.add((a, b))
+        }
+        if (isCycle) {
+            cycleEdgeCount += 1
+            if (!cycleModules.contains(a)) { cycleModules.add(a) }
+            if (!cycleModules.contains(b)) { cycleModules.add(b) }
+        }
+        edges.add(ArchEdge(a, b, w, isViol, isCycle))
+    }
+
     let drill = buildDrilldown(graph, list)
-    return ArchData(list, edges, totalFiles, totalSymbols, totalLines, graph.truncated, drill)
+    return ArchData(list, edges, totalFiles, totalSymbols, totalLines, graph.truncated, drill,
+                    violationCount, cycleEdgeCount, violationPairs, cycleModules)
 }
 
 // MARK: - 下钻子图（模块 → 文件级）
@@ -495,13 +593,27 @@ public func archJson(data: ArchData, en: Bool): JsonValue {
         ms.add(o)
     }
     let es = ArrayList<JsonValue>()
-    for ((a, b, w) in data.edges) {
+    for (e in data.edges) {
         let o = Json.obj()
-        Json.set(o, "from", Json.of(a))
-        Json.set(o, "to", Json.of(b))
-        Json.set(o, "weight", Json.of(w))
+        Json.set(o, "from", Json.of(e.fromId))
+        Json.set(o, "to", Json.of(e.toId))
+        Json.set(o, "weight", Json.of(e.weight))
+        if (e.violation) { Json.set(o, "violation", Json.of(true)) }
+        if (e.cycle) { Json.set(o, "cycle", Json.of(true)) }
         es.add(o)
     }
+    let warns = Json.obj()
+    Json.set(warns, "violations", Json.of(data.violationCount))
+    Json.set(warns, "cycleEdges", Json.of(data.cycleEdgeCount))
+    let vps = ArrayList<JsonValue>()
+    for (p in data.violationPairs) {
+        let po = Json.obj()
+        Json.set(po, "from", Json.of(p[0]))
+        Json.set(po, "to", Json.of(p[1]))
+        vps.add(po)
+    }
+    Json.set(warns, "violationPairs", JArr(vps))
+    Json.set(warns, "cycleModules", Json.strArray(data.cycleModules.toArray()))
     let dd = Json.obj()
     for (dg in data.drilldown) {
         let sub = Json.obj()
@@ -536,6 +648,7 @@ public func archJson(data: ArchData, en: Bool): JsonValue {
     Json.set(o, "modules", JArr(ms))
     Json.set(o, "edges", JArr(es))
     Json.set(o, "layers", JArr(layerList))
+    Json.set(o, "warnings", warns)
     Json.set(o, "drilldown", dd)
     Json.set(o, "totalFiles", Json.of(data.totalFiles))
     Json.set(o, "totalSymbols", Json.of(data.totalSymbols))
@@ -588,8 +701,14 @@ public func archMermaid(data: ArchData, en: Bool): String {
         }
         i += 1
     }
-    for ((a, b, w) in data.edges) {
-        sb.append("  ${mermaidNodeId(ids, a)} -->|${w}| ${mermaidNodeId(ids, b)}\n")
+    for (e in data.edges) {
+        if (e.violation) {
+            sb.append("  ${mermaidNodeId(ids, e.fromId)} -.->|⚠违规 ${e.weight}| ${mermaidNodeId(ids, e.toId)}\n")
+        } else if (e.cycle) {
+            sb.append("  ${mermaidNodeId(ids, e.fromId)} -->|环 ${e.weight}| ${mermaidNodeId(ids, e.toId)}\n")
+        } else {
+            sb.append("  ${mermaidNodeId(ids, e.fromId)} -->|${e.weight}| ${mermaidNodeId(ids, e.toId)}\n")
+        }
     }
     return sb.toString()
 }
@@ -601,8 +720,14 @@ public func archDot(data: ArchData, en: Bool): String {
         let label = "${m.id}\\n${m.files} files / ${m.symbols} symbols"
         sb.append("  \"${m.id}\" [label=\"${label}\", group=\"L${m.layer}\"];\n")
     }
-    for ((a, b, w) in data.edges) {
-        sb.append("  \"${a}\" -> \"${b}\" [label=\"${w}\", penwidth=${if (w > 8) { 3 } else { if (w > 3) { 2 } else { 1 } }}];\n")
+    for (e in data.edges) {
+        if (e.violation) {
+            sb.append("  \"${e.fromId}\" -> \"${e.toId}\" [label=\"⚠违规 ${e.weight}\", color=red, style=dashed];\n")
+        } else if (e.cycle) {
+            sb.append("  \"${e.fromId}\" -> \"${e.toId}\" [label=\"环 ${e.weight}\", color=orange];\n")
+        } else {
+            sb.append("  \"${e.fromId}\" -> \"${e.toId}\" [label=\"${e.weight}\", penwidth=${if (e.weight > 8) { 3 } else { if (e.weight > 3) { 2 } else { 1 } }}];\n")
+        }
     }
     sb.append("}\n")
     return sb.toString()

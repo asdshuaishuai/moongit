@@ -128,6 +128,7 @@ body { background:var(--bg); color:var(--text); font:13px/1.5 -apple-system,'SF 
 .btn { border:1px solid var(--border); background:var(--chip); color:var(--text);
   border-radius:8px; padding:4px 10px; cursor:pointer; }
 .btn:hover, .chip:hover { border-color:var(--accent); }
+.warn { color:#f87171; font-weight:700; font-size:12px; }
 #hint { position:fixed; bottom:12px; left:50%; transform:translateX(-50%);
   color:var(--muted); font-size:11px; background:var(--panel); border:1px solid var(--border);
   border-radius:999px; padding:4px 14px; backdrop-filter:blur(8px); }
@@ -163,7 +164,14 @@ body { background:var(--bg); color:var(--text); font:13px/1.5 -apple-system,'SF 
         }
         li += 1
     }
-    sb.append("<input id=\"q\" placeholder=\"${ui.search}\"><button class=\"btn\" id=\"fit\">${ui.fit}</button><button class=\"btn\" id=\"th\">${ui.theme}</button></div>\n")
+    // ⚠️ 仓颉没有 `?:` 三元 —— 用 if 表达式（`AGENTS.md` 编码约定）
+    let violWord = if (en) { "violations" } else { "违规" }
+    let cycWord = if (en) { "cycles" } else { "环" }
+    var warnHtml = ""
+    if (data.violationCount > 0 || data.cycleEdgeCount > 0) {
+        warnHtml = "<span class=\"warn\">⚠ ${violWord} ${data.violationCount} · ${cycWord} ${data.cycleEdgeCount}</span>"
+    }
+    sb.append("<input id=\"q\" placeholder=\"${ui.search}\"><span class=\"warn\">" + warnHtml + "</span><button class=\"btn\" id=\"fit\">${ui.fit}</button><button class=\"btn\" id=\"th\">${ui.theme}</button></div>\n")
     sb.append("<div id=\"crumbs\"></div>\n")
     sb.append("<div id=\"hint\">${ui.hint}</div>\n<div id=\"panel\"></div>\n<script>\nwindow.__ARCH__ = ")
     sb.append(json)
@@ -269,6 +277,8 @@ func renderJs(en: Bool): String {
     sb.append("      var grad = ctx.createLinearGradient(x1, y1, x2, y2); grad.addColorStop(0, nodeColor(a)); grad.addColorStop(1, nodeColor(b));\n")
     sb.append("      ctx.strokeStyle = grad; ctx.globalAlpha = dim ? 0.05 : (hot ? 0.9 : Math.min(0.13 + e.weight * 0.05, 0.5)) * ap;\n")
     sb.append("      ctx.lineWidth = hot ? 2.4 : Math.min(1 + e.weight * 0.12, 2.8);\n")
+    sb.append("      if (e.viol) { ctx.strokeStyle = '#f87171'; ctx.setLineDash([7, 5]); ctx.lineWidth = 2.2; }\n")
+    sb.append("      else if (e.cyc) { ctx.strokeStyle = '#fb923c'; ctx.lineWidth = Math.max(ctx.lineWidth, 2.0); }\n")
     sb.append("      var approx = (Math.abs(x2 - x1) + Math.abs(y2 - y1)) * 1.25 * ap;\n")
     sb.append("      ctx.setLineDash([Math.max(approx, 1)]); ctx.lineDashOffset = Math.max(approx, 1) * (1 - ap);\n")
     sb.append("      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.bezierCurveTo(mx, y1, mx, y2, x2, y2); ctx.stroke(); ctx.setLineDash([]);\n")
@@ -282,6 +292,7 @@ func renderJs(en: Bool): String {
     sb.append("      if (sel && sel !== a.id && sel !== b.id) return;\n")
     sb.append("      var pos = bez(a, b, (now * pt.sp + pt.o) % 1);\n")
     sb.append("      var c = nodeColor(b);\n")
+    sb.append("      if (pt.e.viol) { c = '#f87171'; } else if (pt.e.cyc) { c = '#fb923c'; }\n")
     sb.append("      ctx.globalAlpha = 0.85; ctx.fillStyle = c; ctx.shadowColor = c; ctx.shadowBlur = 7;\n")
     sb.append("      ctx.beginPath(); ctx.arc(w2sx(pos.x), w2sy(pos.y), 2.1, 0, 6.2832); ctx.fill(); ctx.shadowBlur = 0; ctx.globalAlpha = 1; });\n")
     // 节点

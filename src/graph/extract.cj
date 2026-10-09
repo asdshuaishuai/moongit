@@ -360,11 +360,15 @@ func looksLikeName(t: String): Bool {
 public struct SourceFacts {
     public let symbols: ArrayList<SymDecl>
     public let imports: ArrayList<String>
+    /// 与 imports 平行的行号数组（未使用 import 的证据定位用）
+    public let importLines: ArrayList<Int64>
     public let lineCount: Int64
 
-    public init(symbols: ArrayList<SymDecl>, imports: ArrayList<String>, lineCount: Int64) {
+    public init(symbols: ArrayList<SymDecl>, imports: ArrayList<String>,
+                importLines: ArrayList<Int64>, lineCount: Int64) {
         this.symbols = symbols
         this.imports = imports
+        this.importLines = importLines
         this.lineCount = lineCount
     }
 }
@@ -519,6 +523,7 @@ func quotedPart(t: String): String {
 public func scanSource(content: String): SourceFacts {
     let symbols = ArrayList<SymDecl>()
     let imports = ArrayList<String>()
+    let importLines = ArrayList<Int64>()
     let seenImports = HashSet<String>()
     var lineNo: Int64 = 0
     var lineCount: Int64 = 0
@@ -534,6 +539,7 @@ public func scanSource(content: String): SourceFacts {
         if (!imp.isEmpty() && !seenImports.contains(imp)) {
             seenImports.add(imp)
             imports.add(imp)
+            importLines.add(lineNo)
         }
         // stripCode 同时剥注释与字符串字面量（含跨行状态）——见函数头的三个坑
         let (t, nextState) = stripCode(raw, strState)
@@ -549,5 +555,5 @@ public func scanSource(content: String): SourceFacts {
             case None => ()
         }
     }
-    return SourceFacts(symbols, imports, lineCount)
+    return SourceFacts(symbols, imports, importLines, lineCount)
 }

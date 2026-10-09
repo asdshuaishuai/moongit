@@ -684,3 +684,135 @@ func braceLang(lang: String): Bool {
     return lang == "c" || lang == "java" || lang == "kotlin" || lang == "rust"
         || lang == "go" || lang == "swift" || lang == "cangjie" || lang == "ts"
 }
+
+
+// MARK: - 内建名表（未解析调用的豁免集）
+
+/// 各语言常见内建函数/类型/命名空间名的**并集**。
+/// 判据保守：宁可漏报（它本来就只是启发式信号），不可把合法调用报成幻觉。
+func buildBuiltinNames(): HashSet<String> {
+    let s = HashSet<String>()
+    let words = [
+        "print", "println", "printf", "puts", "echo", "log", "error", "warn",
+        "info", "debug", "trace", "assert", "throw", "panic",
+        "len", "cap", "make", "new", "append", "copy", "delete", "close",
+        "recover", "Println", "Printf", "Sprintf",
+        "range", "str", "int", "float", "list", "dict", "set", "tuple", "open",
+        "type", "super", "isinstance", "enumerate", "zip", "map", "filter",
+        "sorted", "sum", "min", "max", "abs", "round", "any", "all", "repr",
+        "format", "ord", "chr", "hex", "bin", "bool", "bytes", "setattr",
+        "getattr", "hasattr",
+        "fatalError", "precondition", "String", "Int", "Double",
+        "Bool", "Array", "Dictionary", "Set",
+        "console", "fetch", "parseInt", "parseFloat", "Number", "Boolean",
+        "Object", "JSON", "Math", "isFinite", "isNaN", "require", "Promise",
+        "Symbol", "Error", "TypeError", "Date", "Map",
+        "vec", "Some", "None", "Ok", "Err",
+        "System", "out", "valueOf",
+        "malloc", "free", "memcpy", "strlen", "memset", "exit",
+        "ArrayList", "HashMap", "HashSet", "StringBuilder", "Path", "FileInfo",
+        "Directory", "Char", "UInt8", "Int64", "Float64", "Float32", "Rune",
+        "Unit", "Comparable", "Runnable", "Iterator", "Optional",
+        "describe", "it", "expect", "beforeEach", "afterEach", "main"
+    ]
+    for (w in words) {
+        let t = w.trimAscii()
+        if (!t.isEmpty()) { s.add(t) }
+    }
+    return s
+}
+
+let BUILTIN_NAMES: HashSet<String> = buildBuiltinNames()
+
+func isBuiltinName(name: String): Bool {
+    if (BUILTIN_NAMES.contains(name)) { return true }
+    let lower = lowerAscii(name)
+    return BUILTIN_NAMES.contains(lower)
+}
+
+
+// MARK: - 幻觉调用 / 未使用 import / 注释掉的代码
+
+/// 幻觉调用：自由函数调用 `name(`，名字全仓无定义、非内建、非接收者调用。
+/// AI 生成代码的标志性病症——编造不存在的 API。数据来自 buildGraph 第二遍。
+func detectUnresolvedCalls(graph: CodeGraph, findings: ArrayList<Finding>): Unit {
+    let perFile = HashMap<String, Int64>()
+    for ((file, name, line) in graph.unresolvedCalls) {
+        let key = file
+        let c = match (perFile.get(key)) {
+            case Some(v) => v
+            case None => 0
+        }
+        if (c >= CONF_MAX_PER_KIND_PER_FILE) { continue }
+        perFile[key] = c + 1
+        findings.add(Finding(UnresolvedCall, file, line, name,
+            "调用 ${name}(…)：全仓没有该名字的定义，也不是语言内建——"
+            + "可能是幻觉 API、拼错的名字，或缺失的依赖"))
+    }
+}
+
+/// 未使用 import：import 解析到了目标文件，但目标文件的任何符号都没在本文件出现。
+func detectUnusedImports(graph: CodeGraph, findings: ArrayList<Finding>): Unit {
+    let perFile = HashMap<String, Int64>()
+    for ((file, mod, line) in graph.unusedImports) {
+        let key = file
+        let c = match (perFile.get(key)) {
+            case Some(v) => v
+            case None => 0
+        }
+        if (c >= CONF_MAX_PER_KIND_PER_FILE) { continue }
+        perFile[key] = c + 1
+        findings.add(Finding(UnusedImport, file, line, mod,
+            "import ${mod} 后从未使用其任何符号——死引用（AI 常顺手带上标准导入块）"))
+    }
+}
+
+/// 注释掉的代码块：注释行**长得像代码**且一个文件里 ≥3 行。
+/// AI 生成后被手动禁用的代码是最典型的残留形态。
+/// 启发式（按序）：剥掉注释前缀后，行内出现「关键词 + 结构特征」。
+/// 误报方向：被注释的自然语言句子不含这些组合——偏保守。
+func detectCommentedCode(graph: CodeGraph, findings: ArrayList<Finding>): Unit {
+    // 代码关键词（大小写敏感的常见形态）
+    let kws = ["let ", "var ", "const ", "func ", "def ", "class ", "struct ",
+        "return ", "if (", "if(", "for (", "for(", "while (", "while(",
+        "println(", "print(", "console.log(", "fmt.Print", "self.", "import "]
+    for (f in graph.files) {
+        let content = readFileText("${graph.root}/${f.relPath}")
+        match (content) {
+            case Some(text) =>
+                var codeLines: Int64 = 0
+                var firstLine: Int64 = 0
+                var firstExcerpt = ""
+                var lineNo: Int64 = 0
+                for (line in text.lazySplit("\n")) {
+                    let t = line.trimAscii()
+                    if (!t.startsWith("//") && !t.startsWith("#")) { continue }
+                    let inner = t.trimAscii()
+                    // 剥注释前缀（含 "// "、"#"、"* " 续行）
+                    var body = inner
+                    if (body.startsWith("//")) { body = body[2..].trimAscii() }
+                    else if (body.startsWith("#")) { body = body[1..].trimAscii() }
+                    else if (body.startsWith("*")) { body = body[1..].trimAscii() }
+                    if (body.isEmpty()) { continue }
+                    var looksCode = false
+                    for (kw in kws) {
+                        if (body.startsWith(kw)) { looksCode = true; break }
+                    }
+                    // 结构特征：以 ; 结尾，或含 " = " 且含 "("
+                    if (!looksCode && body.endsWith(";")) { looksCode = true }
+                    if (!looksCode && body.contains(" = ") && body.contains("(")) { looksCode = true }
+                    if (!looksCode) { continue }
+                    codeLines += 1
+                    if (firstLine == 0) {
+                        firstLine = lineNo
+                        firstExcerpt = oneLineClamped(body, 60)
+                    }
+                }
+                if (codeLines >= 3) {
+                    findings.add(Finding(CommentedCode, f.relPath, firstLine, "",
+                        "${codeLines} 行注释掉的代码（首行：${firstExcerpt}）——确认后应删除而非注释"))
+                }
+            case None => ()
+        }
+    }
+}
