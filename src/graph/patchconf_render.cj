@@ -29,6 +29,10 @@ public func patchConfidenceJson(pc: PatchConfidence): JsonValue {
         Json.set(o, "id", Json.of(e.id))
         Json.set(o, "kind", Json.of(e.kind))
         Json.set(o, "confidence", Json.of(e.confidence))
+        // file/line：客户端要在补丁体检页展示「低置信度代码块」——
+        // 没有定位就只能在 id 字符串里抠路径（id 是给人读的，不是给程序的）
+        Json.set(o, "file", Json.of(e.file))
+        Json.set(o, "line", Json.of(e.line))
         let rs = ArrayList<JsonValue>()
         for ((t, target, c) in e.relations) {
             let r = Json.obj()
