@@ -97,6 +97,7 @@ func functionGraphData(graph: CodeGraph, findings: ConfidenceReport): JsonValue 
             Json.set(o, "name", Json.of(s.name))
             Json.set(o, "kind", Json.of(symKindId(s.kind)))
             Json.set(o, "line", Json.of(s.line))
+            Json.set(o, "lang", Json.of(detectLang(fe.relPath)))
             Json.set(o, "findings", JArr(fd))
             Json.set(o, "weight", Json.of(maxW))
             var code = StringBuilder()
@@ -268,36 +269,96 @@ FG.functionEdges.forEach(function (e) {
 const KW = new Set(('package import class struct enum interface extend func let var const match case '
   + 'return try catch throw true false this super init override where in as is spawn '
   + 'public private internal protected static abstract open').split(' '));
-function hl(code) {
-  let out = '';
-  let i = 0; const n = code.length;
+// —— 多语言关键字表 + 注释风格（通用高亮引擎）——
+const LANG = {
+  cangjie: { lineCm: '//', kws: new Set(('package import class struct enum interface extend func let var const '
+    + 'match case if else while for return try catch throw true false this super init override '
+    + 'public private internal protected static abstract open where in as is spawn prop '
+    + 'volatile unsafe mut ref final sealed typealias operator infix').split(' ')) },
+  swift: { lineCm: '//', kws: new Set(('import class struct enum protocol func let var if else guard while '
+    + 'for return try catch throw true false self super init override public private internal fileprivate '
+    + 'open static final where in as is extension weak unowned lazy mutating didSet willSet some any '
+    + 'async await throws rethrows_deinit case switch default break continue fallthrough').split(' ')) },
+  ts: { lineCm: '//', kws: new Set(('import export from class extends implements interface type enum function '
+    + 'const let var if else while for of in return try catch throw true false null undefined this super new '
+    + 'delete typeof instanceof void async await yield static get set public private protected readonly '
+    + 'abstract as is break continue case switch default do').split(' ')) },
+  python: { lineCm: '#', kws: new Set(('import from class def lambda if elif else while for in return try '
+    + 'except finally raise True False None self super global nonlocal yield async await with as pass '
+    + 'break continue and or not is del').split(' ')) },
+  go: { lineCm: '//', kws: new Set(('package import func var const type struct interface map chan go defer '
+    + 'if else for range return switch case default true false nil break continue goto fallthrough select').split(' ')) },
+  rust: { lineCm: '//', kws: new Set(('fn let mut const struct enum trait impl for in if else while loop match '
+    + 'return true false self Self super crate mod pub use extern as where async await move ref dyn box type '
+    + 'unsafe break continue').split(' ')) },
+  java: { lineCm: '//', kws: new Set(('package import class interface enum record extends implements public private '
+    + 'protected static final abstract void int long double float boolean char byte short if else while for '
+    + 'return try catch finally throw throws true false null this super new instanceof synchronized volatile '
+    + 'transient default sealed permits var break continue do switch case').split(' ')) },
+  kotlin: { lineCm: '//', kws: new Set(('package import class object interface fun val var if else when while for '
+    + 'return try catch finally throw true false null this super init override open abstract final sealed data '
+    + 'companion internal private protected public lateinit lazy by is as in out reified crossinline noinline '
+    + 'suspend inline operator infix external const break continue do').split(' ')) },
+  c: { lineCm: '//', kws: new Set(('auto break case char const continue default do double else enum extern float '
+    + 'for goto if inline int long register restrict return short signed sizeof static struct switch typedef union '
+    + 'unsigned void volatile while class public private protected virtual override final template typename '
+    + 'namespace using new delete nullptr constexpr noexcept').split(' ')) },
+};
+function langOf(path) {
+  // 不用正则，用 endsWith 链
+  if (path.endsWith('.ts') || path.endsWith('.tsx') || path.endsWith('.js') || path.endsWith('.jsx') || path.endsWith('.mjs')) { return 'ts'; }
+  if (path.endsWith('.swift')) { return 'swift'; }
+  if (path.endsWith('.cj')) { return 'cangjie'; }
+  if (path.endsWith('.py')) { return 'python'; }
+  if (path.endsWith('.go')) { return 'go'; }
+  if (path.endsWith('.rs')) { return 'rust'; }
+  if (path.endsWith('.java')) { return 'java'; }
+  if (path.endsWith('.kt') || path.endsWith('.kts')) { return 'kotlin'; }
+  if (path.endsWith('.c') || path.endsWith('.h') || path.endsWith('.cpp') || path.endsWith('.hpp')) { return 'c'; }
+  return 'cangjie';
+}
+// 通用高亮：按语言查关键字集和注释前缀
+function hl2(code, lang) {
+  const cfg = LANG[lang] || LANG.cangjie;
+  const kws = cfg.kws; const lineCm = cfg.lineCm;
+  let out = ''; let i = 0; const n = code.length;
   while (i < n) {
     const ch = code[i];
-    if (ch === '/' && code[i + 1] === '/') {
+    // 行注释
+    if (lineCm !== '#' && ch === '/' && code[i + 1] === '/') {
       let j = code.indexOf(String.fromCharCode(10), i); if (j < 0) { j = n; }
       out += '<span class="c">' + esc(code.slice(i, j)) + '</span>'; i = j; continue;
     }
+    if (lineCm === '#' && ch === '#') {
+      let j = code.indexOf(String.fromCharCode(10), i); if (j < 0) { j = n; }
+      out += '<span class="c">' + esc(code.slice(i, j)) + '</span>'; i = j; continue;
+    }
+    // 字符串
     if (ch === '"' || ch === "'") {
       let j = i + 1;
       while (j < n && code[j] !== ch) { if (code[j] === String.fromCharCode(92)) { j += 1; } j += 1; }
       out += '<span class="s">' + esc(code.slice(i, Math.min(j + 1, n))) + '</span>'; i = j + 1; continue;
     }
+    // 数字
     if (/[0-9]/.test(ch)) {
       let j = i;
       while (j < n && /[0-9a-fA-FxX_.]/.test(code[j])) { j += 1; }
       out += '<span class="n">' + esc(code.slice(i, j)) + '</span>'; i = j; continue;
     }
+    // 标识符（关键字查表）
     if (/[A-Za-z_]/.test(ch)) {
       let j = i;
       while (j < n && /[A-Za-z0-9_]/.test(code[j])) { j += 1; }
       const w = code.slice(i, j);
-      out += KW.has(w) ? '<span class="k">' + esc(w) + '</span>' : esc(w);
+      out += kws.has(w) ? '<span class="k">' + esc(w) + '</span>' : esc(w);
       i = j; continue;
     }
     out += esc(ch); i += 1;
   }
   return out;
 }
+function hl(code) { return hl2(code, D.hlLang || 'cangjie'); }
+
 function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
 // —— 焦点状态 ——
 let focus = FG.functions.length > 0 ? FG.functions[0].id : '';
@@ -332,7 +393,7 @@ function render() {
   });
   if (fd.length === 0) { fl.innerHTML = '<div class="none">' + CLEAN + '</div>'; }
   const codeEl = document.getElementById('focus-code');
-  codeEl.innerHTML = hl(FG.codeSnippets[f.id] || '');
+  codeEl.innerHTML = hl2(FG.codeSnippets[f.id] || '', f.lang || langOfFile(f.file));
   // 右列
   setCol('col-out', HUE.out, REFS_OUT, outs.length);
   const lo = document.getElementById('col-out-body');
@@ -363,5 +424,19 @@ function setCol(id, hue, title, n) {
   el.textContent = title + ' (' + n + ')';
   el.style.borderBottomColor = hue;
 }
+// 初始渲染 + 搜索框交互 + 注入入口
+render();
+document.getElementById('q').addEventListener('input', function (e) {
+  const q = e.target.value.toLowerCase();
+  if (q.length >= 2) {
+    const hit = FG.functions.find(function (f) { return f.name.toLowerCase().indexOf(q) >= 0; });
+    if (hit) { setFocus(hit.id); }
+  }
+});
+window.MoongitCodeGraph = {
+  scene: D, functions: FG.functions, edges: FG.functionEdges,
+  focus: function (id) { setFocus(id); },
+  setFocus: setFocus,
+};
 """
 }
