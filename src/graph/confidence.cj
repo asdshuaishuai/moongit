@@ -43,6 +43,12 @@ public enum FlawKind {
     | GlobalMutable   // 并发级：顶层可变全局（无同步的共享状态起点）
     | LockImbalance   // 并发级：锁 acquire 后同函数无 release（泄漏/死锁风险）
     | LockUnknownCall // 并发级：锁持有区间内调用外部函数（死锁经典形态）
+    // ── 语义层：可靠性/健壮性/设计哲学（AI 写的代码"可不可信"的关键信号）──
+    | HighComplexity  // 圈复杂度 >10：决策路径爆炸 → 难测试/易藏 bug（AI 倾向过度分支）
+    | ParameterAbuse  // 参数滥用：>5 参数或 Bool 标志参控制分支（God 签名，API 设计缺失）
+    | DeadBranch      // 不可达代码：return/break/continue 之后同层级还有语句（AI 生成的残余）
+    | MixedResponsibility // 混合职责：同函数内读盘+计算+写盘（不可组合/不可测试）
+    | NearDuplicate   // 近重复：函数体归一化后与另一函数 >80% 相似（AI 复制粘贴微改的标志）
 }
 
 public func flawId(k: FlawKind): String {
@@ -66,6 +72,16 @@ public func flawId(k: FlawKind): String {
         case GlobalMutable => "global-mutable"
         case LockImbalance => "lock-imbalance"
         case LockUnknownCall => "lock-unknown-call"
+        case HighComplexity => "high-complexity"
+        case ParameterAbuse => "parameter-abuse"
+        case DeadBranch => "dead-branch"
+        case MixedResponsibility => "mixed-responsibility"
+        case NearDuplicate => "near-duplicate"
+        case HighComplexity => "high-complexity"
+        case ParameterAbuse => "parameter-abuse"
+        case DeadBranch => "dead-branch"
+        case MixedResponsibility => "mixed-responsibility"
+        case NearDuplicate => "near-duplicate"
     }
 }
 
@@ -91,6 +107,11 @@ public func flawLabel(k: FlawKind, en: Bool): String {
             case GlobalMutable => "Global mutable state"
             case LockImbalance => "Lock imbalance"
             case LockUnknownCall => "Call while holding lock"
+            case HighComplexity => "High cyclomatic complexity"
+            case ParameterAbuse => "Parameter count/flag abuse"
+            case DeadBranch => "Unreachable code after return"
+            case MixedResponsibility => "Mixed I/O + computation responsibility"
+            case NearDuplicate => "Near-duplicate function body"
         }
     } else {
         match (k) {
@@ -113,6 +134,11 @@ public func flawLabel(k: FlawKind, en: Bool): String {
             case GlobalMutable => "全局可变状态"
             case LockImbalance => "锁不平衡"
             case LockUnknownCall => "持锁调用"
+            case HighComplexity => "圈复杂度过高"
+            case ParameterAbuse => "参数滥用"
+            case DeadBranch => "不可达代码"
+            case MixedResponsibility => "混合职责"
+            case NearDuplicate => "近重复函数体"
         }
     }
 }
@@ -130,6 +156,11 @@ public func flawWeight(k: FlawKind): Int64 {
         case UnresolvedCall => 8
         case LockImbalance => 9
         case LockUnknownCall => 9
+        case HighComplexity => 8
+        case ParameterAbuse => 6
+        case DeadBranch => 6
+        case MixedResponsibility => 6
+        case NearDuplicate => 5
         case GlobalMutable => 6
         case GodClass => 6
         case PointerRisk => 9
@@ -206,6 +237,11 @@ public func flawDimension(k: FlawKind): ConfDimension {
         case GlobalMutable => DimConcurrency
         case LockImbalance => DimConcurrency
         case LockUnknownCall => DimConcurrency
+        case HighComplexity => DimFunction
+        case ParameterAbuse => DimFunction
+        case DeadBranch => DimFunction
+        case MixedResponsibility => DimStructure
+        case NearDuplicate => DimFunction
         case Orphan => DimStructure
         case UnusedImport => DimStructure
         case CommentedCode => DimStructure
