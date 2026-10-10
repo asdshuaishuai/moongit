@@ -1064,26 +1064,46 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
                     }
                 case None => ()
             }
-            // --format：html（默认，Web Canvas 交互代码图谱——与 arch 同纪律：
-            // 引擎零实现也能直接导出看）/ text（索引树文本）/ json（与 --json 等价）
-            var fmt = "html"
+            // --format：html（默认，引擎层交付物——单文件交互代码图谱）/
+            // text（索引树文本）/ json（与 --json 等价）。规范分发同 arch。
+            var fmtOpt = GraphExportFormat.Html
+            var unknown = ""
             match (flagValue(args, "--format")) {
-                case Some(v) => fmt = v
+                case Some(v) =>
+                    match (parseGraphFormat(v, GraphExportFormat.Html)) {
+                        case Some(f) => fmtOpt = f
+                        case None => unknown = v.trimAscii()
+                    }
                 case None => ()
             }
-            if (fmt == "json" || ctx.json) {
+            var notAllowed = unknown != ""
+            match (fmtOpt) {
+                case Html => ()
+                case Text => ()
+                case Json => ()
+                case _ => notAllowed = true
+            }
+            if (notAllowed) {
+                let got = if (unknown != "") { unknown } else { "scene/mermaid/dot" }
+                throw DgError.usage(T(
+                    "tree format accepts html | text | json (got: ${got})",
+                    "tree format 支持 html | text | json（收到：${got}）"))
+            }
+            var useJson = ctx.json
+            match (fmtOpt) {
+                case Json => useJson = true
+                case _ => ()
+            }
+            if (useJson) {
                 // M16：`--depth` 原先对 --json 路径完全无效（fullGraphJson 没有
                 // 这个参数），于是「同一条命令、同一个参数，两条路径两种行为」。
                 // 现在两条路都按 depth 截断，且 JSON 侧恒发 depth / depthOmitted。
                 printOut(Json.pretty(fullGraphJson(graph, depth)))
-            } else if (fmt == "text") {
-                printOut(treeText(graph, depth))
-            } else if (fmt == "html") {
-                printOut(treeCanvasHtml(graph, depth, false))
             } else {
-                throw DgError.usage(T(
-                    "tree format accepts html | text | json (got \"${fmt}\")",
-                    "tree format 支持 html | text | json（收到 \"${fmt}\"）"))
+                match (fmtOpt) {
+                    case Text => printOut(treeText(graph, depth))
+                    case _ => printOut(treeCanvasHtml(graph, depth, false))
+                }
             }
         case "symbol" =>
             let name = match (symbolArg) {
@@ -1164,28 +1184,40 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
         case "arch" =>
             let arch = buildArch(graph)
             layoutArch(arch)
-            var format = "html"
+            // 规范分发（graph/export.cj）：默认 Html（引擎层交付物即默认出口）；
+            // Scene = 平台契约数据。未知/不支持的值在解析层统一报用法错。
+            var fmtOpt = GraphExportFormat.Html
+            var unknown = ""
             match (flagValue(args, "--format")) {
-                case Some(v) => format = v.trimAscii()
+                case Some(v) =>
+                    match (parseGraphFormat(v, GraphExportFormat.Html)) {
+                        case Some(f) => fmtOpt = f
+                        case None => unknown = v.trimAscii()
+                    }
                 case None => ()
             }
-            var payload = ""
-            if (format == "mermaid") {
-                payload = archMermaid(arch, en)
-            } else if (format == "dot") {
-                payload = archDot(arch, en)
-            } else if (format == "json") {
-                payload = Json.pretty(archJson(arch, en))
-            } else if (format == "html") {
-                payload = archCanvasHtml(arch, en)
-            } else if (format == "scene") {
-                // 场景 JSON（moongit-graph-scene v1）：几何/命中/动画时序的
-                // 数据层，供任何标准 Canvas2D API 移植实现驱动渲染
-                payload = Json.pretty(buildArchScene(arch, en))
-            } else {
+            var notAllowed = unknown != ""
+            match (fmtOpt) {
+                case Text => notAllowed = true
+                case _ => ()
+            }
+            if (notAllowed) {
+                let got = if (unknown != "") { unknown } else { "text" }
                 throw DgError.usage(T(
-                    "--format accepts html | mermaid | dot | json | scene (got: ${format})",
-                    "--format 只支持 html | mermaid | dot | json | scene（收到：${format}）"))
+                    "--format accepts html | mermaid | dot | json | scene (got: ${got})",
+                    "--format 只支持 html | mermaid | dot | json | scene（收到：${got}）"))
+            }
+            var payload = ""
+            match (fmtOpt) {
+                case Mermaid => payload = archMermaid(arch, en)
+                case Dot => payload = archDot(arch, en)
+                case Json => payload = Json.pretty(archJson(arch, en))
+                case Html => payload = archCanvasHtml(arch, en)
+                case Scene =>
+                    // 场景 JSON（moongit-graph-scene v1）：几何/命中/动画时序的
+                    // 数据层，供任何标准 Canvas2D API 移植实现驱动渲染
+                    payload = Json.pretty(buildArchScene(arch, en))
+                case Text => ()
             }
             match (flagValue(args, "--out")) {
                 case Some(outPath) =>

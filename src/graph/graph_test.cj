@@ -1117,6 +1117,44 @@ func testCAstPathMapsBackWithoutDoubleExtension(): Unit {
     }
 }
 
+/// 规范层（export.cj）：Canvas2D 子集常量 + 导出格式解析。
+/// 方法清单是平台移植的验收标准（文档引用它）——动清单必须过这条测试。
+@Test
+func testCanvasSubsetAndGraphFormatParsing(): Unit {
+    // 清单完整性锚点：26 项，关键项逐一点名
+    @Assert(CANVAS2D_SUBSET.size == 26)
+    let must = ["beginPath", "fill", "stroke", "bezierCurveTo", "arcTo",
+                "setLineDash", "fillText", "globalAlpha", "textAlign"]
+    for (m in must) {
+        @Assert(CANVAS2D_SUBSET.contains(m))
+    }
+    // 验收函数：全覆盖 = 合规；缺 bezierCurveTo = 不合规
+    let full = ArrayList<String>(CANVAS2D_SUBSET)
+    @Assert(canvasSubsetCompliant(full))
+    let broken = ArrayList<String>(CANVAS2D_SUBSET)
+    broken.remove(at: 12)
+    @Assert(!canvasSubsetCompliant(broken))
+    // 格式解析：六值 + 空串回落默认 + 未知返回 None
+    match (parseGraphFormat("scene", GraphExportFormat.Html)) {
+        case Some(f) =>
+            match (f) {
+                case Scene => ()
+                case _ => @Assert(false)
+            }
+        case None => @Assert(false)
+    }
+    match (parseGraphFormat("", GraphExportFormat.Html)) {
+        case Some(f) =>
+            match (f) {
+                case Html => ()
+                case _ => @Assert(false)
+            }
+        case None => @Assert(false)
+    }
+    @Assert(parseGraphFormat("svg", GraphExportFormat.Html).isNone())
+    @Assert(graphFormatList(ArrayList<GraphExportFormat>([GraphExportFormat.Html, GraphExportFormat.Scene])) == "html | scene")
+}
+
 /// 代码图谱的 Web 导出（与 arch 同纪律：默认格式即 Web Canvas，引擎零实现
 /// 也能直接打开看）。内嵌数据必须就是 `graph tree --json` 的同一份契约。
 @Test
