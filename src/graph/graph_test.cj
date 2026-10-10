@@ -1157,6 +1157,8 @@ func testCanvasSubsetAndGraphFormatParsing(): Unit {
 
 /// 代码图谱的 Web 导出（与 arch 同纪律：默认格式即 Web Canvas，引擎零实现
 /// 也能直接打开看）。内嵌数据必须就是 `graph tree --json` 的同一份契约。
+/// 2026-10 重构：deepOrca 三列 DOM 形态废弃，改左树右详情双栏
+/// （布局块恰为 2：data-pane=tree / data-pane=detail）。
 @Test
 func testTreeCanvasHtmlExport(): Unit {
     let root = writeTree()
@@ -1164,14 +1166,15 @@ func testTreeCanvasHtmlExport(): Unit {
         let g = buildGraph(root)
         let conf = analyzeConfidence(g, false)
         let html = treeCanvasHtml(g, 8, false, conf)
-        // 三列 DOM 版：不再用 canvas——改为验证三列/焦点面板/函数级数据
-        @Assert(html.contains("col-in-body"))
-        @Assert(html.contains("col-out-body"))
-        @Assert(html.contains("focus-code"))
+        // 双栏树形版：验证两 panes / 置信度内嵌 / 函数级数据
+        @Assert(html.contains("data-pane=\"tree\""))
+        @Assert(html.contains("data-pane=\"detail\""))
         @Assert(html.contains("MoongitCodeGraph") || html.contains("functionEdges"))
         @Assert(html.contains("referenceEdges"))
         @Assert(html.contains("depthOmitted"))
         @Assert(html.contains("codeSnippets"))
+        @Assert(html.contains("confidence"))
+        @Assert(html.contains("langThemes"))
         @Assert(!html.contains("<script src"))
     } finally {
         removeTree(root)
