@@ -39,7 +39,7 @@ export SDKROOT="$HOME/.local/share/sdks/MacOSX.minimal/latest"  # macOS 26/27+ �
 
 cd engine
 cjpm build          # 构建 → target/release/bin/main
-cjpm test           # 543 项测试（util 97 / kernel 241 / flow 88 / cli 79 / graph 38）
+cjpm test           # 547 项测试（util 97 / kernel 244 / flow 88 / cli 79 / graph 39）
                       # ⚠️ 必须带 DEEPGIT_HOME，见下方红线
 cjpm build -i       # 增量构建（改单文件时更快）
 ```
@@ -184,11 +184,11 @@ moonGit/target/release/bin/main status
   证据链（不是猜的）：
   - 并行（默认）跑 3 次：绿、绿、**红 1 条**；
   - `--filter` 单跑 2 次：全绿；
-  - `--parallel 1` 串行跑 2 次：全绿 543/543；
+  - `--parallel 1` 串行跑 2 次：全绿 547/547；
   - 用**构建出的二进制**在 15 个全新沙箱上复刻「恰好两次 update」：AGENTS.md 0/15 变化。
   最后一条是关键：生产代码在隔离进程里行为稳定，所以问题在测试隔离，不在 update 逻辑。
   **要可靠信号就跑 `cjpm test --parallel 1`**（代价是慢几倍）。
-  真正的修法是给每个用例独立的 store 路径而不是全局环境变量 —— 涉及 543 个用例，
+  真正的修法是给每个用例独立的 store 路径而不是全局环境变量 —— 涉及 547 个用例，
   属于架构改动，没有用户拍板前不要自己动。
 - 部分用例建了 `/tmp/deepgit-*` 沙箱却没在 `finally` 里删干净
   （实测 `/tmp` 下已积 996 个，`deepgit-mcpallfail` 一个前缀就 132 个）。
@@ -3095,19 +3095,6 @@ r.stdout.split(NUL))` + `let parts = line.split(...)`」这个形状做替换，
   会干扰判断。要根治：给测试基类加 `defer` 清理，或统一走一个 `withSandbox` 辅助函数。
   临时清法：`mavis-trash -- /tmp/dg_<前缀>_<某次时间戳前缀>`（逐个传，批量会报假失败）。
 
-<!-- deepgit:begin progress -->
-## 当前进度（deepGit 维护）
-
-> 深度更新 · 2026-09-30 12:00 · 追踪 1 个分支
-
-- **`main`**（默认 · 当前）：活跃 · head `e48df23d`（2 分钟前） —— 新增 1 个提交（修复×1），涉及 (根目录)（2 文件）、engine（1 文件）、scripts（1 文件）
-
-**最近提交**
-- `4294b0f4` feat: deepgit verify 命令 —— 自查文档完整性承诺（2026-09-30）
-- `e48df23d` fix: 文档非托管部分逐字节保留（2026-09-30）
-- `735a653a` fix: 托管区域容忍缩进标记 + 排除构建产物（2026-09-30）
-<!-- deepgit:end progress -->
-
 <!-- deepgit:begin overview -->
 ## 项目概览
 
@@ -3146,3 +3133,27 @@ scripts/ (2)
 
 _未检测到标准构建清单，请参考 README。_
 <!-- deepgit:end commands -->
+
+<!-- deepgit:begin progress -->
+## 当前进度（moonGit 维护）
+
+> 浅更新 · 2026-10-10 14:45 · 追踪 4 个分支 · 3 处未提交改动
+
+### 工程脉搏
+
+- 提交构成：`feat` ×8 · `fix` ×13 · `perf` ×2 · `docs` ×4 · `chore` ×1 · `other` ×2
+- 注意：`dev` 可直接 fast-forward 到 `main`
+
+- **`dev`**（当前）：活跃 · head `83023fa8`（2026-10-10 14:13） · 领先默认 26 —— 最近 30 个提交：修复×14、新增×8、文档×4、其他3类×4，（已达 …
+- **`main`**（默认）：活跃 · head `3152b96f`（2026-10-07 22:41） —— 最近 30 个提交：文档×14、新增×4、修复×4、其他4类×8，（已达 …
+- **`fix/audit-2026-10-09`**：活跃 · head `6ad03637`（2026-10-10 14:13） · 领先默认 25 —— 最近 30 个提交：修复×14、新增×8、文档×5、其他2类×3，（已达 …
+- **`graph/confidence-hardening`**：活跃 · head `a45d24bb`（2026-10-09 03:04） · 领先默认 17 —— 最近 30 个提交：修复×13、新增×5、文档×5、其他5类×7，（已达 …
+
+**需要注意**
+- 工作区有 3 处未提交改动
+
+**最近提交**
+- `83023fa8` merge: 审计 47 条发现全链路修复（三轮：修复/复审残留清零/终审补漏），544 测试全绿（2026-10-10）
+- `6ad03637` fix: 终审补漏——.c 路径双重扩展名 + 前置声明误入 stub 通道（2026-10-10）
+- `f7370b45` fix: 清零审计复审残留（M3 重修/L10 收紧/L15 预分配 + 9 条部分修复残留 + 3 个复审新问题）（2026-10-10）
+<!-- deepgit:end progress -->

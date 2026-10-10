@@ -143,7 +143,11 @@ func branchBlock(name: String, rec: JsonValue, narration: Option<BranchNarrative
     let status = Json.strAt(rec, "status", "unknown")
     let headShort = shortSha(Json.strAt(rec, "head", ""))
     let headDate = Json.strAt(rec, "headDate", "")
-    let when = if (headDate.isEmpty()) { "-" } else { timeAgo(headDate, lang) }
+    // ⚠️ 托管文档里必须写**绝对**时间，不能写 timeAgo 相对时间：
+    // "24 分钟前"随钟表流逝而变，跨一分钟重跑 update 内容必然不同，
+    // 「仅时间戳不同则不重写」的守卫因此永远失效——必重写、必留备份
+    // （dogfood 实测抓到）。绝对时间对同一提交永不变化，文档也不腐烂。
+    let when = if (headDate.isEmpty()) { "-" } else { formatDateTime(headDate) }
     let subject = Json.strAt(rec, "headSubject", "")
     let subjectPart = if (subject.isEmpty()) { "" } else { " ${truncate(oneLine(subject), 48, "…")}" }
     sb.append("- **${if (zh) { "状态" } else { "Status" }}**：${statusLabel(status, lang)} · ${if (zh) { "最近提交" } else { "last commit" }} ${when}（`${headShort}`${subjectPart}）\n")
@@ -455,7 +459,8 @@ public func renderProgressAgent(
                 let flagStr = if (flags.size > 0) { "（${joinStrings(flags, " · ")}）" } else { "" }
                 let head = shortSha(Json.strAt(rec, "head", ""))
                 let headDate = Json.strAt(rec, "headDate", "")
-                let ago = if (headDate.isEmpty()) { "" } else { "（${timeAgo(headDate, lang)}）" }
+                // 同 branchBlock：绝对时间，不写 timeAgo（理由见彼处注释）
+                let ago = if (headDate.isEmpty()) { "" } else { "（${formatDateTime(headDate)}）" }
                 let extras = ArrayList<String>()
                 let pending = Json.intAt(rec, "pendingCommits", 0)
                 let ahead = Json.intAt(rec, "aheadOfDefault", 0)

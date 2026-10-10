@@ -63,8 +63,24 @@ private func lineNumberAt(text: String, offset: Int64): Int64 {
     return line
 }
 
-public func parseRegions(text: String): (ArrayList<Region>, ArrayList<String>) {
-    let out = ArrayList<Region>()
+/// 区域名判据：引擎自选的标识符，只允许 ASCII 字母/数字/下划线/连字符。
+/// 解析侧用它挡掉文档正文里的占位写法（如 `...`）——它们是叙述不是标记。
+/// 渲染侧（renderBlock）的名字来源全是引擎常量，与此判据天然一致。
+func isRegionName(name: String): Bool {
+    if (name.isEmpty()) {
+        return false
+    }
+    for (b in name.toArray()) {
+        let ok = (b >= 0x41u8 && b <= 0x5au8) || (b >= 0x61u8 && b <= 0x7au8) ||
+                 (b >= 0x30u8 && b <= 0x39u8) || b == 0x5fu8 || b == 0x2du8
+        if (!ok) {
+            return false
+        }
+    }
+    return true
+}
+
+public func parseRegions(text: String): (ArrayList<Region>, ArrayList<String>) {    let out = ArrayList<Region>()
     let problems = ArrayList<String>()
     // 栈：名称 / 区域起点 / 内容起点三个平行数组，避免元组下标。
     // 内容起点 = 该 begin 标记的 " -->" 之后的位置，闭合时用它切内容
@@ -102,8 +118,24 @@ public func parseRegions(text: String): (ArrayList<Region>, ArrayList<String>) {
                 break
             case Some(me) =>
                 let headSize = if (isBegin) { beginMarkerPlaceholder.size } else { endMarkerPlaceholder.size }
-                let name = text[idx + headSize..me].trimAscii()
-                if (isBegin) {
+                // ⚠️ 无名标记不是区域边界：`<!-- deepgit:begin -->`（begin 后
+                // 直接闭合、无名字）常出现在**讲引擎格式的文档正文**里——本仓
+                // README.md 第 26 行就有一处。此时闭合 " -->" 与占位符（含尾随
+                // 空格）的匹配区重叠，me < idx + headSize，名字切片反向——
+                // 实测抛 Invalid range [1713..1712]，update/deep 对本仓必崩
+                // （任何能改文档的人都能远程触发，dogfood 实测抓到）。
+                // 空名标记一律按叙述文本整段跳过，不进栈、不配对。
+                let inverted = me < idx + headSize
+                let name = if (inverted) { "" } else { text[idx + headSize..me].trimAscii() }
+                // ⚠️ 区域名是引擎自选的标识符（progress / journal …，ASCII 字母
+                // 数字下划线连字符）。名字不合法的"标记"——空名，或 AGENTS.md
+                // 改名红线表里 `<!-- deepgit:begin ... -->` 这种把 `...` 当占位名
+                // 的文档叙述——一律按普通文本跳过：不进栈、不配对、不因此拒绝
+                // 改写（dogfood 实测：本仓 AGENTS.md 第 12 行曾让 update 对
+                // 引擎自己的仓库永久拒绝写文档）。
+                if (inverted || name.isEmpty() || !isRegionName(name)) {
+                    cursor = me + 4
+                } else if (isBegin) {
                     // 容忍标记行的前导空白：把区域起点回退到行首，
                     // 这样重写时不会残留旧的缩进（手写文档常见）。
                     var regionStart = idx
@@ -1002,6 +1034,42 @@ func testStripUpdateStamp(): Unit {
     // 非 quote 行不许动（原实现会从首个「更新于 」剥到行尾——正是 L10 的缺陷形态）
     @Assert(stripUpdateStamp("a 更新于 2026-01-01 00:00\nb") == "a 更新于 2026-01-01 00:00\nb")
     @Assert(stripUpdateStamp("no stamp here") == "no stamp here")
+}
+
+@Test
+func testProseMarkerWithoutNameIsNotARegion(): Unit {
+    // 回归（dogfood 实测抓到）：正文里的字面量 `<!-- deepgit:begin -->`（无名字）
+    // 曾让名字切片反向（Invalid range [1713..1712]），update/deep 对写了这行字
+    // 的仓库必崩——本仓 README.md 第 26 行自己就有一处。
+    let doc = "# t\n\n讲格式的正文：**`<!-- deepgit:begin -->`** 是托管标记的字面形态。\n\n<!-- deepgit:begin progress -->\n旧内容\n<!-- deepgit:end progress -->\n"
+    let (regions, problems) = parseRegions(doc)
+    @Assert(regions.size == 1)
+    @Assert(regions[0].name == "progress")
+    @Assert(problems.isEmpty())
+    // 写路径不被这块叙述文本卡死
+    let next = upsertRegion(doc, "progress", "新内容")
+    @Assert(next.contains("新内容"))
+    @Assert(next.contains("托管标记的字面形态"))
+}
+
+@Test
+func testProseMarkerWithPlaceholderNameIsNotARegion(): Unit {
+    // 回归（dogfood 实测抓到，同族第二形态）：改名红线表里的
+    // `<!-- deepgit:begin ... -->` 把 `...` 当占位名——语法上像命名标记，
+    // 但 `...` 不是合法区域名（区域名只允许 [A-Za-z0-9_-]）。曾让本仓
+    // AGENTS.md 被「未闭合的 begin 标记：…」永久拒绝改写。
+    let doc = "# t\n\n| `<!-- deepgit:begin ... -->` | 字面量契约，改了引擎认不出托管区 |\n\n<!-- deepgit:begin progress -->\n旧内容\n<!-- deepgit:end progress -->\n"
+    let (regions, problems) = parseRegions(doc)
+    @Assert(regions.size == 1)
+    @Assert(regions[0].name == "progress")
+    @Assert(problems.isEmpty())
+    let next = upsertRegion(doc, "progress", "新内容")
+    @Assert(next.contains("新内容"))
+    // 非法名的 end 同样只是叙述：不成对、不报问题
+    let doc2 = "<!-- deepgit:begin progress -->\n内容\n<!-- deepgit:end progress -->\n\n表格：`<!-- deepgit:end ... -->`\n"
+    let (r2, p2) = parseRegions(doc2)
+    @Assert(r2.size == 1)
+    @Assert(p2.isEmpty())
 }
 
 @Test

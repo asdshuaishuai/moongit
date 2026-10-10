@@ -484,6 +484,26 @@ func testFactsForRules(): RepoFacts {
     )
 }
 
+/// 托管文档不许嵌相对时间（"N 分钟前"）：它随钟表流逝而变，「仅时间戳
+/// 不同则不重写」的守卫因此永远失效——跨一分钟重跑 update 必重写、必留
+/// 备份（dogfood 实测抓到）。文档里写绝对时间才不腐烂。
+@Test
+func testBranchBlockUsesAbsoluteNotRelativeTime(): Unit {
+    let rec = Json.obj()
+    Json.set(rec, "status", Json.of("active"))
+    Json.set(rec, "head", Json.of("83023fa8deadbeef"))
+    Json.set(rec, "headDate", Json.of("2026-10-10T14:15:00"))
+    Json.set(rec, "headSubject", Json.of("merge: 审计修复"))
+    Json.set(rec, "pendingCommits", Json.of(0))
+    Json.set(rec, "aheadOfDefault", Json.of(3))
+    Json.set(rec, "merged", Json.of(false))
+    let out = branchBlock("dev", rec, None, testFactsForRules(), "zh")
+    @Assert(!out.contains("分钟前"))
+    @Assert(!out.contains("小时前"))
+    @Assert(!out.contains("天前"))
+    @Assert(out.contains("2026-10-10 14:15"))
+}
+
 /// 构造一个与真实仓库同形的 RepoFacts（规则引擎只用到分支名与 lastCommitAt）。
 func factsForBase(dir: String, branch: String, head: String): RepoFacts {
     return RepoFacts(
