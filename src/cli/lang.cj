@@ -16,15 +16,18 @@
 // （本项目一贯纪律），而不是靠 key 表去重。
 package moongit.cli
 
-import moongit.kernel.*
 import moongit.util.*
-
-// top-level let：进程内缓存的语言判定。首次访问求值。
-let CHROME_ENGLISH: Bool = isEnglish(loadConfig().language)
 
 /// 外壳层文案选择器：`T("Unknown command: ${c}", "未知命令：${c}")`。
 /// 英文在前 —— 外壳默认是中文（与 Config.language 默认值一致），
 /// 调用点读起来「英文是翻译」的顺序更贴近事实。
+///
+/// ⚠️ M20：它只是 util.pickText 的转发。原先这里自己持有一个
+/// `CHROME_ENGLISH` 判定，于是 util 层的错误/告警文案（它们是
+/// **用户可见的**：子进程超时、内部错误、删除失败）拿不到同一个语言信号，
+/// 只能硬编码中文 —— en 用户在错误路径上看到的仍是中文。
+/// util 是叶子层不能 import cli，所以语言信号下沉到 util（setUiLanguage），
+/// cli 只负责在启动时把它设上。全仓只有一处读它。
 public func T(en: String, zh: String): String {
-    return if (CHROME_ENGLISH) { en } else { zh }
+    return pickText(en, zh)
 }

@@ -254,7 +254,17 @@ public func applyEnvOverrides(cfg: Config): Config {
     match (getVariable("DEEPGIT_LANG")) {
         case Some(v) =>
             if (!v.isBlank()) {
-                cfg.language = v.trimAscii()
+                // ⚠️ L9：原来只做 isBlank 检查 ⇒ `DEEPGIT_LANG=fr` 被静默接受，
+                // 而全仓判定是 `isEnglish(lang)`（lang != "en" ⇒ 中文）——
+                // 于是设了一个不存在的语言，得到**全中文且零提示**。
+                // #203 的三层纪律（写入口 / 读路径 / 运行时同一判据）在 env 分支
+                // 漏掉了：这里补上 languageError，与 configFromJson 同一判据。
+                let want = v.trimAscii()
+                if (!SUPPORTED_LANGUAGES.contains(want)) {
+                    Log.warn(languageError(want) + "（DEEPGIT_LANG 已忽略，继续用 ${cfg.language}）")
+                } else {
+                    cfg.language = want
+                }
             }
         case None => ()
     }

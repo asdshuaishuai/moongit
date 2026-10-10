@@ -19,11 +19,14 @@ import std.unittest.testmacro.*
 /// ⚠️ 刻意**不**加「可能是权限问题」这类猜测：没有证据的话术比没有话术更糟，
 /// 它会把用户引向错误的排查方向。**「不知道成因」就说不知道。**
 public func internalErrorMessage(cmd: String, raw: String): String {
-    let head = if (cmd.isEmpty()) { "内部错误" } else { "内部错误（${cmd}）" }
+    let head = pickText(if (cmd.isEmpty()) { "Internal error" } else { "Internal error (${cmd})" },
+        if (cmd.isEmpty()) { "内部错误" } else { "内部错误（${cmd}）" })
     if (raw.isEmpty()) {
-        return "${head}：未捕获到错误信息（加 --verbose 看完整信息）"
+        return pickText("${head}: no message captured (run with --verbose for details)",
+            "${head}：未捕获到错误信息（加 --verbose 看完整信息）")
     }
-    return "${head}：${raw}（加 --verbose 看完整信息）"
+    return pickText("${head}: ${raw} (run with --verbose for details)",
+        "${head}：${raw}（加 --verbose 看完整信息）")
 }
 
 /// 命令名（`argv` 的第一个非选项参数）。取不到就返回空串。

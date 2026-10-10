@@ -37,24 +37,42 @@ public func resolvePath(p: String, base: String): String {
 }
 
 /// 归一化路径：去掉 . 与 .. 段、重复斜杠
+///
+/// ⚠️ L14：相对路径的**前导 `..` 不能丢**。原实现 `if (!stack.isEmpty())`
+/// 静默吞掉无法上弹的前导 `..` —— `normalizePath("../a")` 返回 `"a"`，
+/// 于是 registry.cj 里以相对路径引用的项目丢了一层，症状是
+/// 「明明注册过，却说项目未注册」（层级被静默抹掉，无从排查）。
+/// 绝对路径按 `/` 语义处理（`/..` = `/`），相对路径保留前导 `..`。
 public func normalizePath(p: String): String {
     let absolute = p.startsWith("/")
     let parts = p.split("/")
     let stack = ArrayList<String>()
+    var leadingUps: Int64 = 0
     for (part in parts) {
         if (part.isEmpty() || part == ".") {
             continue
         }
         if (part == "..") {
-            if (!stack.isEmpty()) {
-                stack.remove(at: stack.size - 1)
+            if (stack.isEmpty()) {
+                leadingUps += 1
+                continue
             }
+            stack.remove(at: stack.size - 1)
             continue
         }
         stack.add(part)
     }
     let body = joinStrings(stack, "/")
-    return if (absolute) { "/" + body } else { body }
+    var prefix = ""
+    var k: Int64 = 0
+    while (k < leadingUps) {
+        prefix += "../"
+        k += 1
+    }
+    if (absolute) {
+        return "/" + body
+    }
+    return prefix + body
 }
 
 /// 解析 macOS 常见符号链接目录前缀（/tmp → /private/tmp、/var → /private/var）。
@@ -199,7 +217,13 @@ public func prettyPath(p: String, maxLen: Int64): String {
     }
     let parts = p.split("/")
     if (parts.size <= 4) {
-        return "…" + p[p.size - (maxLen - 1)..]
+        // ⚠️ 不能裸切字节：`p[p.size - (maxLen - 1)..]` 在多字节字符（中文/
+        // emoji 路径）中间落刀会抛 "Invalid utf8 byte sequence"，而这里是
+        // 状态列表与注册表视图的必经渲染路径 ⇒ 一次中文路径就让整条命令失败
+        // （审查 H4）。一律回退到字符边界。
+        let want = p.size - (maxLen - 1)
+        let start = if (want < 0) { 0 } else { nextCharBoundary(p, want) }
+        return "…" + p[start..]
     }
     let tail = parts[parts.size - 2] + "/" + parts[parts.size - 1]
     return "…/" + tail
@@ -504,7 +528,7 @@ public func removePathIfExists(filePath: String): Unit {
             // 删除失败必须让调用方知道：它常常意味着沙箱或用户的目录没清掉，
             // 继续跑下去就是往旧目录里堆数据。注意：这里**不能**降级成静默成功 ——
             // 静默会让「测试残留」这类问题永远查不出来。
-            Log.warn("删除失败（已跳过）：${filePath}")
+            Log.warn(pickText("failed to remove (skipped): ${filePath}", "删除失败（已跳过）：${filePath}"))
         }
     }
 }
@@ -576,6 +600,53 @@ func testPrettyPath(): Unit {
     let p = prettyPath(long, 30)
     @Assert(p.size <= 30)
     @Assert(prettyPath("/short", 30) == "/short")
+}
+
+/// H4 回归：显示用短路径不得在中文（3 字节）或 emoji（4 字节）字符中间落刀。
+/// 原实现 `p[p.size - (maxLen - 1)..]` 是裸字节切片，切点落在多字节序列中间时
+/// 抛 "Invalid utf8 byte sequence" —— 调用方（cli 状态列表 / 注册表）无 try，
+/// 结果是整个命令失败，而不只是显示难看。
+@Test
+func testPrettyPathNeverSplitsMultibyteChars(): Unit {
+    // 5 段路径（>4 段走 tail 分支），尾部全中文
+    let zh = "/Volumes/data/dev/中文项目组/仓库甲"
+    for (ml in 8..50) {
+        let r = prettyPath(zh, ml)
+        @Assert(r.size > 0)
+    }
+    // <=4 段走字节 tail 分支：这是原来必崩的那一支
+    let zh4 = "/用户/目录/仓库名"
+    for (ml in 2..20) {
+        let r = prettyPath(zh4, ml)
+        @Assert(r.size > 0)
+    }
+    // emoji（4 字节）：cli.cj 的 maxLen=46/42 曾把 4 字节字符劈中
+    let emoji = "/用户/仓库🎯🎯/f4"
+    for (ml in 2..30) {
+        let r = prettyPath(emoji, ml)
+        @Assert(r.size > 0)
+    }
+    // 短路径原样返回（不受影响）
+    @Assert(prettyPath("/用户/仓库", 100) == "/用户/仓库")
+}
+
+/// L14 回归：相对路径的前导 `..` 不许被静默抹掉。
+/// 原实现「上弹不出去就丢」⇒ `normalizePath("../a")` 返回 `"a"`，
+/// 于是以相对路径引用的项目丢一层，症状是「明明注册过却说未注册」。
+@Test
+func testNormalizePathKeepsLeadingDotDots(): Unit {
+    @Assert(normalizePath("../a") == "../a")
+    @Assert(normalizePath("../../a") == "../../a")
+    @Assert(normalizePath("../a/b") == "../a/b")
+    @Assert(normalizePath("./a") == "a")
+    @Assert(normalizePath("a/../b") == "b")
+    // 绝对路径仍是 POSIX 语义：/.. = /
+    @Assert(normalizePath("/..") == "/")
+    @Assert(normalizePath("/a/../b") == "/b")
+    @Assert(normalizePath("/a/b/..") == "/a")
+    // 中间段与重复斜杠照常归一
+    @Assert(normalizePath("a//b/./c") == "a/b/c")
+    @Assert(normalizePath("a/../../b") == "../b")
 }
 
 @Test

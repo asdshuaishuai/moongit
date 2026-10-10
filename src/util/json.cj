@@ -733,10 +733,14 @@ class JsonParser {
                     } else if (c < 0x80u8) {
                         sb.append(Rune(UInt32(c)).toString())
                     } else {
-                        // UTF-8 多字节：回退一个字节，按 Rune 解码
+                        // UTF-8 多字节：回退一个字节，按 (bytes, offset) 解码。
+                        // ⚠️ 不要把剩下的数组切片传下去（M22）：runeFromUtf8 最多
+                        // 只读前 4 字节，而 `this.b[this.pos..]` 会为**每一个**
+                        // 多字节字符拷贝整个剩余数组 ⇒ 中文密集文档是 O(n²)。
+                        // 这条路径是全引擎热路径（每个 MCP 消息、每次读状态文件），
+                        // 500KB 级内容实测会退化成数十 GB 的内存流量。
                         this.pos -= 1
-                        let rest = this.b[this.pos..]
-                        match (runeFromUtf8(rest)) {
+                        match (runeFromUtf8At(this.b, this.pos)) {
                             case Some(pair) =>
                                 let (r, size) = pair
                                 sb.append(r.toString())
@@ -871,36 +875,68 @@ class JsonParser {
 
 /// 从 UTF-8 字节序列解出一个 Rune（返回 rune 与消耗字节数）
 func runeFromUtf8(b: Array<UInt8>): Option<(Rune, Int64)> {
-    if (b.size == 0) {
+    return runeFromUtf8At(b, 0)
+}
+
+/// L13：判断一个码点是否落在 UTF-8 规范禁止的代理区。
+/// UTF-8 里 D800..DFFF 必须编码为 3 字节且 CESU-8 之外的实现都不接受，
+/// 解码出这种码点等于把一个非法序列「洗白」成真字符。
+func isValidUtf8Cp(cp: UInt32): Bool {
+    if (cp >= 0xd800u32 && cp <= 0xdfffu32) {
+        return false
+    }
+    return true
+}
+
+/// 从 b 的 offset 处解出一个 Rune。**零拷贝**：最多只读 4 字节，
+/// 不为剩下的数组分配副本（见 string() 里那条 M22 注释）。
+///
+/// L13：顺带把校验口径对齐规范 —— 原实现对 0xC0/0xC1 开头的 overlong 二字节
+/// 序列照单全收（c0 >= 0xc0 即判合法），而对 E0/F0 开头的 overlong 三/四字节
+/// 序列也没有最小性检查（E0 80 80 会被解成 U+0000）。同一文件里的
+/// fromUtf8Lossy 又是另一套口径。这里统一：拒 overlong、拒代理区。
+func runeFromUtf8At(b: Array<UInt8>, offset: Int64): Option<(Rune, Int64)> {
+    let avail = Int64(b.size) - offset
+    if (avail <= 0) {
         return None
     }
-    let c0 = b[0]
+    let c0 = b[offset]
     if (c0 < 0x80u8) {
         return Some((Rune(UInt32(c0)), 1))
     }
     var need: Int64 = 0
     var cp: UInt32 = 0
-    if (c0 >= 0xc0u8 && c0 < 0xe0u8) {
+    if (c0 >= 0xc2u8 && c0 < 0xe0u8) {
         need = 2
         cp = UInt32(c0 & 0x1fu8)
     } else if (c0 >= 0xe0u8 && c0 < 0xf0u8) {
         need = 3
         cp = UInt32(c0 & 0x0fu8)
-    } else if (c0 >= 0xf0u8 && c0 < 0xf8u8) {
+    } else if (c0 >= 0xf0u8 && c0 < 0xf5u8) {
         need = 4
         cp = UInt32(c0 & 0x07u8)
     } else {
+        return None       // 0xC0/0xC1 overlong、0xF5+ 越界、续字节开头
+    }
+    if (avail < need) {
         return None
     }
-    if (b.size < need) {
-        return None
+    // overlong 最小性检查（必须在 avail 判定之后：要读第二个字节）
+    if (c0 == 0xe0u8 && b[offset + 1] < 0xa0u8) {
+        return None       // E0 80..9F = overlong（二字节就能表示）
+    }
+    if (c0 == 0xf0u8 && b[offset + 1] < 0x90u8) {
+        return None       // F0 80..8F = overlong（三字节就能表示）
     }
     for (i in 1..need) {
-        let c = b[i]
+        let c = b[offset + i]
         if (c < 0x80u8 || c >= 0xc0u8) {
             return None
         }
         cp = (cp << 6) | UInt32(c & 0x3fu8)
+    }
+    if (!isValidUtf8Cp(cp)) {
+        return None
     }
     return Some((Rune(cp), need))
 }
@@ -1435,4 +1471,74 @@ func testFloatSerializationRoundTripsWithoutDestroyingValues(): Unit {
     // 那是一整套算法且极易再出错。治本方向是换 Cangjie 运行时的浮点解析。
     @Assert(Float64.parse("0.9999999999999999") == 1.0)   // 钉住现状，别默默漂移
     @Assert(Json.parse(Json.compact(JNum(Float64.parse("1e-7")))).isSome())
+}
+
+/// M22 回归：多字节字符密集的文档必须走**常数**路径。
+/// 原实现每遇到一个多字节字符就 `this.b[this.pos..]` 把整个剩余数组切片
+/// 拷给 runeFromUtf8，而它最多只读前 4 字节 ⇒ O(n²)。500KB 级的中文内容
+/// （MCP 消息、状态文件都走这条热路径）会退化成数十 GB 的内存流量。
+/// 判据取「正确性 + 规模不塌」：内容必须逐字解析回来，且两倍输入不许
+/// 变成四倍以上的拷贝量（用耗时上界兜住，CI 机器上也远低于阈值）。
+@Test
+func testParseMultibyteContentIsNotQuadratic(): Unit {
+    // 注意：内容里不能出现裸双引号 —— 那是 JSON 的字符串定界符，
+    // 拼进去就是非法 JSON（第一版就这么红的：解析器正确地拒绝了它）。
+    let unit = "中文项目进度登记：已完成「补丁级置信度」的三层架构与实现。"
+    var big = "["
+    var i: Int64 = 0
+    while (i < 4000) {
+        if (i > 0) { big += "," }
+        big += "\"" + unit + "${i}\""
+        i += 1
+    }
+    big += "]"
+    @Assert(big.size > 200000)
+    let start = nowMillis()
+    match (Json.parse(big)) {
+        case Some(JArr(items)) =>
+            @Assert(Int64(items.size) == 4000)
+            @Assert(Json.compact(items[0]).contains("中文"))
+            @Assert(Json.compact(items[3999]).contains("中文"))
+        case _ => @Assert(false)   // 中文大文档必须解得出来
+    }
+    // 上界很松（O(n²) 在这个规模上是数秒级），只是防「退化成平方」
+    @Assert(nowMillis() - start < 20000)
+}
+
+/// L13 回归：UTF-8 解码口径必须一致 —— 拒 overlong、拒代理区。
+/// 原有两个自研解码器各收各的（runeFromUtf8 收 0xC0/0xC1，
+/// fromUtf8Lossy 把 E0/F0 开头的 overlong 洗白成真码点）。
+@Test
+func testRuneFromUtf8AtRejectsOverlongAndSurrogates(): Unit {
+    // 合法：ASCII / 中文（3 字节）/ emoji（4 字节）
+    match (runeFromUtf8At("中".toArray(), 0)) {
+        case Some((r, n)) =>
+            @Assert(r.toString() == "中")
+            @Assert(n == 3)
+        case None => @Assert(false)
+    }
+    // overlong 二字节（0xC0/0xC1）
+    @Assert(runeFromUtf8At([0xc0u8, 0x80u8], 0).isNone())
+    @Assert(runeFromUtf8At([0xc1u8, 0xbfu8], 0).isNone())
+    // overlong 三字节：E0 80 80 = U+0000
+    @Assert(runeFromUtf8At([0xe0u8, 0x80u8, 0x80u8], 0).isNone())
+    // overlong 四字节：F0 80 80 80 = U+0000
+    @Assert(runeFromUtf8At([0xf0u8, 0x80u8, 0x80u8, 0x80u8], 0).isNone())
+    // 越界（0xF5+）与孤立续字节
+    @Assert(runeFromUtf8At([0xf8u8, 0x80u8, 0x80u8, 0x80u8], 0).isNone())
+    @Assert(runeFromUtf8At([0x80u8, 0x80u8], 0).isNone())
+    // 截断：3 字节只给 2 字节 ⇒ 拒绝，不许崩也不许瞎猜
+    @Assert(runeFromUtf8At([0xe4u8, 0xb8u8], 0).isNone())
+    // 代理区（CESU-8 形态）
+    @Assert(runeFromUtf8At([0xedu8, 0xa0u8, 0x80u8], 0).isNone())
+    // offset 语义：从第二个字节起读
+    match (runeFromUtf8At("a中".toArray(), 1)) {
+        case Some((r, n)) =>
+            @Assert(r.toString() == "中")
+            @Assert(n == 3)
+        case None => @Assert(false)
+    }
+    // 解析侧与解码口径一致：中文串照常解出，转义 NUL 也合法（它与 UTF-8 无关）
+    @Assert(Json.parse("\"\\u0000\"").isSome())
+    @Assert(Json.parse("[\"中\"]").isSome())
 }

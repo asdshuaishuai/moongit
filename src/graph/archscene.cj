@@ -7,7 +7,12 @@
 // 驱动绘制时按主题解析 ⇒ 主题切换不需要重新生成场景。
 //
 // 【确定性】全部排序化；粒子相位用 (i+1)/(n+1)，零随机数。
-// 同一仓库两次导出场景 JSON 逐字节一致（graph_test 有守护）。
+// 同一仓库两次导出场景 JSON 逐字节一致。
+//
+// ⚠️ M11：这里原来写的是「graph_test 有守护」—— 而那条测试**并不存在**
+// （审查时逐条找过：没有任何断言钉住场景导出的字节序）。一句失实的守护声明
+// 比没有声明更糟：读者会以为改动被兜住，于是放心重构。
+// 现在补上真守护（graph_test 的 testSceneExportIsDeterministic）。
 package moongit.graph
 
 import std.collection.*
@@ -45,6 +50,12 @@ func themeJson(): JsonValue {
     Json.set(dlangs, "c", Json.of("#555555"))
     Json.set(dlangs, "module", Json.of("#94a3b8"))
     Json.set(dark, "langs", dlangs)
+    // M13：场景 JSON 的节点底色用的是 token `panel`，而 themes 里原来
+    // **根本没有这个色值**——schema 文档承诺「颜色一律 token，按当前主题解析」
+    // 且未定义未知 token 的回退语义，于是第三方驱动必然落空。
+    // 引擎自带 Web 驱动不受影响（它内嵌 archJson，panel 由 CSS var 提供）——
+    // 那正是它一直没被发现的原因。
+    Json.set(dark, "panel", Json.of("#131e35"))
 
     let light = Json.obj()
     Json.set(light, "bg0", Json.of("#f7f9fd"))
@@ -72,6 +83,7 @@ func themeJson(): JsonValue {
     Json.set(llangs, "c", Json.of("#444444"))
     Json.set(llangs, "module", Json.of("#64748b"))
     Json.set(light, "langs", llangs)
+    Json.set(light, "panel", Json.of("#ffffff"))
 
     let th = Json.obj()
     Json.set(th, "dark", dark)
@@ -443,10 +455,16 @@ public func buildArchScene(data: ArchData, en: Bool): JsonValue {
             Json.set(sub, "node", Json.of(n.id))
             v.addShape(sub)
         }
+        // ⚠️ L8：装配原先对每条边线性扫 nodes（drillFind 是 O(N)），
+        // 单视图最坏 O(E×N)——11000 条边 × 数百节点就是千万级比较。
+        // buildDrilldown 手里本来就有 byId 这张 HashMap，只是没随 DrillGraph
+        // 带出来。这里在装配处建一次，之后纯查表。
+        let nodeIdx = HashMap<String, DrillNode>()
+        for (n in dg.nodes) { nodeIdx[n.id] = n }
         let (dgEdges, dgDropped) = sceneEdges(dg.edges, SCENE_MAX_EDGES_PER_VIEW)
         v.dropped = dgDropped
         for ((a, b, w) in dgEdges) {
-            match ((drillFind(dg.nodes, a), drillFind(dg.nodes, b))) {
+            match ((nodeIdx.get(a), nodeIdx.get(b))) {
                 case (Some(an), Some(bn)) =>
             let x1 = an.x + an.w
             let y1 = an.y + an.h / 2.0
@@ -479,27 +497,46 @@ public func buildArchScene(data: ArchData, en: Bool): JsonValue {
         // 文件级 panel。out/in 与模块级**同构**，取自该模块的文件级边 ——
         // ⚠️ 原实现恒发空数组：键在、结构合法，却等于对驱动声称「这个文件没有任何依赖」。
         // 恒空假值比缺键更坏（驱动无从分辨「没依赖」与「引擎没填」）。
+        // ⚠️ L8：out/in 的累积原来是「每个节点各扫一遍全表」= O(N×E)；
+        // 改成只扫一遍边，按端点往 HashMap 里累加。输出顺序不变（入边/出边
+        // 各自保持扫描序），所以契约不变，只是不再平方。
+        let outsById = HashMap<String, ArrayList<JsonValue>>()
+        let insById = HashMap<String, ArrayList<JsonValue>>()
+        for ((ea, eb, ew) in dg.edges) {
+            let d1 = Json.obj()
+            Json.set(d1, "id", Json.of(eb))
+            Json.set(d1, "w", Json.of(ew))
+            match (outsById.get(ea)) {
+                case Some(l) => l.add(d1)
+                case None =>
+                    let l = ArrayList<JsonValue>()
+                    l.add(d1)
+                    outsById[ea] = l
+            }
+            let d2 = Json.obj()
+            Json.set(d2, "id", Json.of(ea))
+            Json.set(d2, "w", Json.of(ew))
+            match (insById.get(eb)) {
+                case Some(l) => l.add(d2)
+                case None =>
+                    let l = ArrayList<JsonValue>()
+                    l.add(d2)
+                    insById[eb] = l
+            }
+        }
         for (n in dg.nodes) {
             if (n.external) { continue }
             let po = Json.obj()
             Json.set(po, "title", Json.of(n.label))
             Json.set(po, "sub", Json.of("${n.lang} · ${n.lines} ${ui.lineWord}"))
             Json.set(po, "stats", Json.of("${n.symbols} ${ui.symWord}"))
-            let outs = ArrayList<JsonValue>()
-            let ins = ArrayList<JsonValue>()
-            for ((ea, eb, ew) in dg.edges) {
-                if (ea == n.id) {
-                    let d = Json.obj()
-                    Json.set(d, "id", Json.of(eb))
-                    Json.set(d, "w", Json.of(ew))
-                    outs.add(d)
-                }
-                if (eb == n.id) {
-                    let d = Json.obj()
-                    Json.set(d, "id", Json.of(ea))
-                    Json.set(d, "w", Json.of(ew))
-                    ins.add(d)
-                }
+            let outs = match (outsById.get(n.id)) {
+                case Some(l) => l
+                case None => ArrayList<JsonValue>()
+            }
+            let ins = match (insById.get(n.id)) {
+                case Some(l) => l
+                case None => ArrayList<JsonValue>()
             }
             Json.set(po, "out", JArr(outs))
             Json.set(po, "in", JArr(ins))
@@ -516,6 +553,10 @@ public func buildArchScene(data: ArchData, en: Bool): JsonValue {
         if (count > 0) {
             let c = Json.obj()
             Json.set(c, "layer", Json.of(col))
+            // ⚠️ M14：count 必须是**独立的数字字段**，原来只把它拼进 label。
+            // 文档的 chips 契约写的是 {layer,label,count} —— 消费方要按数量
+            // 排布/汇总时得从中文（或英文）文案里抠数字，那不是契约是猜。
+            Json.set(c, "count", Json.of(count))
             Json.set(c, "label", Json.of("${layerName(col, en)} ${count}"))
             chips.add(c)
         }
@@ -573,13 +614,6 @@ func findModule(list: ArrayList<ArchModule>, id: String): Option<ArchModule> {
     return None
 }
 
-func drillFind(list: ArrayList<DrillNode>, id: String): Option<DrillNode> {
-    for (n in list) {
-        if (n.id == id) { return Some(n) }
-    }
-    return None
-}
-
 func hasDrilldown(data: ArchData, moduleId: String): Bool {
     for (dg in data.drilldown) {
         if (dg.moduleId == moduleId) { return true }
@@ -591,6 +625,20 @@ func numsJson(vals: Array<Float64>): JsonValue {
     let a = ArrayList<JsonValue>()
     for (v in vals) { a.add(Json.of(v)) }
     return JArr(a)
+}
+
+/// 对象键按全序插入（M11 残留：HashMap 迭代序不可依赖，而 JObj 按插入序
+/// 序列化——scene 的字节契约必须自定键序）。wrap 由调用方给定，各表值类型不同。
+func setObjKeysSorted<T>(o: JsonValue, m: HashMap<String, T>, wrap: (T) -> JsonValue): Unit {
+    let keys = ArrayList<String>()
+    for ((k, _) in m) { keys.add(k) }
+    insertionSortBy(keys, { a, b => a < b })
+    for (k in keys) {
+        match (m.get(k)) {
+            case Some(v) => Json.set(o, k, wrap(v))
+            case None => ()
+        }
+    }
 }
 
 func sceneViewJson(v: SceneView): JsonValue {
@@ -606,16 +654,16 @@ func sceneViewJson(v: SceneView): JsonValue {
     Json.set(b, "y1", Json.of(v.by1))
     Json.set(o, "bounds", b)
     let nt = Json.obj()
-    for ((k, tok) in v.nodeTheme) { Json.set(nt, k, Json.of(tok)) }
+    setObjKeysSorted(nt, v.nodeTheme, { x => Json.of(x) })
     Json.set(o, "nodeTheme", nt)
     let nl = Json.obj()
-    for ((k, l) in v.nodeLayer) { Json.set(nl, k, Json.of(l)) }
+    setObjKeysSorted(nl, v.nodeLayer, { x => Json.of(x) })
     Json.set(o, "nodeLayer", nl)
     let od = Json.obj()
-    for ((k, c) in v.order) { Json.set(od, k, Json.of(c)) }
+    setObjKeysSorted(od, v.order, { x => Json.of(x) })
     Json.set(o, "order", od)
     let lbl = Json.obj()
-    for ((k, s) in v.labels) { Json.set(lbl, k, Json.of(s)) }
+    setObjKeysSorted(lbl, v.labels, { x => Json.of(x) })
     Json.set(o, "labels", lbl)
     Json.set(o, "shapes", JArr(v.shapes))
     Json.set(o, "particles", JArr(v.particles))

@@ -298,7 +298,11 @@ public func listBranches(dir: String): ArrayList<BranchInfo> {
     if (!r.ok() || r.stdout.isEmpty()) {
         return out
     }
-    for (line in r.stdout.split("\n")) {
+    // for-each-ref 的**记录分隔符是换行**、**字段分隔符是 NUL** ——
+    // 与 `git stash list -z`（两者都是 NUL，见 listStashes）正好相反，
+    // 别照抄那边。按字段切完还要用 parts.size < 6 兜住标题里的换行。
+    for (rec in r.stdout.split("\n")) {
+        let line = rec.trimAscii()
         if (line.isEmpty()) {
             continue
         }
@@ -707,7 +711,9 @@ public func tags(dir: String, limit: Int64): ArrayList<(String, String)> {
     if (!r.ok() || r.stdout.isEmpty()) {
         return out
     }
-    for (line in r.stdout.split("\n")) {
+    // 记录按换行切、字段按 NUL 切（同上：for-each-ref 的两个分隔符不是一回事）
+    for (rec in r.stdout.split("\n")) {
+        let line = rec.trimAscii()
         if (line.isEmpty()) {
             continue
         }
@@ -1299,37 +1305,51 @@ public func listStashes(root: String): ArrayList<StashInfo> {
     if (!r.ok() || r.stdout.isEmpty()) {
         return out
     }
-    for (line in r.stdout.split("\n")) {
-        if (line.isEmpty()) {
+    // ⚠️ L11：**字段分隔符与条目分隔符都是 NUL**（`-z` 把条目终止符换成 NUL，
+    // 而 --pretty 里的 %x00 也是 NUL）⇒ 输出是一条扁平的 NUL token 流，
+    // 每条 stash 占 3 个 token：%gd / %s / %as。
+    // 原实现先按 "\n" 切行（多条目时整条只有一行）、再按 NUL 切，
+    // 于是**只有第一条被解析**（实测 od -c 证实）。既有测试只造 1 条 stash，
+    // 结构上测不出这个错 —— 与 #188 的「夹具比现实更完整」同一族。
+    let toks = r.stdout.split(NUL)
+    var ti: Int64 = 0
+    while (ti + 2 < Int64(toks.size)) {
+        let idx = toks[ti]
+        let subject = toks[ti + 1]
+        let date = toks[ti + 2]
+        ti += 3
+        if (idx.isEmpty()) {
             continue
         }
-        let parts = line.split(NUL)
-        let idx = if (parts.size >= 1) { parts[0] } else { "" }
-        let subject = if (parts.size >= 2) { parts[1] } else { "" }
-        let date = if (parts.size >= 3) { parts[2] } else { "" }
-        // subject 形如 "On main: xxx" / "WIP on main: sha xxx"，从中拆出分支
-        var branchName = ""
-        var msg = subject
-        if (subject.startsWith("On ")) {
-            let rest = subject[3..]
-            let colon = rest.indexOf(": ")
-            if (colon.isSome()) {
-                let c = colon.getOrThrow()
-                branchName = rest[..c]
-                msg = rest[c + 2..]
-            }
-        } else if (subject.startsWith("WIP on ")) {
-            let rest = subject[7..]
-            let colon = rest.indexOf(": ")
-            if (colon.isSome()) {
-                let c = colon.getOrThrow()
-                branchName = rest[..c]
-                msg = rest[c + 2..]
-            }
-        }
-        out.add(StashInfo(idx, branchName, msg, date))
+        out.add(stashEntryOf(idx, subject, date))
     }
     return out
+}
+
+/// 一条 stash 的 (%gd, %s, %as) → StashInfo。抽成函数是因为解析循环里
+/// 不能再套一个裸块（仓颉会把 `{` 当 lambda 开头）。
+private func stashEntryOf(idx: String, subject: String, date: String): StashInfo {
+    // subject 形如 "On main: xxx" / "WIP on main: sha xxx"，从中拆出分支
+    var branchName = ""
+    var msg = subject
+    if (subject.startsWith("On ")) {
+        let rest = subject[3..]
+        let colon = rest.indexOf(": ")
+        if (colon.isSome()) {
+            let c = colon.getOrThrow()
+            branchName = rest[..c]
+            msg = rest[c + 2..]
+        }
+    } else if (subject.startsWith("WIP on ")) {
+        let rest = subject[7..]
+        let colon = rest.indexOf(": ")
+        if (colon.isSome()) {
+            let c = colon.getOrThrow()
+            branchName = rest[..c]
+            msg = rest[c + 2..]
+        }
+    }
+    return StashInfo(idx, branchName, msg, date)
 }
 
 /// 非跟踪文件独立列表（含 mtime / 大小，便于浅更新增量跟踪）
@@ -2360,6 +2380,34 @@ func testListBranchesSurvivesControlCharInSubject(): Unit {
     @Assert(branches[0].name == "main")
     @Assert(branches[0].subject.contains("ctrl"))  // 标题完整保留
     removePathIfExists(base)
+}
+
+/// L11 回归：**多条** stash 必须全部解析出来。
+/// 原实现用 `-z` 取回输出却按 "\n" 切行 —— 而 `git stash list -z` 的多条目输出
+/// 全以 NUL 相连在一行里 ⇒ 只解析第一条（实测 od -c 证实）。
+/// 既有测试只造 1 条 stash，结构上测不出这个错。
+@Test
+func testListStashesParsesEveryEntry(): Unit {
+    let base = "/tmp/deepgit-stashmulti-${nowMillis()}"
+    ensureDir(base)
+    try {
+        gitRun(base, ["init", "-b", "main"], false)
+        writeFileAtomic(base + "/a.txt", "1")
+        gitRun(base, ["add", "."], false)
+        gitRun(base, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"], false)
+        var i: Int64 = 0
+        while (i < 3) {
+            writeFileAtomic(base + "/a.txt", "v${i}")
+            gitRun(base, ["stash", "-q", "-m", "lab${i}"], false)
+            i += 1
+        }
+        let st = listStashes(base)
+        @Assert(st.size == 3)
+        @Assert(st[0].message.contains("lab2"))
+        @Assert(st[2].message.contains("lab0"))
+    } finally {
+        removePathIfExists(base)
+    }
 }
 
 /// stash 说明文字含 0x1f 时不得解析错位。

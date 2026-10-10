@@ -238,6 +238,11 @@ func detectFromAst(nodes: ArrayList<AstNode>, findings: ArrayList<Finding>): Uni
     let perFileKind = HashMap<String, Int64>()   // "file|kind" → count
     for (n in nodes) {
         let lines = n.endLine - n.startLine + 1
+        // M3 同族：前置声明「无体」是**故意的**，不是占位实现——EmptyType
+        // 在 detectTypeSignals 里跳过，stub 判定这里同样要跳过（实测漏网：
+        // struct Fwd 不报空类型了，却从 stub-body 出口继续误报）。
+        // 前置声明也不可能超长/深嵌套/含魔法数，整节点跳过是安全的。
+        if (n.nodeRule == "type" && isForwardDeclaration(n.text)) { continue }
         // 空体/占位实现
         match (stubReason(n)) {
             case Some(why) =>
@@ -911,6 +916,24 @@ func firstIdentAfter(line: String, fromByte: Int64): String {
     return ""
 }
 
+/// C/C++ 的**前置声明**形态（opaque forward declaration）。
+/// ast-grep 的 type 规则对 `struct Fwd;` 与 `typedef struct Fwd FwdT;`
+/// 都跨 1 行命中，于是每个前置声明都被判成「空类型」扣 3 分 ——
+/// 而 opaque 前向声明是 C 头文件的**惯用法**（隐藏实现细节），
+/// 它系统性地拖低整个 C/C++ 仓库的分数（审查 M3）。
+/// 判据：**节点文本无 `{` 即前置声明**。注意不能判 `endsWith(";")`：
+/// tree-sitter 的 CST 里 `;` 是 struct_specifier 的**兄弟节点**，命中
+/// text 是 `struct Fwd`（实测 ast-grep 0.41.0），不带分号——按分号判
+/// 恒为 false，等于没修（复审 2026-10-10）。走到这里说明没有 `{`，
+/// 而 AST type 节点不会有无成员表的真实定义。
+func isForwardDeclaration(text: String): Bool {
+    let t = text.trimAscii()
+    if (t.isEmpty()) {
+        return false
+    }
+    return !t.contains("{")
+}
+
 /// 类型级信号：空类型（无成员）与上帝类（行数/方法数超阈）。
 func detectTypeSignals(nodes: ArrayList<AstNode>, findings: ArrayList<Finding>): Unit {
     for (n in nodes) {
@@ -923,6 +946,11 @@ func detectTypeSignals(nodes: ArrayList<AstNode>, findings: ArrayList<Finding>):
             if (mayDeclare(line)) { methods += 1 }
         }
         let name = typeNameOf(n)
+        // ⚠️ M3：前置声明不是空类型。它是一种**故意不暴露成员**的声明，
+        // 报它「被掏空」是对 C 头文件惯用法的事实性误判。
+        if (isForwardDeclaration(n.text)) {
+            continue
+        }
         if (methods == 0 && lines <= 3) {
             findings.add(Finding(EmptyType, n.file, n.startLine, name,
                 "类型 ${name} 没有任何成员（${lines} 行）——占位类型或被掏空"))

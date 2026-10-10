@@ -1,7 +1,7 @@
 # AGENTS.md — moonGit 工作区指南
 
 moonGit Engine：基于 git 历史的本地项目群进度引擎（跨平台核心，**AI 无关**）。**100% 仓颉实现，零第三方依赖**（JSON/SHA-256/Markdown 渲染全部自研）。
-外部依赖只有系统 `git` 与 `curl`。本仓库是引擎；各平台 UI 层在 deepDolphin 仓库（macOS 客户端 deepDolphin.app 已实现：菜单栏常驻 + 主面板）。
+外部依赖只有系统 `git`（AI 调用走 curl 的时代已随 `src/ai` 一起结束）。本仓库是引擎；各平台 UI 层在 deepDolphin 仓库（macOS 客户端 deepDolphin.app 已实现：菜单栏常驻 + 主面板）。
 
 > 🔴 **改名时的硬边界：改名字，不改身份。** 引擎已从 deepGit 更名为 **moonGit**，
 > 但下列字面量**必须保持原样**，它们是既有数据与既有外部契约，不是显示名：
@@ -39,7 +39,8 @@ export SDKROOT="$HOME/.local/share/sdks/MacOSX.minimal/latest"  # macOS 26/27+ �
 
 cd engine
 cjpm build          # 构建 → target/release/bin/main
-cjpm test           # 492 项测试 —— ⚠️ 必须带 DEEPGIT_HOME，见下方红线
+cjpm test           # 543 项测试（util 97 / kernel 241 / flow 88 / cli 79 / graph 38）
+                      # ⚠️ 必须带 DEEPGIT_HOME，见下方红线
 cjpm build -i       # 增量构建（改单文件时更快）
 ```
 
@@ -183,11 +184,11 @@ moonGit/target/release/bin/main status
   证据链（不是猜的）：
   - 并行（默认）跑 3 次：绿、绿、**红 1 条**；
   - `--filter` 单跑 2 次：全绿；
-  - `--parallel 1` 串行跑 2 次：全绿 403/403；
+  - `--parallel 1` 串行跑 2 次：全绿 543/543；
   - 用**构建出的二进制**在 15 个全新沙箱上复刻「恰好两次 update」：AGENTS.md 0/15 变化。
   最后一条是关键：生产代码在隔离进程里行为稳定，所以问题在测试隔离，不在 update 逻辑。
   **要可靠信号就跑 `cjpm test --parallel 1`**（代价是慢几倍）。
-  真正的修法是给每个用例独立的 store 路径而不是全局环境变量 —— 涉及 403 个用例，
+  真正的修法是给每个用例独立的 store 路径而不是全局环境变量 —— 涉及 543 个用例，
   属于架构改动，没有用户拍板前不要自己动。
 - 部分用例建了 `/tmp/deepgit-*` 沙箱却没在 `finally` 里删干净
   （实测 `/tmp` 下已积 996 个，`deepgit-mcpallfail` 一个前缀就 132 个）。
@@ -196,16 +197,17 @@ moonGit/target/release/bin/main status
 ## 架构边界（依赖方向严格单向，改前必看）
 
 ```
-util → (kernel | graph) → ai → flow → cli
+util → (kernel | graph) → flow → cli
        (graph 只依赖 util：词法级代码图谱，不碰 git/进度库)
-       (↑ ai 只依赖 kernel/util，绝不反向依赖 flow)
 ```
 
-- **`ai` 不得引入 `flow`**：上层编排（浅/深更新）在 `flow/`，它依赖 `ai`。
-  曾因把更新管线放进 `kernel/` 造成 `ai ↔ kernel` 循环依赖，被迫提升为独立 `flow` 包。
-  **新增「调 AI 做编排」的代码一律进 `flow/`。**
-- `util/` 是叶子，只依赖仓颉标准库。`kernel/` 依赖 `util`。`cli/` 在最上层。
-
+- **依赖方向严格单向**：`util` 是叶子，`kernel` 依赖 `util`，`graph` 只依赖 `util`，
+  `flow` 依赖 `kernel`，`cli` 在最上层。反向依赖 = 循环依赖，编译期就会发现。
+- **引擎 AI 无关（`src/ai` 已删除）**：provider/prompt/工具循环都在客户端。
+  ⚠️ 早先这张图画的是 `util → (kernel | graph) → ai → flow → cli`，
+  而 `ai` 包早已不存在（不变量 4 已随之改写为 AI 无关边界）——
+  依赖图是 agent 给新代码落位的依据，画着不存在的中间层会把编排代码放错包。
+  **新增「调 AI 做编排」的代码一律进 `flow/`**（引擎侧不再有 AI 层可放）。
 ## 编码约定（仓颉特有，踩过的坑）
 
 - **多行字符串必须以换行开头**：`"""` 后紧跟内容会报 `must start with newline character`。
@@ -269,8 +271,10 @@ util → (kernel | graph) → ai → flow → cli
 3. **`git log` 解析依赖 `%x1f`/`%x1e` 分隔符**，字段顺序在 `kernel/git.cj` 的 `logCommits` 里，
    改格式必须同步改解析（`logRange`/`oldestCommits`/`authorStats` 都建立在此之上）。
 
-4. **AI 失败必须降级而非中断**：`flow/update.cj` 与 `flow/deep.cj` 都用 `match` 而非 `try?`
-   语义处理 `aiChatJson` 的失败，并在结果里回报 `aiError`。降级后仍要写进度库与日志。
+4. **AI 无关：引擎不做任何 LLM 调用**（原「AI 失败必须降级」随 `src/ai` 删除改写）。
+   叙述/文档生成走确定性规则引擎（`kernel/narrative.cj`）；LLM 增强由上层客户端
+   （deepDolphin）基于 `/api/context` 自行完成。引擎侧不存在 `aiChatJson`/`aiError`
+   这类符号——AI 内容缺失或失败时，进度库与日志照常写，绝不因 AI 内容缺席而失败。
 
 5. **钩子必须后台异步且永不非零退出**：`post-commit` 与 `post-merge` 共用同一套托管块
    （`(moongit track --quiet --source hook >/dev/null 2>&1 &)`），可重复安装/卸载而不破坏用户已有钩子内容。
@@ -2981,6 +2985,7 @@ cjpm test
 
 # 负控：判据必须能被真缺陷打红（注入 → 跑对应用例 → 期望红 → 还原）
 sh scripts/nc-graph-confidence.sh
+sh scripts/nc-audit-2026-10-09.sh     # audit-2026-10-09 那 47 条修复的判据（19 个变体）
 
 # 环境级守卫：启动器必须给仓颉运行时一个够用的堆（cjHeapSize）
 sh scripts/check-launcher-heap.sh
@@ -3026,6 +3031,46 @@ open deepDolphin.app --args --open-panel    # 启动即开主面板（--project 
    - 通用结论 → 进「关键不变量」（带「推广：」小节，说明它管到哪）
    - 这一次的具体取舍与已知代价 → 进 `README.md` 的「已知边界 / 待人工确认」
    - 两者都要能回答「后来者凭什么这么定」
+
+### 不变量 133 · 「按形状批量替换」会改坏同形状的其它代码——先确认每一处的真实格式
+
+本轮修 L11（`git stash list -z` 按 NUL 切）时，我用脚本按「`for (rec in
+r.stdout.split(NUL))` + `let parts = line.split(...)`」这个形状做替换，
+而全仓有**三处**同形状代码，只有一处的分隔符假设是错的：
+
+| 位置 | 记录分隔符 | 字段分隔符 |
+|---|---|---|
+| `listStashes` | NUL（`-z`） | NUL（`--pretty` 里的 `%x00`） |
+| `listBranches` | **换行** | NUL |
+| `listTags` | **换行** | NUL |
+
+替换把后两处也改了 ⇒ 13 条 git 相关测试同时红，而症状（分支全消失）离真因
+（分隔符搞反）隔着两层。**同一形状 ≠ 同一语义**：批量替换前先把每一处的
+真实格式读一遍，并且锚点要带足够长的上下文。
+
+推论：这也是「负控跑完后必须全量跑一遍测试」的理由 —— 只跑目标用例的话，
+这 13 条红要等到提交后才被发现。
+
+### 不变量 134 · 判据只能抓「当前能观察到的违规」时，就用源码守卫钉事实
+
+负控 NC3（删掉 refEdges 的排序）第一轮**绿了**：本工具链的 HashMap 迭代序
+在单进程内恰好有序，于是「无全序」这个事实在当前进程里观察不到。
+「当前观察不到违规」不等于「契约被守住」—— 判据要卡的是**事实**（物化处有
+一次排序），那就用源码守卫（`__lint` 前缀，同 `__lintConfigKeyTable…` 的纪律）。
+凡属「外部工具/运行时的偶然行为替我们兜着」的契约，都该问一句：
+**换一台机器、换一次运行，这条还成立吗？**
+
+### 不变量 135 · 负控脚本自己的解析也要判据：状态位是定宽的
+
+负控第二轮：注入让用例**抛异常**（`[ ERROR  ] CASE:` 两个空格）而不是断言
+失败（`[ FAILED ] CASE:` 一个空格），而 `run_case` 的 grep 写死了 `FAILED \]`
+⇒ 两条 ERROR 被判成「未判定」。**判据的判据也要能红**：否则负控给出的
+每个「绿」都不可信。状态位一律用 `(FAILED|ERROR)[[:space:]]+\]` 这种
+容错写法。
+
+顺带：`git checkout <文件>` 会在**丢掉未提交修改**的意义上还原 ——
+本会话用它「还原注入」时把两个新写的测试一起抹了，跑完全量才发现用例数
+少了 2 条。还原一律用备份拷贝（trap + md5 自证），不要用 VCS 命令。
 
 ## 安全与并发基线（2026-09-30 全域对抗审查后立约）
 

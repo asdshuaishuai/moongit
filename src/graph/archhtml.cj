@@ -219,7 +219,15 @@ func renderJs(en: Bool): String {
     sb.append("  function isArch() { return level.mode === 'arch'; }\n")
     // 粒子
     sb.append("  var PARTS = [];\n")
-    sb.append("  function buildParts() { PARTS = []; cur().edges.forEach(function (e) { var n = Math.min(1 + Math.round(e.weight / 4), 7); for (var i = 0; i < n; i++) { PARTS.push({ e: e, o: Math.random(), sp: 0.00012 + Math.random() * 0.00009 }); } }); }\n")
+    // ⚠️ L7：粒子相位/速度原来用 Math.random() —— 而 arch.cj 的声明是
+    // 「同一仓库两次渲染逐像素一致」。场景 JSON 出口确实是零随机的（相位
+    // (i+1)/(n+1)），只有这个 Web 驱动在随机：同一份数据两次打开画面不同。
+    // 确定性写法的代价是粒子看起来更「齐」，而一致性是可断言的契约。
+    // 密度公式与场景出口统一为 weight/5 封顶 6（原先两边一个 /4 封顶 7、
+    // 一个 /5 封顶 6，同一个量两个算法）。⚠️ 必须 floor 不能 round：
+    // 场景侧是仓颉整数除法（截断），round 在 weight≡3,4 (mod 5) 时会多出
+    // 一颗粒子——同一个量两个答案（复审 L7 残留）。
+    sb.append("  function buildParts() { PARTS = []; cur().edges.forEach(function (e) { var n = Math.min(1 + Math.floor(e.weight / 5), 6); for (var i = 0; i < n; i++) { var o = (i + 1) / (n + 1); PARTS.push({ e: e, o: o, sp: 0.00012 }); } }); }\n")
     sb.append("  function bez(a, b, t) {\n")
     sb.append("    var x1 = a.x + a.w; var y1 = a.y + a.h / 2; var x2 = b.x; var y2 = b.y + b.h / 2; var mx = (x1 + x2) / 2;\n")
     sb.append("    var u = 1 - t;\n")
@@ -348,7 +356,14 @@ func renderJs(en: Bool): String {
     // 交互
     sb.append("  function hitTest(px, py) { var d = cur(); for (var i = d.nodes.length - 1; i >= 0; i--) { var m = d.nodes[i]; if (isArch() && !layersOn[m.layer]) continue; var x = w2sx(m.x); var y = w2sy(m.y); if (px >= x && px <= x + m.w * view.k && py >= y && py <= y + m.h * view.k) return m; } return null; }\n")
     sb.append("  function center(m) { view.x = innerWidth / 2 - (m.x + m.w / 2) * view.k; view.y = innerHeight / 2 - (m.y + m.h / 2) * view.k; }\n")
-    sb.append("  function escapeHtml(s) { return String(s).split('<').join('&lt;').split('>').join('&gt;'); }\n")
+    // ⚠️ L6：原来只转 `<` `>` —— 而详情面板把名字塞进 data-id="..." 属性，
+    // 一个含双引号的目录名就能闭合属性并注入（需恶意命名的仓库目录，故低危，
+    // 但修起来是零成本的）。属性上下文必须连引号一起转。
+    // 引号字符在 JS 侧用 String.fromCharCode 取，避免在仓颉字符串里写 "
+    sb.append("  function escapeHtml(s) { var Q = String.fromCharCode(34); var A = String.fromCharCode(39);" +
+        " return String(s).split('&').join('&amp;').split('<').join('&lt;')" +
+        ".split('>').join('&gt;').split(Q).join('&quot;').split(A).join('&#39;'); }\n")
+
     sb.append("  function showPanel(m) {\n")
     sb.append("    if (!isArch() && m.external) return;\n")
     sb.append("    var outs = []; var ins = [];\n")

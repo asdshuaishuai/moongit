@@ -1019,13 +1019,13 @@ func testStoreCorruptionIsDisclosedNotReportedAsNoHistory(): Unit {
 
     // agent 上下文必须在**第一屏**披露（模型只读得到这个）
     let ctx = buildAgentContext(ArrayList<ProjectEntry>([p, po]), Config.defaults(), "group", "", 12000)
-    @Assert(ctx.contains("进度存储读不出来"))
-    @Assert(ctx.contains("sh-demo"))
-    @Assert(ctx.contains("corrupt"))
+    @Assert(ctx.text.contains("进度存储读不出来"))
+    @Assert(ctx.text.contains("sh-demo"))
+    @Assert(ctx.text.contains("corrupt"))
     // 必须说清「不是 0，是读不到」，否则模型照样会读成「没有历史」
-    @Assert(ctx.contains("不是 0，是读不到"))
+    @Assert(ctx.text.contains("不是 0，是读不到"))
     // 且明确禁止据此新建进度库覆盖
-    @Assert(ctx.contains("不要据此判断"))
+    @Assert(ctx.text.contains("不要据此判断"))
 
     removePathIfExists(repo)
     removePathIfExists(okRepo)

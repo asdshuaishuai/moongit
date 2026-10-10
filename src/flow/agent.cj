@@ -162,15 +162,36 @@ public func checkContextScope(scope: String, name: String): ContextScopeCheck {
     return if (name.isEmpty()) { ContextScopeCheck.Ok } else { ContextScopeCheck.NameWithoutProjectScope }
 }
 
+/// `moongit context` 的产物：正文 + 采集健康度。
+///
+/// ⚠️ M18：正文里其实已经跑过一遍 allProjectStatuses + buildDashboard，
+/// 而 cmdContext 为了算退出码**又原样跑了一遍** —— 所有项目的 git 采集开销
+/// 翻倍（实测中大项目群上就是两倍墙钟时间）。退出码要的那个「成功几个 / 失败几个」
+/// 本来就该由这一次采集顺手带出来，再采一次只会得到「同一个答案的两倍代价」，
+/// 而且两份之间还会因为并发 git 状态变化而**不一致**（退出码与正文对不上）。
+public class AgentContext {
+    public let text: String
+    /// 采集成功的项目数（status 里没有 error 键的）
+    public let okCount: Int64
+    /// 本次上下文覆盖的项目数（targets，不含未匹配的）
+    public let listed: Int64
+
+    public init(text: String, okCount: Int64, listed: Int64) {
+        this.text = text
+        this.okCount = okCount
+        this.listed = listed
+    }
+}
+
 public func buildAgentContext(
     projects: ArrayList<ProjectEntry>, config: Config,
     scope: String, name: String, budget: Int64,
-): String {
+): AgentContext {
     let targets = ArrayList<ProjectEntry>()
     if (scope == "project") {
         match (projectByName(projects, name)) {
             case Some(p) => targets.add(p)
-            case None => return "未找到项目：${name}"
+            case None => return AgentContext("未找到项目：${name}", 0, 0)
         }
     } else {
         for (p in projects) {
@@ -322,7 +343,17 @@ public func buildAgentContext(
     // ⚠️ 原来这里是裸 `safeSliceAtLine(…, budget)`：切在行边界上，但零披露（#190）。
     // project scope 这条路径**完全没有** omittedNotice 那套机制，
     // 所以小预算下它会安静地丢掉日志/里程碑小节，只留一个空标题。
-    return truncateContextForBudget(sb.toString(), budget, contextCutNotice(budget))
+    //
+    // M18：退出码要的 okCount/listed 由这**一次**采集顺手带出（见 AgentContext）。
+    // cmdContext 原来为了算退出码又跑了一遍 allProjectStatuses ——
+    // 所有项目的 git 采集开销翻倍，且两次结果还可能不一致
+    // （并发 git 状态变化 ⇒ 退出码与正文对不上）。
+    var okCount: Int64 = 0
+    for (st in statuses) {
+        if (!Json.has(st, "error")) { okCount += 1 }
+    }
+    return AgentContext(truncateContextForBudget(sb.toString(), budget, contextCutNotice(budget)),
+        okCount, Int64(targets.size))
 }
 
 /// 从第 from 个项目起，取出没被装下的项目名（限长，避免披露行自己超预算）
@@ -631,9 +662,9 @@ func testBuildAgentContextEmpty(): Unit {
     let config = Config.defaults()
     let reg = Registry()
     let ctx = buildAgentContext(reg.projects, config, "group", "", 8000)
-    @Assert(ctx.contains("moonGit 项目群上下文"))
+    @Assert(ctx.text.contains("moonGit 项目群上下文"))
     let miss = buildAgentContext(reg.projects, config, "project", "ghost", 8000)
-    @Assert(miss.contains("未找到项目"))
+    @Assert(miss.text.contains("未找到项目"))
 }
 
 @Test
@@ -659,8 +690,8 @@ func testBuildAgentContextProject(): Unit {
     let tr = runTrack(reg.projects[0], config, "test")
     @Assert(tr.ok)
     let ctx = buildAgentContext(reg.projects, config, "project", "ctx-demo", 20000)
-    @Assert(ctx.contains("ctx-demo"))
-    @Assert(ctx.contains("feat: 上下文测试"))
+    @Assert(ctx.text.contains("ctx-demo"))
+    @Assert(ctx.text.contains("feat: 上下文测试"))
     removePathIfExists(base)
     // 复位必须排在所有 deepgitPath(...) 之后：提前复位会让上面的清理打到真实 store
     exitTestHome()
@@ -719,22 +750,22 @@ func testAgentContextDiscardsWholeSectionsAndDiscloses(): Unit {
 
     // 预算很紧：必须整段取舍 + 明确披露
     let small = buildAgentContext(names, Config.defaults(), "group", "", 600)
-    @Assert(small.size <= 600)
+    @Assert(small.text.size <= 600)
     // 披露行必须在，且要说清是预算不够、怎么单独取
-    @Assert(small.contains("未展示"))
-    @Assert(small.contains("get_project_context"))
+    @Assert(small.text.contains("未展示"))
+    @Assert(small.text.contains("get_project_context"))
     // 总览声称 5 个；实际展示数 + 披露里点名的项目数必须等于 5
-    let shown: Int64 = countLinesStartingWith(small, "### ")
-    let named: Int64 = countNamesInNotice(small)
+    let shown: Int64 = countLinesStartingWith(small.text, "### ")
+    let named: Int64 = countNamesInNotice(small.text)
     @Assert(shown > 0)          // 不能一个都不给（诚实但没用）
     @Assert(shown + named == 5) // 自洽：不多不少
     // 不能再输出半句残文
-    @Assert(!small.contains("- 提\n"))
+    @Assert(!small.text.contains("- 提\n"))
 
     // 预算充足时全部展示，且**不该**出现多余的披露
     let big = buildAgentContext(names, Config.defaults(), "group", "", 20000)
-    @Assert(!big.contains("未展示"))
-    @Assert(countLinesStartingWith(big, "### ") == 5)
+    @Assert(!big.text.contains("未展示"))
+    @Assert(countLinesStartingWith(big.text, "### ") == 5)
 
     removePathIfExists(base)
     exitTestHome()
@@ -830,14 +861,14 @@ func testAgentDisclosureSurvivesManyProjectsAtMinimumBudget(): Unit {
     let out = buildAgentContext(names, Config.defaults(), "group", "", 500)
 
     // 核心断言：披露与「去哪拿」这句话在任何项目数下都必须在
-    @Assert(out.contains("未展示"))
-    @Assert(out.contains("get_project_context"))
+    @Assert(out.text.contains("未展示"))
+    @Assert(out.text.contains("get_project_context"))
     // 数量必须如实：20 个项目一个都没展示时要说 20
-    @Assert(out.contains("20 个项目未展示"))
+    @Assert(out.text.contains("20 个项目未展示"))
     // 总览仍然声称 20 个 —— 披露的作用就是让这两者能对上
-    @Assert(out.contains("项目 20 个"))
+    @Assert(out.text.contains("项目 20 个"))
     // 不能输出半句残文
-    @Assert(!out.contains("- 提\n"))
+    @Assert(!out.text.contains("- 提\n"))
 
     // 中间规模同样不能塌：7 个是原实现开始丢工具提示的那个点
     let seven = ArrayList<ProjectEntry>()
@@ -845,20 +876,20 @@ func testAgentDisclosureSurvivesManyProjectsAtMinimumBudget(): Unit {
         seven.add(names[i])
     }
     let out7 = buildAgentContext(seven, Config.defaults(), "group", "", 500)
-    @Assert(out7.contains("未展示"))
-    @Assert(out7.contains("get_project_context"))
-    @Assert(out7.contains("7 个项目未展示"))
+    @Assert(out7.text.contains("未展示"))
+    @Assert(out7.text.contains("get_project_context"))
+    @Assert(out7.text.contains("7 个项目未展示"))
 
     // 预算允许被超出，但只能超一点点 ——
     // 「披露必须发出去」与「输出要受控」两个诉求的平衡点。
     // 披露被静默丢弃的代价（AI 得出事实性谎言）远大于多几十字节。
-    @Assert(out.size <= 500 + 96)
-    @Assert(out7.size <= 500 + 96)
+    @Assert(out.text.size <= 500 + 96)
+    @Assert(out7.text.size <= 500 + 96)
 
     // 预算充足时不该出现披露
     let big = buildAgentContext(names, Config.defaults(), "group", "", 200000)
-    @Assert(!big.contains("未展示"))
-    @Assert(countLinesStartingWith(big, "### ") == 20)
+    @Assert(!big.text.contains("未展示"))
+    @Assert(countLinesStartingWith(big.text, "### ") == 20)
 
     removePathIfExists(base)
     exitTestHome()
@@ -908,11 +939,11 @@ func testGroupContextHeadlineStatesItsOwnDenominator(): Unit {
 
     let ctx = buildAgentContext(projects, Config.defaults(), "group", "", 12000)
     // 旧文案：只说「项目 0 个」，读起来等于「这个项目群是空的」
-    @Assert(ctx.contains("项目 0 个"))
+    @Assert(ctx.text.contains("项目 0 个"))
     // 修复后必须把被排除的失败项目数说出来
-    @Assert(ctx.contains("另 2 个采集失败，未计入下列统计"))
+    @Assert(ctx.text.contains("另 2 个采集失败，未计入下列统计"))
     // 且不得出现「项目 2 个」这种把失败也算进去的总数冒充
-    @Assert(!ctx.contains("- 项目 2 个 ·"))
+    @Assert(!ctx.text.contains("- 项目 2 个 ·"))
 
     // 对照组与部分失败组用**各自独立、从不删除**的仓库。
     // 原先在同一测试里「删掉再重建」来切换状态，结果对照组断言恒红 ——
@@ -924,13 +955,13 @@ func testGroupContextHeadlineStatesItsOwnDenominator(): Unit {
     let okProjects = makeTwoProjects(okA, okB, "okA", "okB")
     let okCtx = buildAgentContext(okProjects, Config.defaults(), "group", "", 12000)
     // 全部可读时不得多这句披露（不能制造噪音）
-    @Assert(okCtx.contains("项目 2 个"))
-    @Assert(!okCtx.contains("采集失败，未计入下列统计"))
+    @Assert(okCtx.text.contains("项目 2 个"))
+    @Assert(!okCtx.text.contains("采集失败，未计入下列统计"))
 
     // 部分失败：口径必须同时给全两个数，不能只说成功的那个
     removePathIfExists(okB)
     let partialCtx = buildAgentContext(okProjects, Config.defaults(), "group", "", 12000)
-    @Assert(partialCtx.contains("项目 1 个（另 1 个采集失败，未计入下列统计）"))
+    @Assert(partialCtx.text.contains("项目 1 个（另 1 个采集失败，未计入下列统计）"))
     // 部分失败**不算**整体失败：还有事实可用
     @Assert(groupExitCode(okCountOf(allProjectStatuses(okProjects, Config.defaults(), true)), 2) == 0)
 
@@ -1084,18 +1115,18 @@ func testContextBudgetCutIsDisclosedAndLeavesNoLyingRemnant(): Unit {
         // ---- 端到端：project scope + 最小预算 ----
         let tight = buildAgentContext(ArrayList<ProjectEntry>([p]), Config.defaults(),
                                       "project", "cut", AGENT_MIN_BUDGET)
-        @Assert(tight.size <= AGENT_MIN_BUDGET)
+        @Assert(tight.text.size <= AGENT_MIN_BUDGET)
         // 关键：必须说出内容不完整
-        @Assert(tight.contains("不完整") || tight.contains("已用尽"))
+        @Assert(tight.text.contains("不完整") || tight.text.contains("已用尽"))
         // 不得留下「只有表头的零行表格」—— 那读起来就是「这个项目没有分支」
-        @Assert(!trimmedTableHeaderIsEmpty(tight))
+        @Assert(!trimmedTableHeaderIsEmpty(tight.text))
         // 不得留下「标题说 N 条、下面 0 条」的日志节
-        @Assert(!emptyJournalSection(tight))
+        @Assert(!emptyJournalSection(tight.text))
 
         // ---- 反向：预算充足时不得谎报 ----
         let roomy = buildAgentContext(ArrayList<ProjectEntry>([p]), Config.defaults(),
                                       "project", "cut", 20000)
-        @Assert(!roomy.contains("已用尽"))
+        @Assert(!roomy.text.contains("已用尽"))
     } finally {
         exitTestHome()
         removePathIfExists(base)

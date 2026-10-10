@@ -74,15 +74,44 @@ public enum AcquireDecision {
     | Wait
 }
 
-/// 纯判定：给定「持锁者是否还活着」与「锁龄」，决定抢还是不抢。**不碰文件系统。**
+/// 持锁者的可判定状态。三态而不是 Bool ——
+/// 「查不到持锁者」与「持锁者已死」在**恢复通道**上是两件事（见 M23）。
+public enum HolderState {
+    /// holder.json 里有 pid 且进程活着
+    | HolderAlive
+    /// holder.json 里有 pid 且进程已退出
+    | HolderDead
+    /// 判不出来：holder.json 缺失/不是合法 JSON/pid 非法/kill -0 超时
+    | HolderUnknown
+}
+
+/// 纯判定：给定「持锁者状态」与「锁龄」，决定抢还是不抢。**不碰文件系统。**
 ///
 /// `ageMs < 0` 表示年龄读不出来 —— 那是「不知道」，按「还活着」处理。
-public func acquireDecision(holderAlive: Bool, ageMs: Int64, staleMs: Int64): AcquireDecision {
-    // 活着的持锁者：无论锁多老都不动。这条是本函数存在的全部理由。
-    if (holderAlive) {
-        return AcquireDecision.Wait
+///
+/// ⚠️ M23（审查）：`HolderUnknown` **必须有一条恢复通道**，否则
+/// 「SIGKILL 落在 mkdirExclusive 与 writeHolderInfo 之间」或「writeHolderInfo
+/// 因磁盘满静默失败」留下的锁目录里没有 holder.json，HolderUnknown 被当成
+/// 活着 ⇒ 锁永远无人接管，后续所有命令持续报「另一个 moonGit 进程持锁」，
+/// 只能手动删目录。#178 移除 staleMs 兜底时把这一档一起带走了。
+///
+/// 这里把 staleMs 明确降级为**兜底**（不变量 34 的原话）：判据仍然是
+/// 「持锁者还活着吗」，只有在那个判据**不可得**时才问锁龄 ——
+/// 一个连自己 pid 都没写下来的锁，年龄超过 update 的 staleMs（10 分钟）
+/// 之后不可能是谁正在跑的临界区（那窗口只有毫秒级）。
+public func acquireDecision(holder: HolderState, ageMs: Int64, staleMs: Int64): AcquireDecision {
+    // 活着的持锁者：无论锁多老都不动。这条是本函数存在的全部理由（#178）。
+    match (holder) {
+        case HolderAlive => return AcquireDecision.Wait
+        case HolderDead => return AcquireDecision.TakeOver
+        case HolderUnknown => ()
     }
-    return AcquireDecision.TakeOver
+    // 查不到持锁者：只要年龄读得出来且超过兜底窗口，就接管。
+    // 这给「没人能声称持有的锁」留下唯一一条自动恢复通道。
+    if (ageMs >= 0 && ageMs >= staleMs) {
+        return AcquireDecision.TakeOver
+    }
+    return AcquireDecision.Wait
 }
 
 /// 尝试独占获取锁：创建目录这一步本身就是原子的判据。
@@ -99,9 +128,9 @@ private func tryAcquire(lockDir: String, staleMs: Int64): Bool {
     // 于是「持锁者还活着 + 锁很旧」会被抢 —— 而锁龄只反映加锁那一刻，
     // body 期间不刷新，所以任何跑过 staleMs 的 update 都会在运行途中丢锁。
     // 详见 acquireDecision 的文档。
-    let alive = holderAlive(lockDir)
+    let holder = holderState(lockDir)
     let ageMs = lockAgeMs(lockDir)
-    match (acquireDecision(alive, ageMs, staleMs)) {
+    match (acquireDecision(holder, ageMs, staleMs)) {
         // 持锁者还活着：绝不动它，年龄一概不看
         case AcquireDecision.Wait => return false
         case AcquireDecision.TakeOver =>
@@ -135,20 +164,25 @@ private func tryAcquire(lockDir: String, staleMs: Int64): Bool {
 ///   - holder.json 读不到（写 holder 时崩了）
 ///   - pid 解析不出来
 ///   - kill -0 执行失败（容器里没有 /bin/kill 等）
-private func holderAlive(lockDir: String): Bool {
+private func holderState(lockDir: String): HolderState {
     let holderPath = "${lockDir}/holder.json"
     let raw = readFileTextOr(holderPath, "")
     if (raw.isEmpty()) {
-        return true
+        // ⚠️ 这是 M23 的关键分支：不是「活着」，是「查不到」。
+        // 当成活着 ⇒ 没有任何恢复通道，锁永久卡死。
+        return HolderState.HolderUnknown
     }
     match (Json.parse(raw)) {
-        case None => return true
+        case None => return HolderState.HolderUnknown
         case Some(j) =>
             let pid = Json.intAt(j, "pid", 0)
             if (pid <= 0) {
-                return true
+                return HolderState.HolderUnknown
             }
-            return processExists(pid)
+            if (processExists(pid)) {
+                return HolderState.HolderAlive
+            }
+            return HolderState.HolderDead
     }
 }
 
@@ -483,7 +517,10 @@ func testLockIsNotStolenFromLiveHolder(): Unit {
 
 @Test
 func testLockWithUnreadableHolderIsTreatedAsAlive(): Unit {
-    // 判不出来的一律当「还活着」：宁可多等，也不误抢。
+    // 判不出来且**锁还新鲜** ⇒ 当「还活着」：宁可多等，也不误抢。
+    // ⚠️ M23：这个「当活着」只在兜底窗口内成立 —— 超过 staleMs 的
+    // 无人认领锁必须能接管（见 testUnclaimableLockIsRecoveredAfterStaleWindow），
+    // 否则「写 holder 前崩了」留下的锁目录会永久锁死项目。
     // 三种判不出来的情况：holder.json 缺失 / 不是合法 JSON / pid 非法。
     let cases = ArrayList<String>([
         "",                                              // 文件不存在
@@ -526,7 +563,7 @@ func testLockWithUnreadableHolderIsTreatedAsAlive(): Unit {
 /// 于是锁永远是「新鲜的」，恰好绕开了「活 + 旧」这个组合。
 @Test
 func testAcquireDecisionNeverStealsFromLiveHolderNoMatterHowOld(): Unit {
-    let live = true
+    let live = HolderState.HolderAlive
     // 锁龄从 0 到极大值穷举：只要持锁者活着，答案就必须是 Wait
     let ages = [0, 1, 599_999, 600_000, 600_001, 900_000, 3_600_000, 86_400_000, 999_999_999]
     for (a in ages) {
@@ -547,7 +584,7 @@ func testAcquireDecisionNeverStealsFromLiveHolderNoMatterHowOld(): Unit {
 @Test
 func testAcquireDecisionTakesOverImmediatelyWhenHolderIsDead(): Unit {
     for (a in [0, 1, 600_000, 86_400_000, 999_999_999]) {
-        match (acquireDecision(false, a, 600_000)) {
+        match (acquireDecision(HolderState.HolderDead, a, 600_000)) {
             case AcquireDecision.TakeOver => ()
             case AcquireDecision.Wait =>
                 @Assert(false)   // 持锁进程早就没了还在等 —— 崩溃残留锁会永久阻塞
@@ -560,10 +597,30 @@ func testAcquireDecisionTakesOverImmediatelyWhenHolderIsDead(): Unit {
 /// 「不知道」必须与「没有」分开：读不到年龄不是「没有持锁者」。
 @Test
 func testAcquireDecisionTreatsUnknownAgeAsAlive(): Unit {
-    match (acquireDecision(true, -1, 600_000)) {
+    match (acquireDecision(HolderState.HolderAlive, -1, 600_000)) {
         case AcquireDecision.Wait => ()
         case AcquireDecision.TakeOver => @Assert(false)
     }
+}
+
+/// M23 回归：查不到持锁者（holder.json 缺失/损坏）且锁已超过 staleMs ⇒ 必须接管。
+/// 原实现把这一档当成「活着」⇒ 没有任何恢复通道，#178 移除 staleMs 兜底时
+/// 连带把「没人能声称持有的锁」一起锁死了。实测症状：SIGKILL 落在
+/// mkdirExclusive 与 writeHolderInfo 之间留下的锁目录，让后续所有命令
+/// 永远报「正在更新中（另一个 moonGit 进程持锁）」，只能手动删目录。
+@Test
+func testUnclaimableLockIsRecoveredAfterStaleWindow(): Unit {
+    let dir = "/tmp/deepgit-unclaimable-${nowMillis()}"
+    ensureDir(dir)
+    let lock = "${dir}/x.lock"
+    let lockDir = "${lock}.d"
+    ensureDir(lockDir)   // 没有 holder.json：没人能声称持有它
+
+    // staleMs = 0：兜底窗口为 0，任何年龄都算陈旧
+    let got = withLock(lock, 0, { => 7 })
+    @Assert(got == 7)
+    @Assert(!isDirectoryPath(lockDir))
+    removePathIfExists(dir)
 }
 
 /// 端到端：持锁者活着时，把 staleMs 压到边界也不许抢。必须报 LOCKED 且锁完好。
