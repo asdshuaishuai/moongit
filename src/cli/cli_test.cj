@@ -2259,3 +2259,25 @@ func testEnvLanguageOverrideRejectsUnsupported(): Unit {
     @Assert(applyEnvOverrides(Config.defaults()).language == "en")
     setVariable("DEEPGIT_LANG", "")
 }
+
+/// skill 教学包必须覆盖全部 AI 能力面：图谱七件套、scene 画布契约、
+/// 置信度 llm 出口、补丁三层工作流、词法级红线。skill 是 agent 的唯一
+/// 入口文档——少写一条能力，agent 就少会一种用法（此前只点名了工具名，
+/// 没有任何一条「怎么用」的配方）。
+@Test
+func testSkillMarkdownCoversFullCapabilitySurface(): Unit {
+    let md = skillMarkdown()
+    // 三层工作流的三件套全点名
+    @Assert(md.contains("codegraph_patch_confidence"))
+    @Assert(md.contains("codegraph_patch_merge"))
+    @Assert(md.contains("Layer 2"))
+    // 画布契约：scene 格式 + schema 文档指针
+    @Assert(md.contains("moongit-graph-scene"))
+    @Assert(md.contains("graph-scene-schema.md"))
+    // 置信度 llm 出口
+    @Assert(md.contains("format=llm"))
+    // CLI 图谱七件套（patchconf --patch 是三层的入口）
+    @Assert(md.contains("patchconf --patch"))
+    // 词法级红线进红线节
+    @Assert(md.contains("词法级候选"))
+}

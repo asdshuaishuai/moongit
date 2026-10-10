@@ -95,7 +95,7 @@ public func mcpToolList(): JsonValue {
     arr.add(mcpTool("codegraph_tree", "索引关系树：目录→文件→符号（JSON 形态为全量图：文件事实 + import 边 + 引用边）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("depth", "integer", "目录深度，默认 6")], ["name"])))
     arr.add(mcpTool("codegraph_symbol", "符号定位：定义处 + 词法引用文件", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"])))
     arr.add(mcpTool("codegraph_impact", "影响面分析：符号定义 + 引用文件 + 受影响符号（词法文件级粒度，非语义调用图）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"])))
-    arr.add(mcpTool("codegraph_arch", "技术架构图：模块聚合 + 分层判定。format=html（Canvas 交互图，单文件零依赖）/ mermaid / dot / json", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "html|mermaid|dot|json，默认 html")], ["name"])))
+    arr.add(mcpTool("codegraph_arch", "技术架构图：模块聚合 + 分层判定（治理信号：分层违规/依赖环）。format=scene 出 moongit-graph-scene v1——主题 token/形状/粒子/hits 点击区/panels 详情面板的交互契约，任何 Canvas2D 移植（浏览器/Swift/Skia）按 docs/graph-scene-schema.md 驱动；html=零依赖单文件交互图；另有 mermaid / dot / json", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "scene|html|mermaid|dot|json，默认 html")], ["name"])))
     arr.add(mcpTool("codegraph_patch_confidence", "补丁级置信度 Layer 1（算法层）：S1..S10 信号 + certain/uncertain 分层。uncertain 是给 Agent 的待办清单（配合 --skill 的任务说明）。name=项目名，patch_path=diff 文件路径", mcpSchemaObject([("name", "string", "项目名或 ID"), ("patch_path", "string", "unified diff 文件路径")], ["name", "patch_path"])))
     arr.add(mcpTool("codegraph_patch_merge", "补丁级置信度 Layer 3（合并器）：algorithm.json + agent.json → final.json。规则：agent resolved ×0.9 / unresolved 计负分 / ambiguous 0.5 / 未处理 deferred 0.5", mcpSchemaObject([("algorithm_json", "string", "Layer 1 输出的 JSON 文本"), ("agent_json", "string", "Layer 2 输出的 JSON 文本")], ["algorithm_json", "agent_json"])))
     arr.add(mcpTool("codegraph_confidence", "代码置信度：结构性疑点（孤儿/占位/吞错/魔法数/重复体…）的确定性度量。被动能力——只在本工具被显式调用时分析。format=json|text|llm（llm 产出可直接喂模型的逐条复核提示词）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "json|text|llm，默认 json")], ["name"])))
@@ -376,8 +376,12 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                     mcpOk(Json.pretty(archJson(arch, false)))
                 } else if (format == "html") {
                     mcpOk(archCanvasHtml(arch, false))
+                } else if (format == "scene") {
+                    // moongit-graph-scene v1：给任意 Canvas2D 移植（含
+                    // deepDolphin 的 SwiftUI 驱动）的交互契约出口
+                    mcpOk(Json.pretty(buildArchScene(arch, false)))
                 } else {
-                    mcpErr("format accepts html | mermaid | dot | json (got: ${format})")
+                    mcpErr("format accepts scene | html | mermaid | dot | json (got: ${format})")
                 }
             case "get_project_status" =>
                 let p = mcpRequireProject(getStr("name"))
@@ -1802,4 +1806,59 @@ func testSiblingWriteToolsAllRequireName(): Unit {
         }
     }
     @Assert(want.size == 3)
+}
+
+/// codegraph_arch 的 scene 出口：moongit-graph-scene v1 必须真从这里出来
+/// （deepDolphin 的 SwiftUI 画布与任何 Canvas2D 移植都吃这个格式）。
+/// 此前 codegraph_* 六个工具在 MCP 层零直连测试——CLI 测过 ≠ 分发层测过。
+@Test
+func testMcpCodegraphArchScene(): Unit {
+    let base = "/tmp/deepgit-cg-${nowMillis()}"
+    ensureDir(base)
+    gitRun(base, ["init", "-b", "main"], false)
+    writeFileAtomic(base + "/a.cj", "package demo\npublic func hello(): Int64 { return 1 }\n")
+    gitRun(base, ["add", "."], false)
+    gitRun(base, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "feat: cg"], false)
+    let home = "${base}/home"
+    ensureDir(home)
+    enterTestHome(home)
+    let (p, created) = addProject(base, "cg-demo", ArrayList<String>(), "")
+    @Assert(created)
+
+    // scene：契约关键字段必须在
+    let req = Json.obj()
+    Json.set(req, "id", Json.of(11))
+    Json.set(req, "method", Json.of("tools/call"))
+    let params = Json.obj()
+    Json.set(params, "name", Json.of("codegraph_arch"))
+    let args = Json.obj()
+    Json.set(args, "name", Json.of("cg-demo"))
+    Json.set(args, "format", Json.of("scene"))
+    Json.set(params, "arguments", args)
+    Json.set(req, "params", params)
+    let resp = mcpHandle(req).getOrThrow()
+    let result = Json.getOr(resp, "result")
+    @Assert(Json.boolAt(result, "isError", true) == false)
+    let text = Json.strAt(Json.arrAt(result, "content")[0], "text", "")
+    @Assert(text.contains("moongit-graph"))
+    @Assert(text.contains("nodeTheme"))
+    @Assert(text.contains("edgesDropped"))
+
+    // 非法 format 报错必须列出 scene（否则宿主不知道新格式存在）
+    let bad = Json.obj()
+    Json.set(bad, "id", Json.of(12))
+    Json.set(bad, "method", Json.of("tools/call"))
+    let bparams = Json.obj()
+    Json.set(bparams, "name", Json.of("codegraph_arch"))
+    let bargs = Json.obj()
+    Json.set(bargs, "name", Json.of("cg-demo"))
+    Json.set(bargs, "format", Json.of("svg"))
+    Json.set(bparams, "arguments", bargs)
+    Json.set(bad, "params", bparams)
+    let bresp = mcpHandle(bad).getOrThrow()
+    let btext = Json.strAt(Json.arrAt(Json.getOr(bresp, "result"), "content")[0], "text", "")
+    @Assert(btext.contains("scene"))
+
+    exitTestHome()
+    removePathIfExists(base)
 }

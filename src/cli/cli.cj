@@ -1195,7 +1195,7 @@ func cmdTools(rest: ArrayList<String>, ctx: CliContext): Int64 {
     return 0
 }
 
-let SKILL_FRONTMATTER = "---\nname: moongit\ndescription: 用 moonGit 引擎管理本地 git 项目群的进度：查现状、记进度、浅/深更新文档、git 操作、里程碑。适用于任何关于本地项目状态、分支进度、项目文档维护的问题。\n---\n\n"
+let SKILL_FRONTMATTER = "---\nname: moongit\ndescription: 用 moonGit 引擎管理本地 git 项目群的进度与代码：查现状、记进度、浅/深更新文档、git 操作、里程碑，以及代码图谱、架构图（Canvas 契约）、代码置信度与补丁置信度三层体检。适用于任何关于本地项目状态、分支进度、项目文档维护、代码结构与可信度分析的问题。\n---\n\n"
 
 func skillMarkdown(): String {
     let engine = currentExecutable()
@@ -1206,17 +1206,20 @@ func skillMarkdown(): String {
     let ways = ArrayList<String>()
     ways.add("**MCP 服务器**（推荐，工具化接入）。宿主配置：\n   ```json\n   "
         + "{\"mcpServers\": {\"moongit\": {\"command\": \"" + engine + "\", \"args\": [\"mcp\"]}}}\n   ```\n   "
-        + "工具：list_projects / get_project_context / get_project_status / get_dashboard / get_project_docs / "
+        + "工具（23 个，分三组）：\n"
+        + "   - 进度管理：list_projects / get_project_context / get_project_status / get_dashboard / get_project_docs / "
         + "get_journal / run_shallow_update / run_deep_update / run_track / git_op / list_milestones / "
-        + "milestone_add / milestone_action / add_project / "
-        + "codegraph_overview / codegraph_tree / codegraph_symbol / codegraph_impact / codegraph_arch / "
-        + "codegraph_confidence / "
-        + "codegraph_patch_confidence（补丁级三层：Layer1 分析 + Layer2 skill 复核 + Layer3 合并）")
+        + "milestone_add / milestone_action / add_project\n"
+        + "   - 代码图谱：codegraph_overview / codegraph_tree（depth 控制目录深度）/ codegraph_symbol / codegraph_impact / "
+        + "codegraph_arch（format=html|mermaid|dot|json|**scene**） / codegraph_confidence（format=json|text|**llm**——可直接喂给模型的逐条复核提示词）\n"
+        + "   - 补丁置信度三层：codegraph_patch_confidence（Layer 1 算法分析）→ **你做 Layer 2**（按 `moongit skill print` 的任务书逐条裁决 uncertain）→ "
+        + "codegraph_patch_merge（Layer 3 合并出 final 分数）")
     ways.add("**CLI**（一次性问答/脚本）：`" + engine + " status --json`、`context [项目] --budget N`、`tools`、"
-        + "`journal <项目>`、`dashboard --json`")
+        + "`journal <项目>`、`dashboard --json`、"
+        + "`graph overview|tree|symbol <名>|impact <名>|arch --format scene|confidence [--llm]|patchconf --patch <diff>`")
     let sb = StringBuilder()
     sb.append(SKILL_FRONTMATTER)
-    sb.append("# moonGit — 本地项目群进度引擎（agent 使用指南）\n\n")
+    sb.append("# moonGit — 本地项目群进度与代码引擎（agent 使用指南）\n\n")
     sb.append("moonGit 是 **AI 无关** 的确定性内核：它提供事实与动作，你（agent）负责理解与表达。\n\n")
     sb.append("## ${ways.size} 种接入方式（按场景选）\n\n")
     for (i in 0..ways.size) {
@@ -1226,11 +1229,22 @@ func skillMarkdown(): String {
     sb.append("- **项目现状**：get_project_context(name) → 直接总结；要历史再 get_journal\n")
     sb.append("- **项目群周报**：get_group_context → get_dashboard → 按「活跃/风险/建议」输出\n")
     sb.append("- **收尾打扫**：git_op(op=commit, message=…) 提交未提交改动 → run_shallow_update 记进度\n")
-    sb.append("- **项目说明文档**：get_project_context + get_project_docs → 生成 markdown 说明\n\n")
+    sb.append("- **项目说明文档**：get_project_context + get_project_docs → 生成 markdown 说明\n")
+    sb.append("- **改这个函数影响谁**：codegraph_symbol(name, symbol) 看定义与引用 → codegraph_impact(name, symbol) "
+        + "拿引用文件清单 → 按影响面给改动顺序（结论是词法级候选，不是编译器闭包，措辞要带上）\n")
+    sb.append("- **这段代码可信吗**：codegraph_confidence(name, format=llm) 拿逐条复核提示词自己过一遍，"
+        + "或 format=json 看六维度分数与 findings（file:line 证据自足）\n")
+    sb.append("- **提交前补丁体检（三层）**：`git diff > /tmp/p.diff` → codegraph_patch_confidence(name, patch_path) "
+        + "拿 S1..S10 信号与 uncertain 清单 → 你逐条裁决（confirm/dismiss/unsure，必须引用代码原文）→ "
+        + "codegraph_patch_merge(algorithm_json, agent_json) → final 分数与披露\n")
+    sb.append("- **架构图给客户端/用户**：codegraph_arch(name, format=scene) 出 moongit-graph-scene v1 JSON "
+        + "（主题 token、形状、粒子、hits 点击区、panels 详情面板、逐视图 edgesDropped 截断披露）——"
+        + "任何 Canvas2D 移植（浏览器/Swift/Skia）按 docs/graph-scene-schema.md 驱动；format=html 出零依赖单文件交互图\n\n")
     sb.append("## 红线\n\n")
     sb.append("- git_op 只允许白名单操作（pull/push/commit/stash/unstash/fetch），没有 reset/clean/force-push\n")
     sb.append("- 文档更新只发生 moonGit 托管区域内（引擎保证），用户内容逐字节保留\n")
     sb.append("- 引擎是 AI 无关的：所有判断与表达由你完成，引擎只提供事实\n")
+    sb.append("- codegraph_* 是词法级近似，不是编译器闭包：对用户表述时必须带「词法级候选」限定，不许说成精确引用\n")
     return sb.toString()
 }
 
