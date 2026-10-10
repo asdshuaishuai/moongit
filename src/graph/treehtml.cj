@@ -217,7 +217,7 @@ body.light .k { color:#7c3aed; } body.light .s { color:#16a34a; } body.light .c 
 </div></div>
 <div id="cols">
   <section class="col"><h3 id="col-in"></h3><div id="col-in-body"></div></section>
-  <section class="col"><h3 id="col-focus">${focusWord}</h3><div id="col-focus-body"></div></section>
+  <section class="col"><h3 id="col-focus"></h3><div id="col-focus-body"></div></section>
   <section class="col"><h3 id="col-out"></h3><div id="col-out-body"></div></section>
 </div>
 <script>
@@ -251,6 +251,7 @@ func codegraphDriverJs(en: Bool): String {
         + "const CLEAN = " + jsStr(cleanWord) + ";\n"
         + "const ANOMALY = " + jsStr(anomalyWord) + ";\n"
         + "const MORE = " + jsStr(moreWord) + ";\n"
+        + "const RISK_WORD = " + jsStr(if (en) { "RISK FUNCTIONS" } else { "异常函数" }) + ";\n"
     // 三列身份色（引用方紫 · 焦点蓝 · 被调青）与特殊色（异常红 / 警示橙）分离
     let hueJs = "const HUE = { sin:'#a78bfa', focus:'#38bdf8', out:'#2dd4bf', bad:'#f87171', warn:'#fbbf24' };\n"
     return constJs + hueJs + """
@@ -360,8 +361,22 @@ function hl2(code, lang) {
 function hl(code) { return hl2(code, D.hlLang || 'cangjie'); }
 
 function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
-// —— 焦点状态 ——
-let focus = FG.functions.length > 0 ? FG.functions[0].id : '';
+// —— 焦点状态：初始落在「最值得看」的函数（疑点最多 → 入度最大）——
+let focus = '';
+const FLAGGED_ALL = FG.functions.filter(function (f) { return (f.findings || []).length > 0; })
+  .sort(function (a, b) { return (b.weight || 0) - (a.weight || 0); });
+const flaggedTotal = FLAGGED_ALL.length;
+(function pickInitialFocus() {
+  let best = null; let bestScore = -1;
+  FG.functions.forEach(function (f) {
+    const fd = (f.findings || []).length;
+    const indeg = (IN_EDGE[f.id] || []).length;
+    // 疑点函数优先（这正是用户要看的），其次枢纽函数
+    const score = fd * 100 + indeg;
+    if (score > bestScore) { bestScore = score; best = f; }
+  });
+  if (best) { focus = best.id; }
+})();
 function setFocus(id) { if (FN[id]) { focus = id; render(); } }
 // —— 渲染：三列 + 焦点面板（band 渐进披露）——
 const BAND = 16; let bandIn = BAND; let bandOut = BAND;
@@ -394,6 +409,25 @@ function render() {
   if (fd.length === 0) { fl.innerHTML = '<div class="none">' + CLEAN + '</div>'; }
   const codeEl = document.getElementById('focus-code');
   codeEl.innerHTML = hl2(FG.codeSnippets[f.id] || '', f.lang || langOfFile(f.file));
+  // 中列：异常函数清单（置信度疑点按权重降序）——第一眼就有内容
+  setCol('col-focus', HUE.sin, RISK_WORD, flaggedTotal);
+  const flagged = FLAGGED_ALL;
+  const mid = document.getElementById('col-focus-body');
+  if (mid) {
+    mid.innerHTML = '';
+    flagged.slice(0, 24).forEach(function (f) {
+      mid.appendChild(chip(f.id, (f.findings || []).length, HUE.sin));
+    });
+    if (flagged.length > 24) {
+      const b = document.createElement('button'); b.className = 'more';
+      b.textContent = flagged.length + ' ' + MORE; b.addEventListener('click', function () {
+        mid.innerHTML = '';
+        flagged.forEach(function (f) { mid.appendChild(chip(f.id, (f.findings || []).length, HUE.sin)); });
+      });
+      mid.appendChild(b);
+    }
+    if (flagged.length === 0) { mid.innerHTML = '<div class="none">' + CLEAN + '</div>'; }
+  }
   // 右列
   setCol('col-out', HUE.out, REFS_OUT, outs.length);
   const lo = document.getElementById('col-out-body');
