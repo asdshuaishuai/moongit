@@ -130,6 +130,6 @@ token 表即 `themes` 的键（含 `langs` 下的每种语言）—— **引擎�
 | macOS SwiftUI GraphicsContext（deepDolphin `ArchCanvasView`） | ✅ |
 | Linux 仓颉 Canvas 移植（deepDolphin/linux，CangjieGUI 宿主） | 📌 指定实现，进行中 |
 | DDE / deepin Qt QPainter Canvas（deepDolphin/deepin，C++） | 📌 指定实现，进行中 |
-| Windows / 鸿蒙 PC Canvas | 待定（Web 兜底） |
+| Windows / 鸿蒙 PC Canvas | 排期（平台实现，不做 Web 运行时渲染） |
 | SVG / PDF 静态导出 | 规划 |
 | node-canvas / Skia 服务端栅格 | 规划 |
