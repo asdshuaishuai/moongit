@@ -1206,19 +1206,26 @@ func indexOfStr(s: String, target: String): Int64 {
 /// 参数滥用检测：签名参数数 > 5 或存在 Bool 标志参数。
 /// 返回 (参数数, 是否有Bool标志参)。
 func analyzeParams(sigLine: String): (Int64, Bool) {
-    // 找到 ( 和 ) 之间的参数列表
-    let open = indexOfStr(sigLine, "(")
-    let close = indexOfStr(sigLine, ")")
-    if (open < 0 || close < 0 || close <= open) { return (0, false) }
-    let params = sigLine[open + 1..close].trimAscii()
-    if (params.isEmpty() || params == "()" || params == "()") { return (0, false) }
-    // 简易分割：按逗号计数（不处理嵌套泛型）
-    var count: Int64 = 1
-    for (ch in params.toArray()) {
-        if (ch == 44) { count += 1 }  // ','
+    // 字节扫描版：不使用字符串切片，避免 UTF-8 多字节字符导致的越界
+    let sB = sigLine.toArray()
+    var open = -1
+    var close = -1
+    for (i in 0..Int64(sB.size)) {
+        if (sB[i] == 40) { open = i; break }
     }
-    let hasBoolFlag = indexOfStr(params, "Bool") >= 0 || indexOfStr(params, "bool") >= 0
-    return (count, hasBoolFlag)
+    if (open < 0) { return (0, false) }
+    for (i in open + 1..Int64(sB.size)) {
+        if (sB[i] == 41) { close = i; break }
+    }
+    if (close < 0 || close <= open + 1) { return (0, false) }
+    var count: Int64 = 1
+    var hasBool = false
+    for (i in open + 1..close) {
+        if (sB[i] == 44) { count += 1 }
+        // Bool 标志参：检查参数段中是否有 'Bool' 类型标记
+        if (i + 3 < close && sB[i] == 66 && sB[i+1] == 111 && sB[i+2] == 111 && sB[i+3] == 108) { hasBool = true }
+    }
+    return (count, hasBool)
 }
 
 /// 检测不可达代码：return/break/continue 后同层级还有语句。

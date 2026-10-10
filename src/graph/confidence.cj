@@ -420,8 +420,13 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
     // ── ⑩ 类型级（空类型 / 上帝类，需 AST type 节点）──
     if (astUsed) {
         detectTypeSignals(astNodes, findings)
-    // 语义层检测（圈复杂度/参数滥用/不可达代码/混合职责/近重复）
-    detectSemanticIssues(graph, findings)
+    }
+    // ── 语义层检测（圈复杂度/参数滥用/不可达代码/混合职责/近重复）──
+    // ⚠️ 不放在 if (astUsed) 内——纯仓颉仓 astUsed=false，但这些检测全走词法
+    try {
+        detectSemanticIssues(graph, findings)
+    } catch (e: Exception) {
+        Log.warn("语义层检测异常（已跳过）: ${e.message}")
     }
     // ── ⑪ 指针风险（C/C++：malloc/free 配对、返回栈地址）──
     detectPointerRisks(graph, findings)
