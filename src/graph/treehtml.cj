@@ -25,7 +25,7 @@ import moongit.util.*
 /// 函数级节点/调用边/异常实码。边 = 「函数体 → 被调函数」（词法近似：
 /// 函数体内自由调用按名匹配全局定义）；置信度 findings 按所在函数聚合，
 /// 异常函数内嵌实码片段（截 40 行，页面点击即看）。
-func functionGraphData(graph: CodeGraph, findings: ConfidenceReport): JsonValue {
+func functionGraphData(graph: CodeGraph, findings: ConfidenceReport, en: Bool): JsonValue {
     let idx = graph.symbolIndex()
     let out = Json.obj()
     let fns = ArrayList<JsonValue>()
@@ -36,6 +36,12 @@ func functionGraphData(graph: CodeGraph, findings: ConfidenceReport): JsonValue 
         Json.set(o, "line", Json.of(f.line))
         Json.set(o, "weight", Json.of(flawWeight(f.kind)))
         Json.set(o, "kind", Json.of(flawId(f.kind)))
+        // 树节点内嵌的 finding 必须与 confidenceEmbedJson 字段对齐：
+        // 详情栏置信度 tab 按 dim 分组、渲染 label 与 evidence，
+        // 缺一个字段整组渲染就落空（验收时曾因此空白）。
+        Json.set(o, "dim", Json.of(dimensionId(flawDimension(f.kind))))
+        Json.set(o, "label", Json.of(flawLabel(f.kind, en)))
+        Json.set(o, "evidence", Json.of(f.evidence))
         match (byFile.get(f.file)) {
             case Some(list) => list.add(o)
             case None => byFile[f.file] = ArrayList<JsonValue>([o])
@@ -146,7 +152,7 @@ func functionGraphData(graph: CodeGraph, findings: ConfidenceReport): JsonValue 
 /// 证据必须自足——人不开编辑器就能判断，confidence.cj:266 注释原话）。
 /// 限流披露两个布尔：全量 400 条封顶 / 同类每文件 6 条封顶
 /// （CONF_MAX_FINDINGS / CONF_MAX_PER_KIND_PER_FILE，confidence.cj:258-260）。
-func confidenceEmbedJson(conf: ConfidenceReport): JsonValue {
+func confidenceEmbedJson(conf: ConfidenceReport, en: Bool): JsonValue {
     let o = Json.obj()
     Json.set(o, "score", Json.of(conf.score))
     Json.set(o, "astUsed", Json.of(conf.astUsed))
@@ -172,6 +178,7 @@ func confidenceEmbedJson(conf: ConfidenceReport): JsonValue {
         Json.set(d, "kind", Json.of(flawId(f.kind)))
         Json.set(d, "weight", Json.of(flawWeight(f.kind)))
         Json.set(d, "dim", Json.of(dimensionId(flawDimension(f.kind))))
+        Json.set(d, "label", Json.of(flawLabel(f.kind, en)))
         Json.set(d, "symbol", Json.of(f.symbol))
         Json.set(d, "evidence", Json.of(f.evidence))
         fs.add(d)
@@ -220,8 +227,8 @@ func langAttr(en: Bool): String {
 
 public func treeCanvasHtml(graph: CodeGraph, depth: Int64, en: Bool, findings: ConfidenceReport): String {
     let root = fullGraphJson(graph, depth)
-    Json.set(root, "functionGraph", functionGraphData(graph, findings))
-    Json.set(root, "confidence", confidenceEmbedJson(findings))
+    Json.set(root, "functionGraph", functionGraphData(graph, findings, en))
+    Json.set(root, "confidence", confidenceEmbedJson(findings, en))
     Json.set(root, "langThemes", langThemesJson())
     Json.set(root, "project", Json.of(basename(graph.root)))
     let json = jsonSafeForEmbed(Json.pretty(root))
@@ -283,7 +290,8 @@ body.dragging { cursor:col-resize; user-select:none; }
 .tree-scroll { flex:1; overflow-y:auto; overflow-x:hidden; background:var(--bg); outline:none; position:relative; }
 .tree-canvas { position:relative; width:100%; }
 /* ── 行（虚拟滚动：绝对定位，top 由驱动计算）── */
-.row { position:absolute; left:0; right:0; display:flex; align-items:center; padding-right:12px; cursor:default; }
+.row { position:absolute; left:0; right:0; display:flex; align-items:center; padding-right:12px;
+  overflow:hidden; cursor:default; }
 .row:hover { background:rgba(148,163,184,0.06); }
 .row.sel { background:rgba(56,189,248,0.10); }
 .row.sel::before { content:''; position:absolute; left:0; top:0; bottom:0; width:2px; background:var(--hue-focus); }
@@ -346,18 +354,18 @@ body.light .row .guide { background:rgba(213,222,235,0.65); }
   background:var(--tc); }
 .truncnote { margin-top:8px; color:var(--muted); font-size:11px;
   font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'PingFang SC','Microsoft YaHei',sans-serif; }
-/* ── 置信度 tab：单列分区列表（档位色点 + kind + 行号 + 证据等宽块）── */
-.degrade { color:var(--muted); font-size:11px; margin-bottom:8px; }
+/* ── 置信度 tab：单列分区列表（档位色 pill + 行号 + 证据等宽块）── */
+.degrade { color:var(--text2); font-size:11px; line-height:1.6; margin-bottom:8px; }
 .sechead { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:0.08em;
   margin:16px 0 4px; font-variant-numeric:tabular-nums; }
 .tabbody .sechead:first-child { margin-top:4px; }
 .finding { padding:6px 0 10px; }
 .fmeta { display:flex; align-items:center; gap:8px; }
-.fdot { flex:none; width:6px; height:6px; border-radius:50%; }
-.fkind { font:11px ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace; color:var(--text2); }
+.fkind { flex:none; font:10.5px ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace;
+  padding:1px 8px; border-radius:99px; border:1px solid transparent; letter-spacing:0.02em; }
 .fline { font:11px ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace; color:var(--muted);
-  font-variant-numeric:tabular-nums; }
-.fev { margin:4px 0 0 14px; font:12px/1.6 ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace;
+  font-variant-numeric:tabular-nums; margin-left:auto; }
+.fev { margin:5px 0 0 0; font:12px/1.6 ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace;
   white-space:pre-wrap; word-break:break-all; }
 .capnote { margin-top:12px; color:var(--muted); font-size:11px; }
 .noneword { color:var(--muted); font-size:11px; padding:4px 0; }
@@ -443,6 +451,7 @@ func codegraphDriverJs(en: Bool): String {
     let findAria = if (en) { " findings, max weight " } else { " 项疑点，最高权重 " }
     let scoreTitle = if (en) { "global confidence score" } else { "全局置信度分数" }
     let filesTitle = if (en) { " files" } else { " 个文件" }
+    let linesTitle = if (en) { " lines" } else { " 行" }
     let kProject = if (en) { "project" } else { "项目" }
     let kDir = if (en) { "dir" } else { "目录" }
     let kFile = if (en) { "file" } else { "文件" }
@@ -458,7 +467,7 @@ func codegraphDriverJs(en: Bool): String {
         + ", truncNote: " + jsStr(truncNote) + ", capNote: " + jsStr(capNote)
         + ", srcNa: " + jsStr(srcNa) + ", clean: " + jsStr(clean)
         + ", findAria: " + jsStr(findAria) + ", scoreTitle: " + jsStr(scoreTitle)
-        + ", filesTitle: " + jsStr(filesTitle)
+        + ", filesTitle: " + jsStr(filesTitle) + ", linesTitle: " + jsStr(linesTitle)
         + ", kProject: " + jsStr(kProject) + ", kDir: " + jsStr(kDir) + ", kFile: " + jsStr(kFile)
         + ", dims: { variable: " + jsStr(dimVar) + ", function: " + jsStr(dimFn)
         + ", type: " + jsStr(dimType) + ", pointer: " + jsStr(dimPtr)
@@ -664,12 +673,21 @@ D.files.forEach(function (fe) {
 // ── 状态 ──
 var state = { selId: '', q: '', tab: 'source', node: null };
 var expandSet = { root: true };
+// 过滤态下用户手动展开/收起的覆盖表：flatten 每次重跑 searchVis 会
+// 重算 sOpen，没有这张表，搜索中的手动展开/收起会被下一次刷新冲掉。
+var sOpenOvr = {};
 ROOT.children.forEach(function (c) { if (c.type === 'dir') { expandSet[c.id] = true; } });
 
 // ── 扁平化 + 虚拟滚动 ──
 var ROWS = []; var H = { root: 36, dir: 28, file: 28, sym: 24 };
 function indentOf(d) { return 8 + 16 * d; }
-function isOpen(n) { return state.q ? !!n.sOpen : !!expandSet[n.id]; }
+function isOpen(n) {
+  if (state.q) {
+    if (Object.prototype.hasOwnProperty.call(sOpenOvr, n.id)) { return !!sOpenOvr[n.id]; }
+    return !!n.sOpen;
+  }
+  return !!expandSet[n.id];
+}
 function flatten() {
   ROWS = [];
   var mq = (state.q || '').trim().toLowerCase();
@@ -696,7 +714,17 @@ function searchVis(n, mq, parentHit) {
   var self = n.name.toLowerCase().indexOf(mq) >= 0;
   var hit = self || parentHit;
   if (n.type === 'sym') { n.vis = hit; n.sOpen = false; return hit; }
-  if (n.type === 'file') { n.vis = hit; n.sOpen = hit && n.children.length > 0; return hit; }
+  if (n.type === 'file') {
+    // 文件名命中 → 整文件可见并展开全部符号；
+    // 否则必须递归符号 —— 符号命中才让文件浮出（此前只看文件名，
+    // 搜 tryAcquire 这类符号名永远搜不到，验收缺陷）。
+    if (self) { n.vis = true; n.sOpen = n.children.length > 0; n.children.forEach(markAll); return true; }
+    var anyF = false;
+    n.children.forEach(function (c) { if (searchVis(c, mq, false)) { anyF = true; } });
+    n.vis = anyF;
+    n.sOpen = anyF && n.children.length > 0;
+    return anyF;
+  }
   if (self) { n.vis = true; n.sOpen = true; n.children.forEach(markAll); return true; }
   var any = false;
   n.children.forEach(function (c) { if (searchVis(c, mq, false)) { any = true; } });
@@ -766,6 +794,10 @@ function pillTitleOf(list) {
   return parts.join('、');
 }
 function collectRoll(n, out) {
+  // roll-up 必须含符号级 findings：绝大多数 finding 按行号归属到符号体
+  // （buildTree 的 else 分支才落 fileFindings），只收 fileFindings 会把
+  // 根/目录 pill 承诺的数量与详情 tab 实际列出的对不上（400 vs 3）。
+  if (n.type === 'sym') { (n.findings || []).forEach(function (f) { out.push(f); }); return; }
   (n.fileFindings || []).forEach(function (f) { out.push(f); });
   (n.children || []).forEach(function (c) { collectRoll(c, out); });
 }
@@ -812,7 +844,7 @@ function buildRow(r) {
   else if (n.type === 'sym') { h += '<span class="kbadge">' + esc(KIND_CH[n.kind] || 'T') + '</span>'; }
   h += '<span class="rname">' + nameHtml(n.name) + '</span>';
   if (n.type === 'file') {
-    h += '<span class="meta"' + (n.lines ? ' title="' + n.lines + T.filesTitle + '"' : '') + '>' + (n.lines || '') + '</span>';
+    h += '<span class="meta"' + (n.lines ? ' title="' + n.lines + T.linesTitle + '"' : '') + '>' + (n.lines || '') + '</span>';
   } else if (n.type === 'sym') {
     h += '<span class="meta">' + n.line + '</span>';
   } else if (n.type === 'dir') {
@@ -828,17 +860,18 @@ function buildRow(r) {
 var rootRow = document.getElementById('root-row');
 function paintRootRow() {
   var c = scoreHex(CONF.score);
-  var h = '<span class="slot"><span class="chev' + (expandSet.root ? ' open' : '') + '">' + svgChev() + '</span></span>'
+  var rootOpen = isOpen(ROOT);
+  var h = '<span class="slot"><span class="chev' + (rootOpen ? ' open' : '') + '">' + svgChev() + '</span></span>'
     + '<span class="rname">' + esc(ROOT.name) + '</span>'
     + '<span class="chip" style="color:' + c + ';border-color:' + c + ';background:' + hexRgba(c, 0.12)
     + '" title="' + T.scoreTitle + ' ' + CONF.score + '">' + CONF.score + '</span>';
   h += nodeBadge(ROOT);
   rootRow.innerHTML = h;
-  rootRow.setAttribute('aria-expanded', expandSet.root ? 'true' : 'false');
+  rootRow.setAttribute('aria-expanded', rootOpen ? 'true' : 'false');
 }
 rootRow.addEventListener('click', function (e) {
   if (e.target.closest('.pill')) { openDetail(ROOT, 'conf'); return; }
-  expandSet.root = !expandSet.root;
+  if (state.q) { sOpenOvr.root = !isOpen(ROOT); } else { expandSet.root = !expandSet.root; }
   paintRootRow();
   refreshTree(true);
 });
@@ -867,7 +900,7 @@ function refreshTree(enter) {
 }
 function toggle(n) {
   if (!n.children || !n.children.length) { return; }
-  expandSet[n.id] = !expandSet[n.id];
+  if (state.q) { sOpenOvr[n.id] = !isOpen(n); } else { expandSet[n.id] = !expandSet[n.id]; }
   refreshTree(true);
 }
 canvas.addEventListener('click', function (e) {
@@ -929,6 +962,7 @@ function clearRendered() {
 }
 qEl.addEventListener('input', function () {
   state.q = qEl.value;
+  sOpenOvr = {};   // 新查询 = 新的自动展开结果，旧的手动覆盖全部作废
   // 行内容随查询变化（命中高亮），已渲染行全部重建
   clearRendered();
   flatten(); layout();
@@ -1118,12 +1152,14 @@ function renderConf(n) {
     order.forEach(function (dm) {
       var g = groups[dm];
       if (!g || !g.length) { return; }
+      g.sort(function (a, b) { return b.weight - a.weight; });
       h += '<div class="sechead">' + T.dims[dm] + ' · ' + g.length + '</div>';
       g.forEach(function (f) {
         var c = tierHex(f.weight);
         h += '<div class="finding" data-fln="' + f.line + '"><div class="fmeta">'
-          + '<span class="fdot" style="background:' + c + '"></span>'
-          + '<span class="fkind">' + esc(f.kind) + '</span>'
+          + '<span class="fkind" style="color:' + c + ';border-color:' + c + ';background:'
+          + hexRgba(c, 0.12) + '" title="' + esc(f.kind) + ' w' + f.weight + '">'
+          + esc(f.label || f.kind) + '</span>'
           + '<span class="fline">L' + f.line + '</span></div>'
           + '<div class="fev">' + esc(f.evidence || '') + '</div></div>';
       });

@@ -1174,12 +1174,16 @@ func cyclomaticComplexity(bodyLines: ArrayList<String>): Int64 {
     var cc: Int64 = 1  // 基础路径
     for (line in bodyLines) {
         let t = line.trimAscii()
-        // 仓颉/c系 关键字
-        for (kw in ["if ", "else if ", "while ", "for ", "case ", "match ", "&&", "||"]) {
-            var idx = indexOfStr(t, kw)
-            while (idx >= 0) {
+        // "if " 已覆盖 "else if " 中的 if，单列会同一分支计两次。
+        // 续搜用 from 偏移而非字符串切片：indexOfStr 返回 -1 时
+        // `t[idx + kw.size..]` 会在短行上越界（实测 Invalid range 26..23）。
+        for (kw in ["if ", "while ", "for ", "case ", "match ", "&&", "||"]) {
+            var from: Int64 = 0
+            while (true) {
+                let hit = indexOfStrFrom(t, kw, from)
+                if (hit < 0) { break }
                 cc += 1
-                idx = indexOfStr(t[idx + kw.size..], kw) + idx + kw.size
+                from = hit + kw.size
             }
         }
     }
@@ -1188,10 +1192,16 @@ func cyclomaticComplexity(bodyLines: ArrayList<String>): Int64 {
 
 /// 辅助：子串搜索（返回起始偏移，-1 = 未找到）。
 func indexOfStr(s: String, target: String): Int64 {
+    return indexOfStrFrom(s, target, 0)
+}
+
+/// 辅助：带起点偏移的子串搜索（纯字节扫描，不做切片，UTF-8 安全）。
+func indexOfStrFrom(s: String, target: String, from: Int64): Int64 {
     let sB = s.toArray(); let tB = target.toArray()
     if (tB.size == 0) { return -1 }
     let n = Int64(sB.size); let m = Int64(tB.size)
-    var i: Int64 = 0
+    var i = from
+    if (i < 0) { i = 0 }
     while (i + m <= n) {
         var found = true
         for (j in 0..m) {
@@ -1305,45 +1315,49 @@ func detectSemanticIssues(graph: CodeGraph, findings: ArrayList<Finding>): Unit 
                 body.add(srcLines[cl]); cl += 1
             }
             let sigLine = srcLines[bodyStart - 1]
-            let base = lastSeg(fe.relPath)
             let id = "f:" + fe.relPath + ":" + s.line.toString() + ":" + s.name
-            let evidencePrefix = base + ":" + s.line.toString() + " " + s.name
-            // ① 圈复杂度 >10 → HighComplexity
-            let cc = cyclomaticComplexity(body)
-            if (cc > 10) {
-                bumpFinding(findings, perFile, HighComplexity, fe.relPath, s.line, s.name,
-                    "圈复杂度 ${cc}（阈值 10）——决策路径爆炸，难测试/易藏 bug")
-            }
-            // ② 参数数 >5 或 Bool 标志参 → ParameterAbuse
-            let (pCount, hasBool) = analyzeParams(sigLine)
-            if (pCount > 5) {
-                bumpFinding(findings, perFile, ParameterAbuse, fe.relPath, s.line, s.name,
-                    "${pCount} 个参数（阈值 5）——God 签名，API 设计缺失")
-            } else if (hasBool && pCount >= 2) {
-                bumpFinding(findings, perFile, ParameterAbuse, fe.relPath, s.line, s.name,
-                    "Bool 标志参控制分支——违反 SRP，应拆分为两个函数")
-            }
-            // ③ 不可达代码 → DeadBranch
-            match (hasDeadBranch(body, bodyStart)) {
-                case Some(ln) =>
-                    bumpFinding(findings, perFile, DeadBranch, fe.relPath, ln, s.name,
-                        "return/throw 后同层级仍有语句——不可达代码残余")
-                case None => ()
-            }
-            // ④ 混合职责 → MixedResponsibility
-            if (hasMixedResponsibility(body)) {
-                bumpFinding(findings, perFile, MixedResponsibility, fe.relPath, s.line, s.name,
-                    "同函数内混合文件 I/O 与计算逻辑——不可组合/不可测试")
-            }
-            // ⑤ 近重复 → NearDuplicate（归一化哈希比较）
-            let hash = normalizedBodyHash(body)
-            match (bodyHash.get(hash)) {
-                case Some(firstId) =>
-                    if (firstId != id) {
-                        bumpFinding(findings, perFile, NearDuplicate, fe.relPath, s.line, s.name,
-                            "函数体与 ${firstId} 归一化后完全一致——应提取共享逻辑")
-                    }
-                case None => bodyHash[hash] = id
+            // 单函数粒度兜底：一个函数的异常只跳过它自己，
+            // 不再把整层语义检测清空（此前 Invalid range 一抛全仓丢失）。
+            try {
+                // ① 圈复杂度 >10 → HighComplexity
+                let cc = cyclomaticComplexity(body)
+                if (cc > 10) {
+                    bumpFinding(findings, perFile, HighComplexity, fe.relPath, s.line, s.name,
+                        "圈复杂度 ${cc}（阈值 10）——决策路径爆炸，难测试/易藏 bug")
+                }
+                // ② 参数数 >5 或 Bool 标志参 → ParameterAbuse
+                let (pCount, hasBool) = analyzeParams(sigLine)
+                if (pCount > 5) {
+                    bumpFinding(findings, perFile, ParameterAbuse, fe.relPath, s.line, s.name,
+                        "${pCount} 个参数（阈值 5）——God 签名，API 设计缺失")
+                } else if (hasBool && pCount >= 2) {
+                    bumpFinding(findings, perFile, ParameterAbuse, fe.relPath, s.line, s.name,
+                        "Bool 标志参控制分支——违反 SRP，应拆分为两个函数")
+                }
+                // ③ 不可达代码 → DeadBranch
+                match (hasDeadBranch(body, bodyStart)) {
+                    case Some(ln) =>
+                        bumpFinding(findings, perFile, DeadBranch, fe.relPath, ln, s.name,
+                            "return/throw 后同层级仍有语句——不可达代码残余")
+                    case None => ()
+                }
+                // ④ 混合职责 → MixedResponsibility
+                if (hasMixedResponsibility(body)) {
+                    bumpFinding(findings, perFile, MixedResponsibility, fe.relPath, s.line, s.name,
+                        "同函数内混合文件 I/O 与计算逻辑——不可组合/不可测试")
+                }
+                // ⑤ 近重复 → NearDuplicate（归一化哈希比较）
+                let hash = normalizedBodyHash(body)
+                match (bodyHash.get(hash)) {
+                    case Some(firstId) =>
+                        if (firstId != id) {
+                            bumpFinding(findings, perFile, NearDuplicate, fe.relPath, s.line, s.name,
+                                "函数体与 ${firstId} 归一化后完全一致——应提取共享逻辑")
+                        }
+                    case None => bodyHash[hash] = id
+                }
+            } catch (e: Exception) {
+                Log.warn("语义检测跳过单函数 ${id}: ${e.message}")
             }
             i += 1
         }
