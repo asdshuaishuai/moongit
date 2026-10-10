@@ -384,6 +384,17 @@ public func fromUtf8Lossy(bytes: Array<UInt8>): String {
                 ok = false
                 break
             }
+            // overlong 最小性（与 json.cj 的 runeFromUtf8At 同一口径，审查 L13）：
+            // E0 的首续字节必须 ≥ 0xA0、F0 的必须 ≥ 0x90——否则 `E0 80 80`
+            // 这类序列会被「洗白」成真实码点而不是替换符。
+            if (k == 1 && need == 3 && b0 == 0xe0u8 && c < 0xa0u8) {
+                ok = false
+                break
+            }
+            if (k == 1 && need == 4 && b0 == 0xf0u8 && c < 0x90u8) {
+                ok = false
+                break
+            }
             cp = (cp << 6) | UInt32(c & 0x3fu8)
             k += 1
         }
@@ -401,6 +412,19 @@ public func fromUtf8Lossy(bytes: Array<UInt8>): String {
         i += need
     }
     return sb.toString()
+}
+
+@Test
+func testFromUtf8LossyRejectsOverlong(): Unit {
+    // overlong 编码必须替换为 U+FFFD，与 json.cj 的 runeFromUtf8At 同口径
+    // （审查 L13）：`E0 80 80` 曾被「洗白」成 U+0000——非法但可解码。
+    @Assert(fromUtf8Lossy([0xe0u8, 0x80u8, 0x80u8]) == "\u{fffd}\u{fffd}\u{fffd}")
+    @Assert(fromUtf8Lossy([0xf0u8, 0x80u8, 0x80u8, 0x80u8]) == "\u{fffd}\u{fffd}\u{fffd}\u{fffd}")
+    // 0xC0/0xC1 前导（二字节 overlong）同样要替换
+    @Assert(fromUtf8Lossy([0xc0u8, 0x80u8]) == "\u{fffd}\u{fffd}")
+    // 合法序列不受影响
+    @Assert(fromUtf8Lossy("中".toArray()) == "中")
+    @Assert(fromUtf8Lossy([0xf0u8, 0x9fu8, 0x98u8, 0x80u8]) == "😀")
 }
 
 @Test

@@ -656,9 +656,9 @@ func testPatchEntityIsOnePerDeclaration(): Unit {
     let root = writeTree()
     try {
         let graph = buildGraph(root)
-        let diff = "--- a/flow/update.cj\n+++ b/flow/update.cj\n@@ -1,3 +1,9 @@\n" +
+        let diff = "--- a/flow/update.cj\n+++ b/flow/update.cj\n@@ -1,3 +1,10 @@\n" +
             " package moongit.flow\n+\n+public func patchHelper(t: Text): Bool {\n" +
-            "+    let a = 1\n+    let b = 2\n+    return a > b\n+}\n" +
+            "+    let a = 1\n+    let b = 2\n+    return second(t)\n+}\n" +
             "+public func second(t: Text): Bool {\n+    return true\n+}\n"
         let pc = analyzePatchConfidence(graph, diff)
         var n1: Int64 = 0
@@ -672,9 +672,19 @@ func testPatchEntityIsOnePerDeclaration(): Unit {
         // 紧跟在前一个声明之后的声明：原先一条都不生成
         @Assert(n2 == 1)
         @Assert(pc.totalEntities == 2)
-        // 前窥行不再被主循环重复统计：重复时 totalRefs 会是实际的两倍
-        @Assert(pc.totalRelations == Int64(pc.entities.size)
-            || pc.totalRelations >= 0)
+        // 前窥行不得重复计入统计：patchHelper 体内恰有一个自由调用 second(t)，
+        // totalRelations（= totalRefs）必须恰好是 1 —— 前窥重复统计的旧缺陷会让它变 2
+        // （原断言 `x == A || x >= 0` 后一析取恒真，什么都没钉——复审 2026-10-10）
+        @Assert(pc.totalRelations == 1)
+        // 前向引用只走 use-before-def 一条通道：不再同时记 unresolved_call（双罚）
+        var ubd: Int64 = 0
+        var unresSecond: Int64 = 0
+        for (u in pc.uncertain) {
+            if (uncId(u.kind) == "use_before_def") { ubd += 1 }
+            if (uncId(u.kind) == "unresolved_call" && u.id.contains("second")) { unresSecond += 1 }
+        }
+        @Assert(ubd == 1)
+        @Assert(unresSecond == 0)
     } finally {
         removeTree(root)
     }
@@ -1028,16 +1038,22 @@ func testConfidenceLlmPromptGroupsByDimension(): Unit {
 /// opaque forward decl 是 C 头文件的惯用法，系统性拖低 C/C++ 仓库分数。
 @Test
 func testForwardDeclarationIsNotReportedAsEmptyType(): Unit {
+    // ⚠️ 必须用**真实 CST 形态**：tree-sitter 的 `;` 是 struct_specifier 的兄弟节点，
+    // ast-grep 命中的 text 是 `struct Fwd`——**不带分号**。旧测试手写 "struct Fwd;"
+    // （集成中不会出现的输入），把恒假的死代码判据 endsWith(";") 钉成了绿的
+    // （复审 2026-10-10）。
+    @Assert(isForwardDeclaration("struct Fwd"))
+    @Assert(isForwardDeclaration("typedef struct Fwd FwdT"))
+    // 整行文本（带分号）同样要认得
     @Assert(isForwardDeclaration("struct Fwd;"))
-    @Assert(isForwardDeclaration("typedef struct Fwd FwdT;"))
-    // 没有成员表才是判据；`struct Empty {}` 不是前置声明
-    // 真正的空类型仍然要报（判据不许被放宽到恒真）
+    // 有成员表就不是前置声明；真正的空类型仍然要报（判据不许放宽到恒真）
     @Assert(!isForwardDeclaration("struct Empty { }"))
     @Assert(!isForwardDeclaration("struct Empty {}"))
 
     let nodes = ArrayList<AstNode>()
-    nodes.add(AstNode("a.h", 3, 3, "type", "struct Fwd;"))
-    nodes.add(AstNode("a.h", 4, 4, "type", "typedef struct Fwd FwdT;"))
+    // 真实 CST 形态：不带分号
+    nodes.add(AstNode("a.h", 3, 3, "type", "struct Fwd"))
+    nodes.add(AstNode("a.h", 4, 4, "type", "struct Fwd"))   // typedef 内层的 struct_specifier
     nodes.add(AstNode("a.cj", 5, 5, "type", "struct Empty {}"))
     let findings = ArrayList<Finding>()
     detectTypeSignals(nodes, findings)

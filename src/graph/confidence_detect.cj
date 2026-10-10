@@ -916,17 +916,17 @@ func firstIdentAfter(line: String, fromByte: Int64): String {
 /// 都跨 1 行命中，于是每个前置声明都被判成「空类型」扣 3 分 ——
 /// 而 opaque 前向声明是 C 头文件的**惯用法**（隐藏实现细节），
 /// 它系统性地拖低整个 C/C++ 仓库的分数（审查 M3）。
-/// 判据：声明以 `;` 结尾（没有 `{...}` 成员表）即前置声明。
+/// 判据：**节点文本无 `{` 即前置声明**。注意不能判 `endsWith(";")`：
+/// tree-sitter 的 CST 里 `;` 是 struct_specifier 的**兄弟节点**，命中
+/// text 是 `struct Fwd`（实测 ast-grep 0.41.0），不带分号——按分号判
+/// 恒为 false，等于没修（复审 2026-10-10）。走到这里说明没有 `{`，
+/// 而 AST type 节点不会有无成员表的真实定义。
 func isForwardDeclaration(text: String): Bool {
     let t = text.trimAscii()
     if (t.isEmpty()) {
         return false
     }
-    // 有成员表就不是前置声明（`{ }` 之间必然有内容）
-    if (t.contains("{")) {
-        return false
-    }
-    return t.endsWith(";")
+    return !t.contains("{")
 }
 
 /// 类型级信号：空类型（无成员）与上帝类（行数/方法数超阈）。

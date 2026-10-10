@@ -423,7 +423,7 @@ func cmdMilestone(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let refs = positionalsOnly(rest, VALUE_FLAGS)
     let msl = loadConfig().language
     if (refs.size == 0) {
-        throw DgError.usage(T("Usage: moongit milestone <add|list|done|drop|remove> [project] [name] [--tag T] [--date YYYY-MM-DD] [--desc S]", "用法：moongit milestone <add|list|done|drop|remove> [项目] [名称] [--tag T] [--date YYYY-MM-DD] [--desc S]"))
+        throw DgError.usage(T("Usage: moongit milestone <add|list|done|reopen|drop|remove> [project] [name] [--tag T] [--date YYYY-MM-DD] [--desc S]", "用法：moongit milestone <add|list|done|reopen|drop|remove> [项目] [名称] [--tag T] [--date YYYY-MM-DD] [--desc S]"))
     }
     // ⚠️ #196：各子命令原来只查「至少 3 个」，多出来的位置参数被静默吞掉
     // （`moongit milestone add alpha v1 extra` → 「✓ 已创建」rc=0，extra 蒸发）。
@@ -542,7 +542,7 @@ func cmdMilestone(rest: ArrayList<String>, ctx: CliContext): Int64 {
                 return emptyRc
             }
             for (it in items) {
-                printOut(milestoneLine(it))
+                printOut(milestoneLine(it, msl))
             }
             if (excludedDisabled > 0) {
                 Log.info(T("${excludedDisabled} milestones belong to disabled projects and are not listed (same rule as dashboard).", "${excludedDisabled} 条里程碑属于已停用项目，未列出（与 dashboard 同口径）。"))
@@ -638,7 +638,7 @@ func cmdMilestone(rest: ArrayList<String>, ctx: CliContext): Int64 {
 // 三个出口（milestone list / dashboard / MCP list_milestones）共用它。
 // 别在这里再写一份：dashboard 之前就因为手抄第三份栽过两次。
 
-func milestoneLine(it: JsonValue): String {
+func milestoneLine(it: JsonValue, lang: String): String {
     let name = Json.strAt(it, "name", "")
     let proj = Json.strAt(it, "projectName", "")
     let status = Json.strAt(it, "status", "")
@@ -647,12 +647,14 @@ func milestoneLine(it: JsonValue): String {
     let commits = Json.intAt(it, "commitsSince", 0)
     let tagReached = Json.boolAt(it, "tagReached", false)
     let overdue = Json.boolAt(it, "overdue", false)
+    // M15 残留：本行被 milestone list 与 dashboard 文本路径直接打印，
+    // 原先整行硬编码中文 —— DEEPGIT_LANG=en 下表头英文、行内容中文同屏。
     let statusLabel = match (status) {
-        case "done" => "✓ 已达成"
-        case "dropped" => "✗ 已放弃"
+        case "done" => tl(lang, "✓ done", "✓ 已达成")
+        case "dropped" => tl(lang, "✗ dropped", "✗ 已放弃")
         // 仓库读不出来 ≠ 没达成。这两种混同会让「系统坏了」被读成「进度没了」。
-        case "unknown" => "? 无法核验（仓库读不出来）"
-        case _ => if (overdue) { "⚠ 已逾期" } else { "进行中" }
+        case "unknown" => tl(lang, "? unverifiable (repo unreadable)", "? 无法核验（仓库读不出来）")
+        case _ => if (overdue) { tl(lang, "⚠ overdue", "⚠ 已逾期") } else { tl(lang, "in progress", "进行中") }
     }
     var when = ""
     if (!date.isEmpty()) {
@@ -662,11 +664,11 @@ func milestoneLine(it: JsonValue): String {
         // 修完 isIsoDate 变成 -1，不补这一档就会变成「逾期 1 天」：假数字没了，
         // 假断言还在。
         when = if (days == -1) {
-            "目标 ${date}（日期无效，算不出还剩天数）"
+            tl(lang, "target ${date} (invalid date, cannot count remaining days)", "目标 ${date}（日期无效，算不出还剩天数）")
         } else if (days >= 0) {
-            "目标 ${date}（还剩 ${days} 天）"
+            tl(lang, "target ${date} (${days} days left)", "目标 ${date}（还剩 ${days} 天）")
         } else {
-            "目标 ${date}（逾期 ${-days} 天）"
+            tl(lang, "target ${date} (${-days} days overdue)", "目标 ${date}（逾期 ${-days} 天）")
         }
     }
     let tagPart = if (tagReached) { "tag ✓" } else { "" }
@@ -677,11 +679,11 @@ func milestoneLine(it: JsonValue): String {
         parts.add(when)
     }
     if (commits >= 0) {
-        parts.add("创建以来 ${commits} 提交")
+        parts.add(tl(lang, "${commits} commits since creation", "创建以来 ${commits} 提交"))
     } else {
         // -1 是「没查出来」。说成 0 或者干脆不提，用户会以为这个里程碑
         // 创建以来一个提交都没有 —— 而实际上我们只是查不到。
-        parts.add("创建以来提交数未知")
+        parts.add(tl(lang, "commits since creation unknown", "创建以来提交数未知"))
     }
     if (tagReached) {
         parts.add(tagPart)
@@ -1470,7 +1472,7 @@ func cmdDashboard(rest: ArrayList<String>, ctx: CliContext): Int64 {
                 printOut(T("  ... ${items.size} in total; full list: moongit milestone list", "  … 共 ${items.size} 条，完整列表：moongit milestone list"))
                 break
             }
-            printOut("  ${milestoneLine(it)}")
+            printOut("  ${milestoneLine(it, loadConfig().language)}")
             shown += 1
         }
     }
@@ -1546,7 +1548,7 @@ func printHelp(): Unit {
         printOut("  report [project] [--out F]  Export a Markdown progress report")
         printOut("  graph [overview|tree|symbol|impact|arch|confidence|patchconf] [project]")
         printOut("                           patchconf: patch-level confidence (3-layer: --patch analyze / --skill agent / --merge final)")
-        printOut("                           confidence: structural confidence report (--llm for the LLM review prompt)")
+        printOut("                           confidence: structural confidence report (--llm for the LLM review prompt; --no-ast skips the syntax-tree layer)")
         printOut("                           Code graph: symbol index / relationship tree / impact /")
         printOut("                           interactive architecture canvas (--format html|mermaid|dot|json|scene)")
         printOut("  config <list|get|set> [k] [v]  Configuration (AI preset, etc.)")
@@ -1595,7 +1597,7 @@ func printHelp(): Unit {
     printOut("  report [项目] [--out F]  导出 Markdown 进度报告")
     printOut("  graph [overview|tree|symbol|impact|arch|confidence|patchconf] [项目]")
     printOut("                           patchconf：补丁级置信度三层架构（--patch 分析 / --skill 取 Agent 任务 / --merge 合并终稿）")
-    printOut("                           confidence：代码置信度报告（--llm 出 LLM 复核提示词）")
+    printOut("                           confidence：代码置信度报告（--llm 出 LLM 复核提示词；--no-ast 跳过语法树层）")
     printOut("                           代码图谱：符号索引/关系树/影响面/技术架构图")
     printOut("                           （arch 用 --format html|mermaid|dot|json|scene；html 为 Canvas 交互图）")
     printOut("  config <list|get|set> [k] [v]  配置（AI 预设等）")
@@ -3273,23 +3275,29 @@ public func leftoverVerdict(leftovers: Int64, unreadableProjects: Int64): Leftov
     return LeftoverVerdict.Clean
 }
 
-public func leftoverResultText(v: LeftoverVerdict): String {
+public func leftoverResultText(v: LeftoverVerdict, lang: String): String {
+    // M15 残留：doctor 表格单元格原先硬编码中文——en 模式下表头英文、
+    // 单元格中文同屏。
     match (v) {
-        case LeftoverVerdict.Clean => return "无"
-        case LeftoverVerdict.Found(n) => return "${n} 个"
+        case LeftoverVerdict.Clean => return tl(lang, "none", "无")
+        case LeftoverVerdict.Found(n) => return tl(lang, "${n} found", "${n} 个")
         case LeftoverVerdict.PartlyUnreadable(n, k) =>
-            return if (n == 0) { "${k} 个项目未检查" } else { "${n} 个（另有 ${k} 个项目未检查）" }
+            return if (n == 0) { tl(lang, "${k} projects not checked", "${k} 个项目未检查") }
+                else { tl(lang, "${n} found (${k} projects not checked)", "${n} 个（另有 ${k} 个项目未检查）") }
     }
 }
 
-public func leftoverDetailText(v: LeftoverVerdict, leftovers: ArrayList<String>, unreadableNames: ArrayList<String>): String {
+public func leftoverDetailText(v: LeftoverVerdict, leftovers: ArrayList<String>, unreadableNames: ArrayList<String>, lang: String): String {
     match (v) {
-        case LeftoverVerdict.Clean => return "无"
-        case LeftoverVerdict.Found(_) => return "引擎被强杀留下的 .tmp，可安全删除：" + joinStrings(leftovers, " ")
+        case LeftoverVerdict.Clean => return tl(lang, "none", "无")
+        case LeftoverVerdict.Found(_) =>
+            return tl(lang, ".tmp files left by killed engine processes, safe to delete: ",
+                "引擎被强杀留下的 .tmp，可安全删除：") + joinStrings(leftovers, " ")
         case LeftoverVerdict.PartlyUnreadable(_, _) =>
-            var msg = "读不到这些项目目录，**没有检查过**（不是「没有残留」）：" + joinStrings(unreadableNames, ", ")
+            var msg = tl(lang, "these project directories are unreadable and **were not checked** (not \"no leftovers\"): ",
+                "读不到这些项目目录，**没有检查过**（不是「没有残留」）：") + joinStrings(unreadableNames, ", ")
             if (leftovers.size > 0) {
-                msg = msg + "；已检查部分发现：" + joinStrings(leftovers, " ")
+                msg = msg + tl(lang, "; found in checked part: ", "；已检查部分发现：") + joinStrings(leftovers, " ")
             }
             return msg
     }
@@ -3327,19 +3335,20 @@ func scanLeftovers(projects: ArrayList<ProjectEntry>): (ArrayList<String>, Array
 }
 
 func cmdDoctor(rest: ArrayList<String>, ctx: CliContext): Int64 {
+    let lang = loadConfig().language
     let checks = ArrayList<Array<String>>()
     let gitOk = commandExists("git")
-    checks.add(["git", if (gitOk) { "OK" } else { "缺失" }, if (gitOk) { gitRun(".", ["--version"], true) } else { "需要安装 git" }])
-    checks.add(["数据目录", if (isDirectoryPath(deepgitHome())) { "OK" } else { "未创建" }, deepgitHome()])
+    checks.add(["git", if (gitOk) { "OK" } else { tl(lang, "missing", "缺失") }, if (gitOk) { gitRun(".", ["--version"], true) } else { tl(lang, "git is required", "需要安装 git") }])
+    checks.add([tl(lang, "data dir", "数据目录"), if (isDirectoryPath(deepgitHome())) { "OK" } else { tl(lang, "not created", "未创建") }, deepgitHome()])
     let reg = loadRegistry()
-    checks.add(["注册项目", "${reg.projects.size}", "用 `moongit scan` 添加"])
+    checks.add([tl(lang, "registered projects", "注册项目"), "${reg.projects.size}", tl(lang, "run `moongit scan` to add", "用 `moongit scan` 添加")])
     let missing = ArrayList<String>()
     for (p in reg.projects) {
         if (!isDirectoryPath(p.path)) {
             missing.add(p.name)
         }
     }
-    checks.add(["路径有效", if (missing.size == 0) { "OK" } else { "${missing.size} 个失效" }, joinStrings(missing, ", ")])
+    checks.add([tl(lang, "paths valid", "路径有效"), if (missing.size == 0) { "OK" } else { tl(lang, "${missing.size} invalid", "${missing.size} 个失效") }, joinStrings(missing, ", ")])
     // 结果列不能硬编码：原来无论当前目录是否真在已注册项目里都写「项目内」，
     // 自检工具自己说谎，正是它最不该出的错。
     let cwdNorm = normalizePath(expandHome(getCwd()))
@@ -3347,7 +3356,7 @@ func cmdDoctor(rest: ArrayList<String>, ctx: CliContext): Int64 {
         case Some(_) => true
         case None => false
     }
-    checks.add(["当前目录", if (cwdInside) { "项目内" } else { "项目外" }, cwdNorm])
+    checks.add([tl(lang, "current dir", "当前目录"), if (cwdInside) { tl(lang, "inside a project", "项目内") } else { tl(lang, "outside projects", "项目外") }, cwdNorm])
 
     // 引擎自己留下的临时文件。writeFileAtomic 用「写 .tmp 再 rename」保证原子性，
     // 但进程若在 rename 之前被 kill -9，.tmp 就留在用户仓库里，
@@ -3357,7 +3366,7 @@ func cmdDoctor(rest: ArrayList<String>, ctx: CliContext): Int64 {
     // 报成「无」就是自检工具给自己发了一张没做过的检查的合格证（#200）。
     let (leftovers, unreadableProjects) = scanLeftovers(reg.projects)
     let lv = leftoverVerdict(Int64(leftovers.size), Int64(unreadableProjects.size))
-    checks.add(["临时残留", leftoverResultText(lv), leftoverDetailText(lv, leftovers, unreadableProjects)])
+    checks.add([tl(lang, "temp leftovers", "临时残留"), leftoverResultText(lv, lang), leftoverDetailText(lv, leftovers, unreadableProjects, lang)])
 
     // 自检命令必须能失败。原来两条路径都恒返回 0，于是 git 缺失、项目路径全部失效
     // 也照样退出成功，脚本/CI 无法据此判断环境是否可用。

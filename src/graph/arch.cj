@@ -273,6 +273,15 @@ public func buildArch(graph: CodeGraph): ArchData {
         let segs = key.split("|")
         if (segs.size == 2) { rawPairs.add((segs[0], segs[1], w)) }
     }
+    // M11 残留：出口确定性。rawPairs 物化自 weight（HashMap）的迭代序，而
+    // edges / violationPairs / cycleModules / archJson / mermaid / dot 全部
+    // 按该序输出——字节序不能依赖语言未定义的 HashMap 迭代序，物化后立即
+    // 按全序排定（a↑ → b↑ → w↑，与 refEdges / unresolvedList 同一纪律）。
+    insertionSortBy(rawPairs, { a, b =>
+        if (a[0] != b[0]) { return a[0] < b[0] }
+        if (a[1] != b[1]) { return a[1] < b[1] }
+        return a[2] < b[2]
+    })
     let adj = HashMap<String, ArrayList<String>>()
     for ((a, b, _) in rawPairs) {
         match (adj.get(a)) {

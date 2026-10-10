@@ -38,22 +38,25 @@ public func sha256(data: Array<UInt8>): Array<UInt8> {
     let len = data.size
     let bitLen: UInt64 = UInt64(len) * 8u64
 
-    // padding: 0x80, zeros, 8-byte big-endian length
-    var padded = ArrayList<UInt8>()
-    for (b in data) {
-        padded.add(b)
+    // padding: 0x80, zeros, 8-byte big-endian length。
+    // 总长一次算出、数组一次预分配（审查 L15：原实现把输入逐字节 add 进
+    // ArrayList——完整复制一遍且每字节带扩容检查）。
+    let paddedLen: Int64 = ((len + 9 + 63) / 64) * 64
+    var padded: Array<UInt8> = Array<UInt8>(paddedLen, repeat: 0u8)
+    for (i in 0..len) {
+        padded[i] = data[i]
     }
-    padded.add(0x80u8)
-    while ((padded.size % 64) != 56) {
-        padded.add(0u8)
-    }
+    padded[len] = 0x80u8
     for (i in 0..8) {
         let shift = (7 - i) * 8
-        padded.add(UInt8((bitLen >> UInt64(shift)) & 0xffu64))
+        padded[paddedLen - 8 + i] = UInt8((bitLen >> UInt64(shift)) & 0xffu64)
     }
 
-    let total = padded.size
+    let total = paddedLen
     var block: Array<UInt8> = Array<UInt8>(64, repeat: 0u8)
+    // w 在块循环**外**分配复用（审查 L15：原来每 64 字节块重新分配一次，
+    // MB 级输入 ≈ 1.6 万次分配）
+    var w: Array<UInt32> = Array<UInt32>(64, repeat: 0u32)
     var offset = 0
     while (offset < total) {
         for (i in 0..64) {
@@ -61,7 +64,6 @@ public func sha256(data: Array<UInt8>): Array<UInt8> {
         }
         offset += 64
 
-        var w: Array<UInt32> = Array<UInt32>(64, repeat: 0u32)
         for (i in 0..16) {
             let b0 = UInt32(block[i * 4])
             let b1 = UInt32(block[i * 4 + 1])
@@ -158,4 +160,12 @@ func testSha256Vectors(): Unit {
     }
     @Assert(sha256HexOf(longSb.toString()).size == 64)
     @Assert(sha256HexOf("中文") == sha256HexOf("中文"))
+    // padding 边界（预分配改造的回归锚点，期望值由 python hashlib 实算）：
+    // 55 字节 = 数据+0x80+8 字节长度恰好填满一块；56 字节必须溢出到两块
+    var sb55 = StringBuilder()
+    for (_ in 0..55) { sb55.append("a") }
+    @Assert(sha256HexOf(sb55.toString()) == "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318")
+    var sb56 = StringBuilder()
+    for (_ in 0..56) { sb56.append("a") }
+    @Assert(sha256HexOf(sb56.toString()) == "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a")
 }

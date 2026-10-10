@@ -368,11 +368,20 @@ public func analyzePatchConfidence(graph: CodeGraph, patchText: String): PatchCo
                                 match (patchDecls.get(cname)) {
                                     case Some(_) => resolvedRefs += 1
                                     case None =>
-                                        uncertain.add(UncertainItem(
-                                            "${pf.newPath}@${pl.newNo}:${cname}",
-                                            UUnresolvedCall,
-                                            "call to ${cname}(…) not found in repo or patch",
-                                            ArrayList<String>(), pf.newPath, pl.newNo))
+                                        // 补丁内**后文**声明的符号不算 unresolved：
+                                        // use-before-def 扫描（下方 S5）会按同一引用
+                                        // 记一次 UUseBeforeDef，这里再加 UUnresolvedCall
+                                        // 就是同一处双罚 + 给 Layer 2 留一条答案
+                                        // 显而易见的待办（复审 2026-10-10 新问题 1）。
+                                        match (allPatchDecls.get(cname)) {
+                                            case Some(_) => resolvedRefs += 1
+                                            case None =>
+                                                uncertain.add(UncertainItem(
+                                                    "${pf.newPath}@${pl.newNo}:${cname}",
+                                                    UUnresolvedCall,
+                                                    "call to ${cname}(…) not found in repo or patch",
+                                                    ArrayList<String>(), pf.newPath, pl.newNo))
+                                        }
                                 }
                         }
                     // import（S4）

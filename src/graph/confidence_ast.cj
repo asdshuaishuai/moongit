@@ -23,6 +23,11 @@ var C_AS_CPP_ROOT: String = ""
 var AST_SCAN_ROOT: String = ""
 /// 本次运行创建的临时目录（扫完即清，M2）
 let tmpDirs = ArrayList<String>()
+/// 批失败统计的包级持有（复审 M2 残留：批失败要进报告的 astNote，
+/// 不能只进日志——读报告的人无从分辨「覆盖不完整」与「没有疑点」。
+/// 0/0 = ast-grep 未运行或无批次）
+var AST_FAILED_BATCHES: Int64 = 0
+var AST_TOTAL_BATCHES: Int64 = 0
 
 /// ast-grep 可执行文件路径（None = 不可用）。
 public func findAstGrep(): Option<String> {
@@ -140,6 +145,10 @@ func runAstGrep(graph: CodeGraph): Option<ArrayList<AstNode>> {
     // 扫完把结果里的 .cpp 路径映回原 .c（Cpp 是 C 的超集，解析结果可靠）。
     let tmpDirRoot = "${tempBase()}/moongit-c-as-cpp-${getpid()}"
     C_AS_CPP_ROOT = tmpDirRoot
+    // 批失败统计复位必须在**一切早退之前**（含 byLang 空仓的 return None）：
+    // 否则同进程二次分析会读到上一次的脏值，把「语言无覆盖」误说成「批次失败」
+    AST_FAILED_BATCHES = 0
+    AST_TOTAL_BATCHES = 0
     var tmpPrepared = false
     for (f in graph.files) {
         var al = astGrepLang(f.lang)
@@ -224,6 +233,10 @@ func runAstGrep(graph: CodeGraph): Option<ArrayList<AstNode>> {
             start = i
         }
     }
+    // 复审 M2 残留：批失败情况带回给调用方（confidence.cj 写进 astNote——
+    // 只进日志的话，读报告的人仍无从分辨「覆盖不完整」与「没有疑点」）
+    AST_TOTAL_BATCHES = totalBatches
+    AST_FAILED_BATCHES = failedBatches
     // M2：全部批都失败 ⇒ 这不是「没有疑点」，是「AST 这一路没跑成」。
     // 返回 None 让调用方如实降级（astUsed=false + astNote 说清原因）。
     if (totalBatches > 0 && failedBatches == totalBatches) {
@@ -251,9 +264,17 @@ func cleanupAstTmpDirs(): Unit {
     }
 }
 
-/// 路径 → 文件名安全编码（"/" → "__"；避免嵌套临时目录）
+/// 路径 → 文件名安全编码。**可逆且无碰撞**：先转义 `%`（→`%25`）再转义
+/// `/`（→`%2F`）。旧方案 "/"→"__" 不闭合：`a/b.c` 与字面 `a__b.c` 编码后
+/// 同名互覆，还原时 replace("__","/") 还会破坏含字面 `__` 的路径
+/// （复审 2026-10-10 新问题 3）。
 func sanitizePathToName(relPath: String): String {
-    return relPath.replace("/", "__")
+    return relPath.replace("%", "%25").replace("/", "%2F")
+}
+
+/// sanitizePathToName 的逆（按编码的逆序替换）
+func unsanitizePathName(name: String): String {
+    return name.replace("%2F", "/").replace("%25", "%")
 }
 
 func tempBase(): String {
@@ -368,8 +389,8 @@ func parseOneAstNode(item: JsonValue, out: ArrayList<AstNode>): Unit {
         let dot = stem.lastIndexOf(".")
         if (dot.isSome()) {
             let encoded = stem[0..dot.getOrThrow()]
-            // sanitizePathToName 用 "__" 编码 "/"，还原之
-            file = encoded.replace("__", "/") + ".c"
+            // sanitizePathToName 是百分号转义（%25/%2F），按逆序还原
+            file = unsanitizePathName(encoded) + ".c"
         }
     }
     let rng = Json.getOr(item, "range")

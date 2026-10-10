@@ -326,13 +326,25 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
                     astNote += "；${fallbackFiles} 文件因语言无 tree-sitter 语法降级为词法级（"
                         + joinStrings(fallbackLangs, "、") + "）"
                 }
+                // 复审 M2 残留：部分批失败必须进报告（原先只进日志——读报告
+                // 的人无从分辨「AST 覆盖不完整」与「没有疑点」）
+                if (AST_FAILED_BATCHES > 0) {
+                    astNote += "；⚠ ast-grep ${AST_FAILED_BATCHES}/${AST_TOTAL_BATCHES} 个批次失败，这些文件的 AST 信号缺失"
+                }
             case None =>
-                // 两种成因分开披露：工具没装 vs 装了但本次语言无语法覆盖。
-                // 原版把两者混成一句「未安装，或…」，读者无法判断该不该去装工具。
+                // 三种成因分开披露：工具没装 / 装了但语言无覆盖 / 工具跑了但
+                // 批次全败。原版把后两种混成一句「语言无语法覆盖」——全批失败
+                // （规则/环境异常）被说成覆盖边界，读者会误以为一切正常。
                 if (findAstGrep().isSome()) {
-                    astNote = "语法树不可用：ast-grep 已安装，但本次全部文件的语言都无 tree-sitter 语法（如纯仓颉仓库）——"
-                        + "已降级为词法级分析；函数粒度信号改由词法路径近似（长度/嵌套/魔法数/空体），"
-                        + "吞错与重复体仍缺失"
+                    if (AST_TOTAL_BATCHES > 0) {
+                        astNote = "语法树不可用：ast-grep 已运行，但全部 ${AST_TOTAL_BATCHES} 个批次失败（规则或环境异常）——"
+                            + "已降级为词法级分析；函数粒度信号改由词法路径近似（长度/嵌套/魔法数/空体），"
+                            + "吞错与重复体仍缺失"
+                    } else {
+                        astNote = "语法树不可用：ast-grep 已安装，但本次全部文件的语言都无 tree-sitter 语法（如纯仓颉仓库）——"
+                            + "已降级为词法级分析；函数粒度信号改由词法路径近似（长度/嵌套/魔法数/空体），"
+                            + "吞错与重复体仍缺失"
+                    }
                 } else {
                     astNote = "语法树不可用：未安装 ast-grep（`brew install ast-grep` 可获得 tree-sitter 级覆盖）——"
                         + "已降级为词法级分析；函数粒度信号改由词法路径近似（长度/嵌套/魔法数/空体），"

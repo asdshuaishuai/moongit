@@ -283,10 +283,15 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                 let p = mcpRequireProject(getStr("name"))
                 let g = buildGraph(p.path)
                 var depth: Int64 = 6
-                match (strictIntArg("depth")) {
-                    case Some(d) =>
-                        depth = if (d < 1) { 1 } else { if (d > 24) { 24 } else { d } }
-                    case None => ()
+                // 缺省与非法必须可区分（与 get_journal 的 limit 同一契约，
+                // 复审 M16 残留）：depth=1.5/"abc" 原先静默落回默认 6，
+                // 模型无从知道自己的参数没生效。
+                if (Json.has(args, "depth")) {
+                    match (strictIntArg("depth")) {
+                        case Some(d) =>
+                            depth = if (d < 1) { 1 } else { if (d > 24) { 24 } else { d } }
+                        case None => return mcpErr("depth 需要整数")
+                    }
                 }
                 // M16：depth 必须真的进入输出。原实现 clamp 完就丢掉 ——
                 // schema 写着「目录深度，默认 6」，模型据此规划 context 预算，

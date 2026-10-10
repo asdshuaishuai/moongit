@@ -279,19 +279,35 @@ public func upsertRegion(text: String, name: String, content: String): String {
     return insertRegion(text, name, content)
 }
 
-/// 去掉"更新于 <时间>"片段，用于语义等价比对
+/// 去掉"更新于 <时间>"片段，用于语义等价比对。
+/// 契约（审计 L10 收紧）：引擎只把 stamp 写在**引用行**里——render.cj 的
+/// 块首行 `> … · 更新于 <时间>`。因此只剥「`>` 开头的行」里的 stamp 且只剥
+/// 第一处；正文行（commit subject / AI 摘要等用户可控文本）出现「更新于 」
+/// 时**不许动**——否则两边同剥错行，等价比对失真：该更新时不更新，
+/// 或无谓重写留备份弄脏用户仓库。行扫描的切点全在 ASCII 字节上（行首 /
+/// 换行处），无 UTF-8 劈切风险。
 public func stripUpdateStamp(content: String): String {
     let marker = "更新于 "
-    let idx = content.indexOf(marker)
-    match (idx) {
-        case None => return content
-        case Some(i) =>
-            // 时间戳在行内：从 marker 到行尾替换为空
-            let after = content[i..]
-            let nl = after.indexOf("\n")
-            let lineEnd = if (nl.isSome()) { i + nl.getOrThrow() } else { content.size }
-            return content[..i] + content[lineEnd..]
+    var lineStart: Int64 = 0
+    while (lineStart < content.size) {
+        let rest = content[lineStart..]
+        let nl = rest.indexOf("\n")
+        let lineLen = match (nl) {
+            case Some(n) => n
+            case None => rest.size
+        }
+        let line = rest[0..lineLen]
+        if (line.startsWith(">")) {
+            match (line.indexOf(marker)) {
+                case Some(i) =>
+                    // 只剥第一处：marker 到行尾
+                    return content[..lineStart + i] + content[lineStart + lineLen..]
+                case None => ()
+            }
+        }
+        lineStart += lineLen + 1   // +1 跳过换行；无换行的末行使下一轮条件不满足
     }
+    return content
 }
 
 public class ApplyResult {
@@ -978,7 +994,13 @@ func countBackupFiles(backupDir: String): Int64 {
 
 @Test
 func testStripUpdateStamp(): Unit {
-    @Assert(stripUpdateStamp("a 更新于 2026-01-01 00:00\nb") == "a \nb")
+    // 契约（审计 L10 收紧）：只剥「`>` 引用行」里的 stamp——引擎只在渲染块
+    // 首行写 `> … · 更新于 <时间>`（render.cj）。正文行里的「更新于 」是
+    // 用户可控文本（commit subject 等），误剥会让等价比对两边同剥错行。
+    @Assert(stripUpdateStamp("> moonGit · 更新于 2026-01-01 00:00\n\n正文") == "> moonGit · \n\n正文")
+    @Assert(stripUpdateStamp("## 进度\n\n> 更新于 2026-01-01 00:00\n\n### main") == "## 进度\n\n> \n\n### main")
+    // 非 quote 行不许动（原实现会从首个「更新于 」剥到行尾——正是 L10 的缺陷形态）
+    @Assert(stripUpdateStamp("a 更新于 2026-01-01 00:00\nb") == "a 更新于 2026-01-01 00:00\nb")
     @Assert(stripUpdateStamp("no stamp here") == "no stamp here")
 }
 

@@ -230,7 +230,9 @@ public func execCapture(
         } catch (e: Exception) {
             ()
         }
-        return ExecResult(-1, "", if (errRead[0].isEmpty()) { "命令超时或管道未关闭（${timeoutMs}ms）：${cmd}" } else { errRead[0] }, true)
+        return ExecResult(-1, "", if (errRead[0].isEmpty()) { pickText(
+            "command timed out or pipe not closed (${timeoutMs}ms): ${cmd}",
+            "命令超时或管道未关闭（${timeoutMs}ms）：${cmd}") } else { errRead[0] }, true)
     }
 
     // 第二步：管道都 EOF 了，子进程几乎必然已退出，wait 是瞬时的。
@@ -250,7 +252,8 @@ public func execCapture(
     // 这种情况必须报错而不是返回半截输出 + exit 0：调用方无法区分
     // 「命令成功但输出短」和「命令成功但输出被砍了一半」。
     if (!outRead[1] || !errRead[1]) {
-        let note = "读取子进程输出时管道出错，返回的数据不完整"
+        let note = pickText("error reading subprocess output via pipe; captured data is incomplete",
+            "读取子进程输出时管道出错，返回的数据不完整")
         return ExecResult(-1, outRead[0], joinNote(errRead[0], note), false)
     }
     return ExecResult(code, outRead[0], errRead[0], false)
@@ -285,7 +288,11 @@ private func killSubprocess(sub: SubProcess): Unit {
 func readAllFromPipe(pipe: ?InputStream): (String, Bool) {
     match (pipe) {
         case Some(input) =>
-            let total = ArrayList<UInt8>()
+            // 逐块收取（审查 L15：原实现把每个字节 add 进 ArrayList——
+            // 64KB 缓冲逐次 add，每字节带扩容检查）。块内拷贝进预分配
+            // 数组，最后拼一次大数组再解码。
+            let chunks = ArrayList<Array<UInt8>>()
+            var total: Int64 = 0
             let buf = Array<UInt8>(65536, repeat: 0u8)
             var clean = true
             while (true) {
@@ -299,11 +306,22 @@ func readAllFromPipe(pipe: ?InputStream): (String, Bool) {
                 if (n <= 0) {
                     break
                 }
+                var piece: Array<UInt8> = Array<UInt8>(n, repeat: 0u8)
                 for (i in 0..n) {
-                    total.add(buf[i])
+                    piece[i] = buf[i]
                 }
+                chunks.add(piece)
+                total += n
             }
-            return (fromUtf8Lossy(total.toArray()), clean)
+            var all: Array<UInt8> = Array<UInt8>(total, repeat: 0u8)
+            var off: Int64 = 0
+            for (c in chunks) {
+                for (i in 0..c.size) {
+                    all[off + i] = c[i]
+                }
+                off += c.size
+            }
+            return (fromUtf8Lossy(all), clean)
         case None => return ("", true)
     }
 }
@@ -354,9 +372,12 @@ public func gitRun(
         if (tolerate) {
             return ""
         }
+        // join 提到局部变量：插值 `${}` 里不能写带转义引号的表达式
+        let argStr = joinStrings(args, " ")
         throw DgError(
             "GIT_FAILED",
-            "git ${joinStrings(args, " ")} 失败（cwd=${repoDir}）",
+            pickText("git ${argStr} failed (cwd=${repoDir})",
+                "git ${argStr} 失败（cwd=${repoDir}）"),
             1,
             Some(r.stderr.trimAscii()),
         )
@@ -393,7 +414,7 @@ public func gitRaw(repoDir: String, args: Array<String>): String {
     }
     let r = execCapture("git", fullArgs.toArray(), None, 120000)
     if (r.exitCode != 0) {
-        throw DgError("GIT_FAILED", "git 调用失败", 1, Some(r.stderr.trimAscii()))
+        throw DgError("GIT_FAILED", pickText("git call failed", "git 调用失败"), 1, Some(r.stderr.trimAscii()))
     }
     return r.stdout
 }

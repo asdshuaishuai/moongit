@@ -528,7 +528,7 @@ public func removePathIfExists(filePath: String): Unit {
             // 删除失败必须让调用方知道：它常常意味着沙箱或用户的目录没清掉，
             // 继续跑下去就是往旧目录里堆数据。注意：这里**不能**降级成静默成功 ——
             // 静默会让「测试残留」这类问题永远查不出来。
-            Log.warn("删除失败（已跳过）：${filePath}")
+            Log.warn(pickText("failed to remove (skipped): ${filePath}", "删除失败（已跳过）：${filePath}"))
         }
     }
 }

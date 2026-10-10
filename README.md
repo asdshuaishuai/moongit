@@ -282,7 +282,7 @@ scripts/      install.sh / moongit.sh / build-minimal-sdk.sh / package-release.s
 
 ## 构建细节与已知边界
 
-见 [AGENTS.md](AGENTS.md)（仓颉编码约定、macOS SDK 兼容、测试基线 505 项）。
+见 [AGENTS.md](AGENTS.md)（仓颉编码约定、macOS SDK 兼容、测试基线 543 项）。
 
 - SHA-256 自研（通过官方测试向量），不用于密码学安全场景。
 - AI 摘要质量取决于提交信息质量。

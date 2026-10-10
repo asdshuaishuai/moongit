@@ -627,6 +627,20 @@ func numsJson(vals: Array<Float64>): JsonValue {
     return JArr(a)
 }
 
+/// 对象键按全序插入（M11 残留：HashMap 迭代序不可依赖，而 JObj 按插入序
+/// 序列化——scene 的字节契约必须自定键序）。wrap 由调用方给定，各表值类型不同。
+func setObjKeysSorted<T>(o: JsonValue, m: HashMap<String, T>, wrap: (T) -> JsonValue): Unit {
+    let keys = ArrayList<String>()
+    for ((k, _) in m) { keys.add(k) }
+    insertionSortBy(keys, { a, b => a < b })
+    for (k in keys) {
+        match (m.get(k)) {
+            case Some(v) => Json.set(o, k, wrap(v))
+            case None => ()
+        }
+    }
+}
+
 func sceneViewJson(v: SceneView): JsonValue {
     let o = Json.obj()
     Json.set(o, "label", Json.of(v.label))
@@ -640,16 +654,16 @@ func sceneViewJson(v: SceneView): JsonValue {
     Json.set(b, "y1", Json.of(v.by1))
     Json.set(o, "bounds", b)
     let nt = Json.obj()
-    for ((k, tok) in v.nodeTheme) { Json.set(nt, k, Json.of(tok)) }
+    setObjKeysSorted(nt, v.nodeTheme, { x => Json.of(x) })
     Json.set(o, "nodeTheme", nt)
     let nl = Json.obj()
-    for ((k, l) in v.nodeLayer) { Json.set(nl, k, Json.of(l)) }
+    setObjKeysSorted(nl, v.nodeLayer, { x => Json.of(x) })
     Json.set(o, "nodeLayer", nl)
     let od = Json.obj()
-    for ((k, c) in v.order) { Json.set(od, k, Json.of(c)) }
+    setObjKeysSorted(od, v.order, { x => Json.of(x) })
     Json.set(o, "order", od)
     let lbl = Json.obj()
-    for ((k, s) in v.labels) { Json.set(lbl, k, Json.of(s)) }
+    setObjKeysSorted(lbl, v.labels, { x => Json.of(x) })
     Json.set(o, "labels", lbl)
     Json.set(o, "shapes", JArr(v.shapes))
     Json.set(o, "particles", JArr(v.particles))

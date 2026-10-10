@@ -39,7 +39,7 @@ export SDKROOT="$HOME/.local/share/sdks/MacOSX.minimal/latest"  # macOS 26/27+ �
 
 cd engine
 cjpm build          # 构建 → target/release/bin/main
-cjpm test           # 540 项测试（util 96 / kernel 241 / flow 88 / cli 79 / graph 36）
+cjpm test           # 543 项测试（util 97 / kernel 241 / flow 88 / cli 79 / graph 38）
                       # ⚠️ 必须带 DEEPGIT_HOME，见下方红线
 cjpm build -i       # 增量构建（改单文件时更快）
 ```
@@ -184,11 +184,11 @@ moonGit/target/release/bin/main status
   证据链（不是猜的）：
   - 并行（默认）跑 3 次：绿、绿、**红 1 条**；
   - `--filter` 单跑 2 次：全绿；
-  - `--parallel 1` 串行跑 2 次：全绿 540/540；
+  - `--parallel 1` 串行跑 2 次：全绿 543/543；
   - 用**构建出的二进制**在 15 个全新沙箱上复刻「恰好两次 update」：AGENTS.md 0/15 变化。
   最后一条是关键：生产代码在隔离进程里行为稳定，所以问题在测试隔离，不在 update 逻辑。
   **要可靠信号就跑 `cjpm test --parallel 1`**（代价是慢几倍）。
-  真正的修法是给每个用例独立的 store 路径而不是全局环境变量 —— 涉及 540 个用例，
+  真正的修法是给每个用例独立的 store 路径而不是全局环境变量 —— 涉及 543 个用例，
   属于架构改动，没有用户拍板前不要自己动。
 - 部分用例建了 `/tmp/deepgit-*` 沙箱却没在 `finally` 里删干净
   （实测 `/tmp` 下已积 996 个，`deepgit-mcpallfail` 一个前缀就 132 个）。
@@ -205,7 +205,7 @@ util → (kernel | graph) → flow → cli
   `flow` 依赖 `kernel`，`cli` 在最上层。反向依赖 = 循环依赖，编译期就会发现。
 - **引擎 AI 无关（`src/ai` 已删除）**：provider/prompt/工具循环都在客户端。
   ⚠️ 早先这张图画的是 `util → (kernel | graph) → ai → flow → cli`，
-  而 `ai` 包早已不存在（连不变量 4 引用的 `aiChatJson` 也没有）——
+  而 `ai` 包早已不存在（不变量 4 已随之改写为 AI 无关边界）——
   依赖图是 agent 给新代码落位的依据，画着不存在的中间层会把编排代码放错包。
   **新增「调 AI 做编排」的代码一律进 `flow/`**（引擎侧不再有 AI 层可放）。
 ## 编码约定（仓颉特有，踩过的坑）
@@ -271,8 +271,10 @@ util → (kernel | graph) → flow → cli
 3. **`git log` 解析依赖 `%x1f`/`%x1e` 分隔符**，字段顺序在 `kernel/git.cj` 的 `logCommits` 里，
    改格式必须同步改解析（`logRange`/`oldestCommits`/`authorStats` 都建立在此之上）。
 
-4. **AI 失败必须降级而非中断**：`flow/update.cj` 与 `flow/deep.cj` 都用 `match` 而非 `try?`
-   语义处理 `aiChatJson` 的失败，并在结果里回报 `aiError`。降级后仍要写进度库与日志。
+4. **AI 无关：引擎不做任何 LLM 调用**（原「AI 失败必须降级」随 `src/ai` 删除改写）。
+   叙述/文档生成走确定性规则引擎（`kernel/narrative.cj`）；LLM 增强由上层客户端
+   （deepDolphin）基于 `/api/context` 自行完成。引擎侧不存在 `aiChatJson`/`aiError`
+   这类符号——AI 内容缺失或失败时，进度库与日志照常写，绝不因 AI 内容缺席而失败。
 
 5. **钩子必须后台异步且永不非零退出**：`post-commit` 与 `post-merge` 共用同一套托管块
    （`(moongit track --quiet --source hook >/dev/null 2>&1 &)`），可重复安装/卸载而不破坏用户已有钩子内容。

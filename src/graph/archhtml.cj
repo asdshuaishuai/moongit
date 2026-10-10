@@ -224,8 +224,10 @@ func renderJs(en: Bool): String {
     // (i+1)/(n+1)），只有这个 Web 驱动在随机：同一份数据两次打开画面不同。
     // 确定性写法的代价是粒子看起来更「齐」，而一致性是可断言的契约。
     // 密度公式与场景出口统一为 weight/5 封顶 6（原先两边一个 /4 封顶 7、
-    // 一个 /5 封顶 6，同一个量两个算法）。
-    sb.append("  function buildParts() { PARTS = []; cur().edges.forEach(function (e) { var n = Math.min(1 + Math.round(e.weight / 5), 6); for (var i = 0; i < n; i++) { var o = (i + 1) / (n + 1); PARTS.push({ e: e, o: o, sp: 0.00012 }); } }); }\n")
+    // 一个 /5 封顶 6，同一个量两个算法）。⚠️ 必须 floor 不能 round：
+    // 场景侧是仓颉整数除法（截断），round 在 weight≡3,4 (mod 5) 时会多出
+    // 一颗粒子——同一个量两个答案（复审 L7 残留）。
+    sb.append("  function buildParts() { PARTS = []; cur().edges.forEach(function (e) { var n = Math.min(1 + Math.floor(e.weight / 5), 6); for (var i = 0; i < n; i++) { var o = (i + 1) / (n + 1); PARTS.push({ e: e, o: o, sp: 0.00012 }); } }); }\n")
     sb.append("  function bez(a, b, t) {\n")
     sb.append("    var x1 = a.x + a.w; var y1 = a.y + a.h / 2; var x2 = b.x; var y2 = b.y + b.h / 2; var mx = (x1 + x2) / 2;\n")
     sb.append("    var u = 1 - t;\n")

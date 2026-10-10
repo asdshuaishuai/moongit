@@ -191,11 +191,15 @@ func testMilestoneLineFormatting(): Unit {
     Json.set(it, "commitsSince", Json.of(12))
     Json.set(it, "tagReached", Json.of(false))
     Json.set(it, "overdue", Json.of(false))
-    let line = milestoneLine(it)
+    let line = milestoneLine(it, "zh")
     @Assert(line.contains("demo｜v1.0"))
     @Assert(line.contains("进行中"))
     @Assert(line.contains("还剩 62 天"))
     @Assert(line.contains("12 提交"))
+    // en 分支（M15 残留：本行原先整行硬编码中文）
+    @Assert(milestoneLine(it, "en").contains("in progress"))
+    @Assert(milestoneLine(it, "en").contains("62 days left"))
+    @Assert(milestoneLine(it, "en").contains("12 commits since creation"))
 
     // 逾期展示
     let od = Json.obj()
@@ -207,8 +211,10 @@ func testMilestoneLineFormatting(): Unit {
     Json.set(od, "commitsSince", Json.of(0))
     Json.set(od, "tagReached", Json.of(false))
     Json.set(od, "overdue", Json.of(true))
-    @Assert(milestoneLine(od).contains("已逾期"))
-    @Assert(milestoneLine(od).contains("逾期 9 天"))
+    @Assert(milestoneLine(od, "zh").contains("已逾期"))
+    @Assert(milestoneLine(od, "zh").contains("逾期 9 天"))
+    @Assert(milestoneLine(od, "en").contains("overdue"))
+    @Assert(milestoneLine(od, "en").contains("9 days overdue"))
 }
 
 @Test
@@ -1574,7 +1580,7 @@ func testMilestoneLineNeverRendersMinusOneAsOneDayOverdue(): Unit {
         Json.set(it, "commitsSinceReadable", Json.of(true))
         Json.set(it, "tagReached", Json.of(false))
         Json.set(it, "overdue", Json.of(overdue))
-        return milestoneLine(it)
+        return milestoneLine(it, "zh")
     }
     // -1 必须说「算不出」，不许出现任何天数
     for (d in ["2026-02-31", "2026-13-01", "2026-01-32", "not-a-date"]) {
@@ -1983,22 +1989,28 @@ func testLeftoverTextNeverSaysNoneWhenUnchecked(): Unit {
     let unchecked = ArrayList<String>(["proj-a", "proj-b"])
     let some = ArrayList<String>(["proj-a/README.md.tmp-1-0"])
 
-    let cleanText = leftoverResultText(leftoverVerdict(0, 0))
+    let cleanText = leftoverResultText(leftoverVerdict(0, 0), "zh")
     @Assert(cleanText == "无")
+    // en 分支不许再漏（M15 残留）：doctor 单元格原先硬编码中文
+    @Assert(leftoverResultText(leftoverVerdict(0, 0), "en") == "none")
 
-    let uncheckedText = leftoverResultText(leftoverVerdict(0, 2))
+    let uncheckedText = leftoverResultText(leftoverVerdict(0, 2), "zh")
     @Assert(!uncheckedText.contains("无"))
     @Assert(uncheckedText.contains("未检查"))
 
-    let detail = leftoverDetailText(leftoverVerdict(0, 2), none, unchecked)
+    let detail = leftoverDetailText(leftoverVerdict(0, 2), none, unchecked, "zh")
     @Assert(!detail.contains("可安全删除"))    // 没找到就不许开删除处方
     @Assert(detail.contains("proj-a"))
     @Assert(detail.contains("没有检查过"))
+    let detailEn = leftoverDetailText(leftoverVerdict(0, 2), none, unchecked, "en")
+    @Assert(detailEn.contains("were not checked"))
+    @Assert(detailEn.contains("proj-a"))
 
-    let mixed = leftoverDetailText(leftoverVerdict(1, 2), some, unchecked)
+    let mixed = leftoverDetailText(leftoverVerdict(1, 2), some, unchecked, "zh")
     @Assert(mixed.contains("README.md.tmp-1-0"))   // 已查到的部分照常给
     @Assert(mixed.contains("没有检查过"))
-    @Assert(leftoverResultText(leftoverVerdict(1, 2)) == "1 个（另有 2 个项目未检查）")
+    @Assert(leftoverResultText(leftoverVerdict(1, 2), "zh") == "1 个（另有 2 个项目未检查）")
+    @Assert(leftoverResultText(leftoverVerdict(1, 2), "en") == "1 found (2 projects not checked)")
 }
 
 /// 真实文件系统：目录读不出来时必须进 unreadable 清单，而不是安静地报「没有」。
@@ -2072,8 +2084,8 @@ func __lintDoctorLeftoverRowMustUseTheThreeStateSeam(): Unit {
     }
     let code = sb.toString()
     // 用了接缝
-    @Assert(code.contains("leftoverResultText(lv)"))
-    @Assert(code.contains("leftoverDetailText(lv, leftovers, unreadableProjects)"))
+    @Assert(code.contains("leftoverResultText(lv, lang)"))
+    @Assert(code.contains("leftoverDetailText(lv, leftovers, unreadableProjects, lang)"))
     @Assert(code.contains("scanLeftovers(reg.projects)"))
     // 恒真条件不许回来：`size >= 0` 对 Int64 恒成立，等于什么都没判
     @Assert(!code.contains(".size >= 0"))
