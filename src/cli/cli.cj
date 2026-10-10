@@ -1064,13 +1064,26 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
                     }
                 case None => ()
             }
-            if (ctx.json) {
+            // --format：html（默认，Web Canvas 交互代码图谱——与 arch 同纪律：
+            // 引擎零实现也能直接导出看）/ text（索引树文本）/ json（与 --json 等价）
+            var fmt = "html"
+            match (flagValue(args, "--format")) {
+                case Some(v) => fmt = v
+                case None => ()
+            }
+            if (fmt == "json" || ctx.json) {
                 // M16：`--depth` 原先对 --json 路径完全无效（fullGraphJson 没有
                 // 这个参数），于是「同一条命令、同一个参数，两条路径两种行为」。
                 // 现在两条路都按 depth 截断，且 JSON 侧恒发 depth / depthOmitted。
                 printOut(Json.pretty(fullGraphJson(graph, depth)))
-            } else {
+            } else if (fmt == "text") {
                 printOut(treeText(graph, depth))
+            } else if (fmt == "html") {
+                printOut(treeCanvasHtml(graph, depth, false))
+            } else {
+                throw DgError.usage(T(
+                    "tree format accepts html | text | json (got \"${fmt}\")",
+                    "tree format 支持 html | text | json（收到 \"${fmt}\"）"))
             }
         case "symbol" =>
             let name = match (symbolArg) {
@@ -1216,7 +1229,7 @@ func skillMarkdown(): String {
         + "codegraph_patch_merge（Layer 3 合并出 final 分数）")
     ways.add("**CLI**（一次性问答/脚本）：`" + engine + " status --json`、`context [项目] --budget N`、`tools`、"
         + "`journal <项目>`、`dashboard --json`、"
-        + "`graph overview|tree|symbol <名>|impact <名>|arch --format scene|confidence [--llm]|patchconf --patch <diff>`")
+        + "`graph overview|tree --format html|symbol <名>|impact <名>|arch --format scene|confidence [--llm]|patchconf --patch <diff>`（tree/arch 默认即 Web Canvas 交互图）")
     let sb = StringBuilder()
     sb.append(SKILL_FRONTMATTER)
     sb.append("# moonGit — 本地项目群进度与代码引擎（agent 使用指南）\n\n")

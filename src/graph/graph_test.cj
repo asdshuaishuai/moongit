@@ -1117,6 +1117,25 @@ func testCAstPathMapsBackWithoutDoubleExtension(): Unit {
     }
 }
 
+/// 代码图谱的 Web 导出（与 arch 同纪律：默认格式即 Web Canvas，引擎零实现
+/// 也能直接打开看）。内嵌数据必须就是 `graph tree --json` 的同一份契约。
+@Test
+func testTreeCanvasHtmlExport(): Unit {
+    let root = writeTree()
+    try {
+        let g = buildGraph(root)
+        let html = treeCanvasHtml(g, 8, false)
+        @Assert(html.contains("<canvas"))
+        @Assert(html.contains("MoongitCodeGraph"))
+        @Assert(html.contains("renderTo"))
+        @Assert(html.contains("referenceEdges"))
+        @Assert(html.contains("depthOmitted"))
+        @Assert(!html.contains("<script src"))
+    } finally {
+        removeTree(root)
+    }
+}
+
 /// M12 回归：未分层（层 4）的模块不许参与违规判定。
 /// 原实现 `la < lb` 把层 4 当成「最高层」⇒ docs / scripts / `(root)`
 /// 的全部入边都被记成违规（现实中极常见，等于噪声常态满格）。
