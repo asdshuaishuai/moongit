@@ -25,7 +25,7 @@ import moongit.util.*
 /// 函数级节点/调用边/异常实码。边 = 「函数体 → 被调函数」（词法近似：
 /// 函数体内自由调用按名匹配全局定义）；置信度 findings 按所在函数聚合，
 /// 异常函数内嵌实码片段（截 40 行，页面点击即看）。
-func functionGraphData(graph: CodeGraph, findings: ConfidenceReport, en: Bool): JsonValue {
+public func functionGraphData(graph: CodeGraph, findings: ConfidenceReport, en: Bool): JsonValue {
     let idx = graph.symbolIndex()
     let out = Json.obj()
     let fns = ArrayList<JsonValue>()

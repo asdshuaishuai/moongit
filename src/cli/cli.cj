@@ -949,7 +949,7 @@ func cmdContext(rest: ArrayList<String>, ctx: CliContext): Int64 {
 /// 子命令：overview（默认）/ tree / symbol <名> / impact <名> / arch。
 /// arch 支持 --format html（Canvas 交互架构图，默认）/ mermaid / dot / json。
 func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
-    let subs = ["overview", "tree", "symbol", "impact", "arch", "confidence", "patchconf"]
+    let subs = ["overview", "tree", "symbol", "impact", "arch", "confidence", "functions", "patchconf"]
     var sub = "overview"
     let args = ArrayList<String>()
     if (rest.size > 0 && subs.contains(rest[0])) {
@@ -1032,8 +1032,8 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
         let targets = resolveTargets(args, false)
         if (targets.size != 1) {
             throw DgError.usage(T(
-                "Usage: moongit graph <overview|tree|symbol|impact|arch> [project] [...]; exactly one project required (got ${targets.size})",
-                "用法：moongit graph <overview|tree|symbol|impact|arch> [项目] [...]；恰好一个项目（收到 ${targets.size} 个）"))
+                "Usage: moongit graph <overview|tree|symbol|impact|arch|functions> [project] [...]; exactly one project required (got ${targets.size})",
+                "用法：moongit graph <overview|tree|symbol|impact|arch|functions> [项目] [...]；恰好一个项目（收到 ${targets.size} 个）"))
         }
         return (targets[0], None)
     }
@@ -1145,6 +1145,16 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
                     }
                     return 1
             }
+        case "functions" =>
+            // 函数级图谱 × 置信度标记（客户端/agent 的代码图谱数据源）：
+            // functions[{id,file,name,kind,line,lang,weight,findings[label,dim,evidence]}]
+            // + functionEdges + codeSnippets。与 HTML 交付物内嵌的同一份构造器。
+            let conf = analyzeConfidence(graph, true)
+            if (ctx.json) {
+                printOut(Json.pretty(functionGraphData(graph, conf, en)))
+            } else {
+                printOut(functionGraphText(graph, conf, en))
+            }
         case "patchconf" =>
             // Layer 1：算法层（被动能力：仅显式执行）
             let patchPath = match (flagValue(args, "--patch")) {
@@ -1233,8 +1243,8 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
             }
         case _ =>
             throw DgError.usage(T(
-                "Unknown graph subcommand (use overview|tree|symbol|impact|arch)",
-                "未知 graph 子命令（可用 overview|tree|symbol|impact|arch）"))
+                "Unknown graph subcommand (use overview|tree|symbol|impact|arch|functions)",
+                "未知 graph 子命令（可用 overview|tree|symbol|impact|arch|functions）"))
     }
     return 0
 }
@@ -1609,7 +1619,7 @@ func printHelp(): Unit {
         printOut("  mcp                      Run as an MCP server (stdio JSON-RPC; for Claude and other agent hosts)")
         printOut("  skill <print|install>    Print/install the agent Skill pack (--dir for the target directory)")
         printOut("  report [project] [--out F]  Export a Markdown progress report")
-        printOut("  graph [overview|tree|symbol|impact|arch|confidence|patchconf] [project]")
+        printOut("  graph [overview|tree|symbol|impact|arch|functions|confidence|patchconf] [project]")
         printOut("                           patchconf: patch-level confidence (3-layer: --patch analyze / --skill agent / --merge final)")
         printOut("                           confidence: structural confidence report (--llm for the LLM review prompt; --no-ast skips the syntax-tree layer)")
         printOut("                           Code graph: symbol index / relationship tree / impact /")
