@@ -424,7 +424,12 @@ public func renderProgressAgent(
     let zh = !isEnglish(lang)
     let sb = StringBuilder()
     sb.append("## 当前进度（moonGit 维护）\n\n")
-    sb.append("> ${modeLabel(mode, lang)} · ${formatDateTime(at)} · ${overallLine(facts, progress, lang)}\n\n")
+    // ⚠️ 时间戳必须放**行尾**（与 renderProgressReadme 的 358 行同构）：
+    // stripUpdateStamp 的契约是「引用行内『更新于』到行尾」——旧行把时间戳
+    // 放在中间、行尾还跟着「追踪 N 个分支」，且整行没有「更新于」字样，
+    // 剥不到 ⇒ 跨一分钟重跑 update 内容必不同 ⇒ AGENTS.md 每分钟被重写一次、
+    // 每次留一份备份（自测实弹抓到；此前验收两遍跑在同一分钟内，是假阴性）。
+    sb.append("> ${modeLabel(mode, lang)} · ${overallLine(facts, progress, lang)} · 更新于 ${formatDateTime(at)}\n\n")
     let pulse = renderPulse(facts, lang)
     if (!pulse.isEmpty()) {
         sb.append(pulse)

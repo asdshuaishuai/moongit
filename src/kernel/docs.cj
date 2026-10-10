@@ -1034,6 +1034,14 @@ func testStripUpdateStamp(): Unit {
     // 非 quote 行不许动（原实现会从首个「更新于 」剥到行尾——正是 L10 的缺陷形态）
     @Assert(stripUpdateStamp("a 更新于 2026-01-01 00:00\nb") == "a 更新于 2026-01-01 00:00\nb")
     @Assert(stripUpdateStamp("no stamp here") == "no stamp here")
+    // AGENTS 渲染行的形态（时间在行尾；renderProgressAgent 生成）：
+    // 时间被中和，「追踪 N 个分支」这类真实状态保留——它变了就该重写
+    @Assert(stripUpdateStamp("> 浅更新 · 追踪 4 个分支 · 更新于 2026-10-10 17:07")
+        == "> 浅更新 · 追踪 4 个分支 · ")
+    // 旧行形态（时间在中间、无「更新于」）——历史上剥不到、每分钟必重写的元凶；
+    // 现在渲染端已统一为时间在行尾，但行内含「更新于」的任意形态仍要能剥
+    @Assert(stripUpdateStamp("> 浅更新 · 2026-10-10 17:07 · 追踪 4 个分支")
+        == "> 浅更新 · 2026-10-10 17:07 · 追踪 4 个分支")
 }
 
 @Test
