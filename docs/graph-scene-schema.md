@@ -95,12 +95,36 @@ token 表即 `themes` 的键（含 `langs` 下的每种语言）—— **引擎�
 - 字体渲染质量取决于驱动宿主；引擎只声明 size/weight/family 栈
 - 仓颉语言暂无 tree-sitter 语法包，语法树覆盖边界见 confidence 文档
 
+## Canvas 分派规则（平台级，2026-10-10 定稿）
+
+**有客户端实现，就跟客户端走；没有客户端实现，才用 Web 技术兜底。**
+
+| 场景 | Canvas 实现 | 数据 |
+|---|---|---|
+| 无客户端实现（终端/临时查看/agent） | **Web Canvas 兜底**：`graph arch` / `graph tree` 默认导出单文件 HTML | 内嵌 JSON（与 `--json` 同契约） |
+| macOS（deepDolphin） | **SwiftUI GraphicsContext**（Swift 语言版 Canvas2D 对应物，`ArchCanvasView`） | `--format scene` |
+| Linux（deepDolphin/linux，仓颉客户端） | **仓颉 Canvas 移植**（CangjieGUI 宿主，实现同一子集） | `--format scene` |
+| DDE / deepin（deepDolphin/deepin，C++ 客户端） | **Qt QPainter Canvas**（C++ 实现同一子集） | `--format scene` |
+| Windows / 鸿蒙 PC | 待定（未指定前一律 Web 兜底） | `--format scene` |
+
+分派规则的三条不变量：
+
+1. **数据只有一个来源**：无论哪种 Canvas，消费的都是 moongit-graph-scene v1
+   （或 tree/arch 自身内嵌的同契约 JSON）——渲染端换技术栈，数据零改动。
+2. **Web 兜底不是降级**：它是「零实现也能看」的保底出口，与平台实现长期共存；
+   平台实现落地后引擎的 Web 导出照常保留。
+3. **平台 Canvas 必须实现同一子集**：本文件上方列出的 Canvas2D 方法清单就是
+   移植的验收清单——少实现一项，渲染器就跑不完。
+
 ## 驱动清单
 
 | 驱动 | 状态 |
 |---|---|
-| Web Canvas2D（单文件 HTML，交互完整） | ✅ |
+| Web Canvas2D（单文件 HTML，交互完整；tree 与 arch 默认导出） | ✅ |
 | 任何 Canvas2D API 移植（注入 ctx） | ✅ 契约级支持 |
-| macOS CoreGraphics / Swift | 规划 |
+| macOS SwiftUI GraphicsContext（deepDolphin `ArchCanvasView`） | ✅ |
+| Linux 仓颉 Canvas 移植（deepDolphin/linux，CangjieGUI 宿主） | 📌 指定实现，进行中 |
+| DDE / deepin Qt QPainter Canvas（deepDolphin/deepin，C++） | 📌 指定实现，进行中 |
+| Windows / 鸿蒙 PC Canvas | 待定（Web 兜底） |
 | SVG / PDF 静态导出 | 规划 |
 | node-canvas / Skia 服务端栅格 | 规划 |
