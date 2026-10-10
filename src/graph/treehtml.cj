@@ -1139,8 +1139,7 @@ function renderConf(n) {
   var box = BODY.conf;
   var list = [];
   if (n.type === 'sym') { list = n.findings; }
-  else if (n.type === 'file') { list = n.fileFindings; }
-  else { collectRoll(n, list); }
+  else { collectRoll(n, list); }   // 文件也是容器：pill 数的是整棵子树，详情必须同口径
   var h = '';
   if (!CONF.astUsed && CONF.astNote) { h += '<div class="degrade">' + esc(CONF.astNote) + '</div>'; }
   if (!list.length) {
