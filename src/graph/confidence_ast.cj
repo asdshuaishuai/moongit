@@ -389,8 +389,11 @@ func parseOneAstNode(item: JsonValue, out: ArrayList<AstNode>): Unit {
         let dot = stem.lastIndexOf(".")
         if (dot.isSome()) {
             let encoded = stem[0..dot.getOrThrow()]
-            // sanitizePathToName 是百分号转义（%25/%2F），按逆序还原
-            file = unsanitizePathName(encoded) + ".c"
+            // sanitizePathToName 是百分号转义（%25/%2F），按逆序还原。
+            // ⚠️ 不能再拼 ".c"：编码名保留的是原始 relPath 全名（含 .c），
+            // 再拼一次就是 "t.c.c" —— 实测漏网：同一份报告里词法路径的
+            // findings 是 t.c、AST 路径却是 t.c.c（终审抓到）。
+            file = unsanitizePathName(encoded)
         }
     }
     let rng = Json.getOr(item, "range")

@@ -238,6 +238,11 @@ func detectFromAst(nodes: ArrayList<AstNode>, findings: ArrayList<Finding>): Uni
     let perFileKind = HashMap<String, Int64>()   // "file|kind" → count
     for (n in nodes) {
         let lines = n.endLine - n.startLine + 1
+        // M3 同族：前置声明「无体」是**故意的**，不是占位实现——EmptyType
+        // 在 detectTypeSignals 里跳过，stub 判定这里同样要跳过（实测漏网：
+        // struct Fwd 不报空类型了，却从 stub-body 出口继续误报）。
+        // 前置声明也不可能超长/深嵌套/含魔法数，整节点跳过是安全的。
+        if (n.nodeRule == "type" && isForwardDeclaration(n.text)) { continue }
         // 空体/占位实现
         match (stubReason(n)) {
             case Some(why) =>

@@ -1063,6 +1063,58 @@ func testForwardDeclarationIsNotReportedAsEmptyType(): Unit {
     }
     @Assert(reported.size == 1)
     @Assert(reported[0] == "Empty")
+
+    // M3 同族漏网（终审实测）：stub 判定也不许抓前置声明——EmptyType 修了，
+    // StubBody 从另一个出口继续误报
+    let stubNodes = ArrayList<AstNode>()
+    stubNodes.add(AstNode("a.h", 3, 3, "type", "struct Fwd"))
+    let stubFindings = ArrayList<Finding>()
+    detectFromAst(stubNodes, stubFindings)
+    for (f in stubFindings) {
+        @Assert(f.symbol != "Fwd")
+    }
+}
+
+/// 终审漏网回归：.c 临时副本的路径映回不许产生双重扩展名。
+/// 实测：同一份报告里词法路径 findings 是 t.c、AST 路径却是 t.c.c——
+/// 编码名已含 .c，还原后再拼一次 ".c" 就重复。
+@Test
+func testCAstPathMapsBackWithoutDoubleExtension(): Unit {
+    // 编码可逆且无碰撞（旧 "/"→"__" 方案的两个碰撞源）
+    @Assert(unsanitizePathName(sanitizePathToName("t.c")) == "t.c")
+    @Assert(unsanitizePathName(sanitizePathToName("a/b.c")) == "a/b.c")
+    @Assert(unsanitizePathName(sanitizePathToName("a%2Fb.c")) == "a%2Fb.c")
+    @Assert(unsanitizePathName(sanitizePathToName("a__b.c")) == "a__b.c")
+    @Assert(sanitizePathToName("a/b.c") != sanitizePathToName("a__b.c"))
+
+    // parseOneAstNode 的映回走全链路
+    let savedScan = AST_SCAN_ROOT
+    let savedCpp = C_AS_CPP_ROOT
+    try {
+        AST_SCAN_ROOT = "/tmp/fake-root"
+        C_AS_CPP_ROOT = "/tmp/moongit-c-as-cpp-999"
+        let item = Json.obj()
+        Json.set(item, "file", Json.of("/tmp/moongit-c-as-cpp-999/sub%2Ft.c.cpp"))
+        Json.set(item, "ruleId", Json.of("fn"))
+        Json.set(item, "text", Json.of("int f(void) { return 0; }"))
+        let start = Json.obj()
+        Json.set(start, "line", Json.of(1))
+        Json.set(start, "column", Json.of(0))
+        let end = Json.obj()
+        Json.set(end, "line", Json.of(1))
+        Json.set(end, "column", Json.of(20))
+        let range = Json.obj()
+        Json.set(range, "start", start)
+        Json.set(range, "end", end)
+        Json.set(item, "range", range)
+        let out = ArrayList<AstNode>()
+        parseOneAstNode(item, out)
+        @Assert(out.size == 1)
+        @Assert(out[0].file == "sub/t.c")
+    } finally {
+        AST_SCAN_ROOT = savedScan
+        C_AS_CPP_ROOT = savedCpp
+    }
 }
 
 /// M12 回归：未分层（层 4）的模块不许参与违规判定。
