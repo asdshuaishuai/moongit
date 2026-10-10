@@ -1164,12 +1164,13 @@ func testTreeCanvasHtmlExport(): Unit {
         let g = buildGraph(root)
         let conf = analyzeConfidence(g, false)
         let html = treeCanvasHtml(g, 8, false, conf)
-        @Assert(html.contains("<canvas"))
-        @Assert(html.contains("MoongitCodeGraph"))
-        @Assert(html.contains("renderTo"))
+        // 三列 DOM 版：不再用 canvas——改为验证三列/焦点面板/函数级数据
+        @Assert(html.contains("col-in-body"))
+        @Assert(html.contains("col-out-body"))
+        @Assert(html.contains("focus-code"))
+        @Assert(html.contains("MoongitCodeGraph") || html.contains("functionEdges"))
         @Assert(html.contains("referenceEdges"))
         @Assert(html.contains("depthOmitted"))
-        @Assert(html.contains("functionEdges"))
         @Assert(html.contains("codeSnippets"))
         @Assert(!html.contains("<script src"))
     } finally {
