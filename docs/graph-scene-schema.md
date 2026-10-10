@@ -95,24 +95,29 @@ token 表即 `themes` 的键（含 `langs` 下的每种语言）—— **引擎�
 - 字体渲染质量取决于驱动宿主；引擎只声明 size/weight/family 栈
 - 仓颉语言暂无 tree-sitter 语法包，语法树覆盖边界见 confidence 文档
 
-## Canvas 分派规则（平台级，2026-10-10 定稿）
+## Canvas 分派规则（平台级，2026-10-10 定稿；Web 兜底概念已废除）
 
-**有客户端实现，就跟客户端走；没有客户端实现，才用 Web 技术兜底。**
+**运行时渲染一律走平台 Canvas 实现，没有例外；HTML 只是引擎层的导出交付物。**
 
 | 场景 | Canvas 实现 | 数据 |
 |---|---|---|
-| 无客户端实现（终端/临时查看/agent） | **Web Canvas 兜底**：`graph arch` / `graph tree` 默认导出单文件 HTML | 内嵌 JSON（与 `--json` 同契约） |
 | macOS（deepDolphin） | **SwiftUI GraphicsContext**（Swift 语言版 Canvas2D 对应物，`ArchCanvasView`） | `--format scene` |
 | Linux（deepDolphin/linux，仓颉客户端） | **仓颉 Canvas 移植**（CangjieGUI 宿主，实现同一子集） | `--format scene` |
 | DDE / deepin（deepDolphin/deepin，C++ 客户端） | **Qt QPainter Canvas**（C++ 实现同一子集） | `--format scene` |
-| Windows / 鸿蒙 PC | 待定（未指定前一律 Web 兜底） | `--format scene` |
+| Windows / 鸿蒙 PC | **平台 Canvas 实现（排期）**——不做 Web 运行时渲染 | `--format scene` |
+
+**HTML 导出的定位（`graph arch/tree` 默认导出，保留）**：它不是任何平台的渲染
+路径，而是**引擎层交付物**——两种消费场景：① 只有引擎层、没有任何客户端的环境
+（终端/CI/临时查看）；② 被其他智能体驱动时，agent 拿到的单文件可视化交付。
+技术栈仍是 Web（数据 + JS 驱动单文件），但角色是「导出物」，不是某平台的渲染兜底。
 
 分派规则的三条不变量：
 
-1. **数据只有一个来源**：无论哪种 Canvas，消费的都是 moongit-graph-scene v1
-   （或 tree/arch 自身内嵌的同契约 JSON）——渲染端换技术栈，数据零改动。
-2. **Web 兜底不是降级**：它是「零实现也能看」的保底出口，与平台实现长期共存；
-   平台实现落地后引擎的 Web 导出照常保留。
+1. **数据只有一个来源**：无论哪种 Canvas 或 HTML 导出，消费的都是
+   moongit-graph-scene v1（或 tree/arch 内嵌的同契约 JSON）——渲染端换技术栈，
+   数据零改动。
+2. **平台渲染零外包**：客户端存在的地方不允许「打开浏览器看图」——平台 Canvas
+   必须在应用内用本语言版 Canvas API 直接绘制。
 3. **平台 Canvas 必须实现同一子集**：本文件上方列出的 Canvas2D 方法清单就是
    移植的验收清单——少实现一项，渲染器就跑不完。
 
