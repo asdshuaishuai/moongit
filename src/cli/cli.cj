@@ -1102,7 +1102,11 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
             } else {
                 match (fmtOpt) {
                     case Text => printOut(treeText(graph, depth))
-                    case _ => printOut(treeCanvasHtml(graph, depth, false))
+                    case _ =>
+                        // 函数级图谱 × 置信度标记：html 交付物内嵌置信度 findings
+                        // （useAst=true，ast-grep 可用时自动增强，缺失时词法降级）
+                        let conf = analyzeConfidence(graph, true)
+                        printOut(treeCanvasHtml(graph, depth, false, conf))
                 }
             }
         case "symbol" =>

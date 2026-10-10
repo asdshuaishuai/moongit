@@ -1162,12 +1162,15 @@ func testTreeCanvasHtmlExport(): Unit {
     let root = writeTree()
     try {
         let g = buildGraph(root)
-        let html = treeCanvasHtml(g, 8, false)
+        let conf = analyzeConfidence(g, false)
+        let html = treeCanvasHtml(g, 8, false, conf)
         @Assert(html.contains("<canvas"))
         @Assert(html.contains("MoongitCodeGraph"))
         @Assert(html.contains("renderTo"))
         @Assert(html.contains("referenceEdges"))
         @Assert(html.contains("depthOmitted"))
+        @Assert(html.contains("functionEdges"))
+        @Assert(html.contains("codeSnippets"))
         @Assert(!html.contains("<script src"))
     } finally {
         removeTree(root)
