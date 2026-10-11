@@ -1181,6 +1181,102 @@ func testTreeCanvasHtmlExport(): Unit {
     }
 }
 
+/// 树形交付物的**样式契约**：保证「下一次引擎生成的代码图谱和现在的一样」。
+/// 三层锁：
+///   ① 确定性——同一项目两次生成交付物逐字节一致（引擎承诺的可复现性）；
+///   ② 样式锁定——**不同项目**的 <style> 块与驱动 JS 必须完全相同
+///      （样式/交互只由引擎代码决定，不随数据漂移；改样式 = 必须过这条测试）；
+///   ③ 结构标记——本轮定稿的设计决策逐项钉死（pill 徽标 / 过滤态覆盖表 /
+///      L0 锚点行 / 档位色 / 命中高亮 / 置信度 tab），以及 finding 数据契约
+///      （label/dim/evidence 六字段，树节点内嵌与 confidence 内嵌同口径）。
+@Test
+func testTreeHtmlStyleContract(): Unit {
+    func extractBlock(html: String, open: String, close: String, last: Bool): String {
+        var a = -1
+        var from = 0
+        while (true) {
+            let hit = indexOfStrFrom(html, open, from)
+            if (hit < 0) { break }
+            a = hit
+            from = hit + open.size
+            if (!last) { break }
+        }
+        if (a < 0) { return "" }
+        let bodyFrom = a + open.size
+        let b = indexOfStrFrom(html, close, bodyFrom)
+        if (b < 0) { return "" }
+        // 边界都是 ASCII 标签，UTF-8 切片安全
+        return html[bodyFrom..b]
+    }
+
+    let root1 = writeTree()
+    let root2 = testRoot()
+    try {
+        // 第二个 fixture：不同目录结构 + 不同语言（ts），代表「另一个项目」
+        ensureDir("${root2}/src")
+        writeFileAtomic("${root2}/src/only.ts",
+            "export function one(a: number): number { return a + 1; }\n")
+        let g1 = buildGraph(root1)
+        let g2 = buildGraph(root2)
+
+        // ① 确定性：同输入两次生成逐字节一致
+        let htmlA = treeCanvasHtml(g1, 8, false, analyzeConfidence(g1, false))
+        let htmlB = treeCanvasHtml(g1, 8, false, analyzeConfidence(g1, false))
+        @Assert(htmlA == htmlB)
+
+        // ② 样式锁定：不同项目的 <style> 与驱动 JS（最后一个 <script>）完全相同
+        let html2 = treeCanvasHtml(g2, 8, false, analyzeConfidence(g2, false))
+        let css1 = extractBlock(htmlA, "<style>", "</style>", false)
+        let css2 = extractBlock(html2, "<style>", "</style>", false)
+        @Assert(css1 != "")
+        @Assert(css1 == css2)
+        let js1 = extractBlock(htmlA, "<script>", "</script>", true)
+        let js2 = extractBlock(html2, "<script>", "</script>", true)
+        @Assert(js1 != "")
+        @Assert(js1 == js2)
+
+        // ③a 结构标记：本轮定稿的设计决策（改任何一项都应自觉过来看这条）
+        @Assert(css1.contains("border-radius:99px"))   // finding kind 胶囊（非纯文本）
+        @Assert(css1.contains(".hit"))                 // 搜索命中高亮
+        @Assert(js1.contains("sOpenOvr"))              // 过滤态手动展开覆盖表
+        @Assert(js1.contains("function collectRoll"))  // roll-up（符号级并入）
+        @Assert(js1.contains("function searchVis"))    // 符号级递归搜索
+        @Assert(js1.contains("tierHex"))               // 档位色
+        @Assert(js1.contains("linesTitle:"))           // 文件行数悬停文案（非 filesTitle）
+        @Assert(htmlA.contains("data-pane=\"tree\""))
+        @Assert(htmlA.contains("data-pane=\"detail\""))
+        @Assert(htmlA.contains("id=\"root-row\""))     // L0 项目锚点行
+        @Assert(htmlA.contains("id=\"tab-conf\""))     // 置信度 tab
+
+        // ③b 数据契约：注入一条已知 finding，内嵌函数级数据必须带全六字段
+        let conf = analyzeConfidence(g1, false)
+        conf.findings.add(Finding(HighComplexity, "util/text.cj",
+            7, "trimAll", "契约测试：圈复杂度注入"))
+        let fg = functionGraphData(g1, conf, false)
+        var sawFinding = false
+        for (fn in Json.arrAt(fg, "functions")) {
+            for (f in Json.arrAt(fn, "findings")) {
+                sawFinding = true
+                @Assert(Json.has(f, "kind"))
+                @Assert(Json.has(f, "label"))     // 人类可读标签（胶囊文案）
+                @Assert(Json.has(f, "dim"))       // 分组维度（tab 分节键）
+                @Assert(Json.has(f, "evidence"))  // 自足证据（不打开编辑器可判读）
+                @Assert(Json.has(f, "weight"))
+                @Assert(Json.has(f, "line"))
+                @Assert(Json.strAt(f, "label", "") != "")
+            }
+        }
+        @Assert(sawFinding)
+        // 交付物整体内嵌同样带 label（confidence 内嵌与函数级同口径）
+        let htmlWithF = treeCanvasHtml(g1, 8, false, conf)
+        @Assert(htmlWithF.contains("\"label\""))
+        @Assert(htmlWithF.contains("契约测试：圈复杂度注入"))
+    } finally {
+        removeTree(root1)
+        removeTree(root2)
+    }
+}
+
 /// M12 回归：未分层（层 4）的模块不许参与违规判定。
 /// 原实现 `la < lb` 把层 4 当成「最高层」⇒ docs / scripts / `(root)`
 /// 的全部入边都被记成违规（现实中极常见，等于噪声常态满格）。
