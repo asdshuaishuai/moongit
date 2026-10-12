@@ -352,6 +352,16 @@ public func execOut(
 /// 判据：**测试里凡是后续断言依赖其结果的 git 步骤，一律传 false。**
 /// 只有「失败也在预期内」的探测性命令（如 `git stash list` 探有无 stash）
 /// 才传 true。全仓测试区的 gitRun 已统一改为 false。
+
+/// git 超时预算（毫秒）：gitRun / gitTry / gitRaw 三个入口共用，
+/// kernel/git.cj 的「120 秒」错误文案也从此派生——全仓 git 超时只有一个事实来源。
+///
+/// ⚠️ 跨包契约：kernel/git.cj 的错误文案**从此常量派生**，
+/// 不许在文案里再写裸字面量——同一事实两份拷贝，改一处漏一处，
+/// 用户看到的超时上限就成了谎言（实际 120s 文案说 60s，或反过来）。
+/// kernel 侧按 `GIT_TRY_TIMEOUT_MS / 1000` 换算秒数。
+public let GIT_TRY_TIMEOUT_MS: Int64 = 120000
+
 public func gitRun(
     repoDir: String,
     args: Array<String>,
@@ -367,7 +377,7 @@ public func gitRun(
     for (a in args) {
         fullArgs.add(a)
     }
-    let r = execCapture("git", fullArgs.toArray(), None, 120000)
+    let r = execCapture("git", fullArgs.toArray(), None, GIT_TRY_TIMEOUT_MS)
     if (r.exitCode != 0) {
         if (tolerate) {
             return ""
@@ -397,7 +407,7 @@ public func gitTry(repoDir: String, args: Array<String>): ExecResult {
     for (a in args) {
         fullArgs.add(a)
     }
-    return execCapture("git", fullArgs.toArray(), None, 120000)
+    return execCapture("git", fullArgs.toArray(), None, GIT_TRY_TIMEOUT_MS)
 }
 
 /// 执行 git，保留原始输出（不 trim，用于 -z 输出）
@@ -412,7 +422,7 @@ public func gitRaw(repoDir: String, args: Array<String>): String {
     for (a in args) {
         fullArgs.add(a)
     }
-    let r = execCapture("git", fullArgs.toArray(), None, 120000)
+    let r = execCapture("git", fullArgs.toArray(), None, GIT_TRY_TIMEOUT_MS)
     if (r.exitCode != 0) {
         throw DgError("GIT_FAILED", pickText("git call failed", "git 调用失败"), 1, Some(r.stderr.trimAscii()))
     }
@@ -662,15 +672,19 @@ func testGitRunTolerateSilentlySwallowsFailure(): Unit {
 /// "Permission denied"，排查方向被整个引错。
 @Test
 func testExecCapturePassesProxyVariablesThrough(): Unit {
+    // M21 复审：环境变量是进程级全局——还原必须绑 finally，否则断言一挂，
+    // 假代理会泄漏给同一测试进程内的后续所有用例（不变量 36 同源）。
     setVariable("all_proxy", "socks5://127.0.0.1:8899")
     setVariable("NO_PROXY", "internal.example")
-    let r = execCapture("/usr/bin/env", [], None, 10000)
-    @Assert(r.exitCode == 0)
-    @Assert(r.stdout.contains("socks5://127.0.0.1:8899"))
-    @Assert(r.stdout.contains("internal.example"))
-    // 还原：测试不该把环境留给后续用例
-    setVariable("all_proxy", "")
-    setVariable("NO_PROXY", "")
+    try {
+        let r = execCapture("/usr/bin/env", [], None, 10000)
+        @Assert(r.exitCode == 0)
+        @Assert(r.stdout.contains("socks5://127.0.0.1:8899"))
+        @Assert(r.stdout.contains("internal.example"))
+    } finally {
+        setVariable("all_proxy", "")
+        setVariable("NO_PROXY", "")
+    }
 }
 
 /// M21 回归：用户自己 export 的 GIT_SSH_COMMAND 必须原样传下去。
@@ -679,10 +693,13 @@ func testExecCapturePassesProxyVariablesThrough(): Unit {
 @Test
 func testExecCaptureDoesNotOverrideUserSshCommand(): Unit {
     setVariable("GIT_SSH_COMMAND", "ssh -oProxyJump=bastion -p 2222")
-    let r = execCapture("/usr/bin/env", [], None, 10000)
-    @Assert(r.exitCode == 0)
-    @Assert(r.stdout.contains("ProxyJump=bastion"))
-    setVariable("GIT_SSH_COMMAND", "")
+    try {
+        let r = execCapture("/usr/bin/env", [], None, 10000)
+        @Assert(r.exitCode == 0)
+        @Assert(r.stdout.contains("ProxyJump=bastion"))
+    } finally {
+        setVariable("GIT_SSH_COMMAND", "")
+    }
 
     // 用户没设 ⇒ 兜底的 BatchMode 守卫仍然生效（防挂的那一半不许丢）
     let r2 = execCapture("/usr/bin/env", [], None, 10000)
@@ -698,4 +715,166 @@ func testExecCaptureChildGetsNullStdin(): Unit {
     let r = execCapture("/bin/cat", [], None, 5000)
     @Assert(r.exitCode == 0)
     @Assert(r.stdout.isEmpty())
+}
+
+
+// MARK: - 单一事实来源与测试隔离的源码守卫（本轮清理新增）
+
+/// 从源码里抽取以 needle 开头、首个 '{' 起的花括号配平函数体。
+/// needle 由调用方拼接构造——整串写进本文件会与被扫对象自匹配。
+func extractBracedBody(src: String, needle: String): Option<String> {
+    let nb = needle.toArray()
+    let bs = src.toArray()
+    var at: Int64 = -1
+    var i: Int64 = 0
+    while (i + nb.size <= bs.size) {
+        var ok = true
+        for (j in 0..nb.size) {
+            if (bs[i + j] != nb[j]) { ok = false; break }
+        }
+        if (ok) { at = i; break }
+        i += 1
+    }
+    if (at < 0) { return None }
+    var openAt: Int64 = -1
+    var k = at + nb.size
+    while (k < bs.size) {
+        if (bs[k] == 123) { openAt = k; break }   // '{'
+        k += 1
+    }
+    if (openAt < 0) { return None }
+    var depth: Int64 = 0
+    var m = openAt
+    while (m < bs.size) {
+        if (bs[m] == 123) { depth += 1 }
+        else if (bs[m] == 125) {
+            depth -= 1
+            if (depth == 0) { return Some(src[at..m + 1]) }
+        }
+        m += 1
+    }
+    return None
+}
+
+/// 本文件源码剥注释后的纯代码（跨行状态携带；判据消费方用它防
+/// 「解释性注释里的旧写法假匹配」——不变量 30）。
+func execSourceCodeOnly(): Option<String> {
+    let srcOpt = readFileTextChecked("src/util/exec.cj")
+    match (srcOpt) {
+        case Some(raw) =>
+            let sb = StringBuilder()
+            var st = CjStripState.Normal
+            for (line in raw.split("\n")) {
+                let (stripped, next) = stripCjCommentEx(line, st)
+                st = next
+                sb.append(stripped)
+                sb.append("\n")
+            }
+            return Some(sb.toString())
+        case None => return None
+    }
+}
+
+/// gitTry 的超时必须来自具名常量 GIT_TRY_TIMEOUT_MS，体内不许再有裸 120000
+/// （kernel 侧「120 秒」文案从常量派生——同一条事实的三份拷贝已收口成一份）。
+@Test
+func testGitTryTimeoutComesFromNamedConstant(): Unit {
+    @Assert(GIT_TRY_TIMEOUT_MS == 120000)   // 钉住文档承诺的 120 秒
+    let codeOpt = execSourceCodeOnly()
+    @Assert(codeOpt.isSome())   // 前提：真的读到了源码
+    match (codeOpt) {
+        case Some(code) =>
+            let bodyOpt = extractBracedBody(code, "func git" + "Try(")
+            @Assert(bodyOpt.isSome())   // 前提：函数体抽得到
+            match (bodyOpt) {
+                case Some(body) =>
+                    @Assert(body.contains("GIT_TRY_TIMEOUT_MS"))
+                    let bare = "12000" + "0"
+                    @Assert(!body.contains(bare))
+                case None => @Assert(false)
+            }
+        case None => @Assert(false)
+    }
+}
+
+/// finally 块起点（'{' 的下标）；找不到返回 -1。
+func finallyOpenAt(body: String): Int64 {
+    let bs = body.toArray()
+    var i: Int64 = 0
+    while (i + 7 <= bs.size) {
+        if (bs[i] == 102 && bs[i + 1] == 105 && bs[i + 2] == 110 && bs[i + 3] == 97
+            && bs[i + 4] == 108 && bs[i + 5] == 108 && bs[i + 6] == 121) {   // "finally"
+            var k = i + 7
+            while (k < bs.size && bs[k] != 123) { k += 1 }
+            if (k < bs.size) { return k }
+        }
+        i += 1
+    }
+    return -1
+}
+
+/// 数 body 里 `, "")` 形态的 setVariable 空串还原调用，返回
+/// (总数, 落在 finally 区间内的数量)——M21 还原绑 finally 的判据。
+func restoresInsideFinally(body: String): (Int64, Int64) {
+    let openAt = finallyOpenAt(body)
+    if (openAt < 0) { return (0, 0) }
+    let bs = body.toArray()
+    var depth: Int64 = 0
+    var endAt: Int64 = -1
+    var m = openAt
+    while (m < bs.size) {
+        if (bs[m] == 123) { depth += 1 }
+        else if (bs[m] == 125) {
+            depth -= 1
+            if (depth == 0) { endAt = m; break }
+        }
+        m += 1
+    }
+    if (endAt < 0) { return (0, 0) }
+    let marker = ", \"\")"
+    let mb = marker.toArray()
+    var total: Int64 = 0
+    var inside: Int64 = 0
+    var i: Int64 = 0
+    let n = bs.size
+    while (i + mb.size <= n) {
+        var ok = true
+        for (j in 0..mb.size) {
+            if (bs[i + j] != mb[j]) { ok = false; break }
+        }
+        if (ok) {
+            total += 1
+            if (i >= openAt && i <= endAt) { inside += 1 }
+            i += mb.size
+        } else {
+            i += 1
+        }
+    }
+    return (total, inside)
+}
+
+/// 两个 M21 测试的环境还原必须绑在 finally 里：断言中途失败时
+/// 假代理/假 bastion SSH 不许泄漏给同进程的后续用例（不变量 36/37）。
+/// 断言失败路径用行为测试覆盖不到（测试自己失败就终止了），只能源码断言。
+@Test
+func testM21EnvRestoreIsBoundToFinally(): Unit {
+    let codeOpt = execSourceCodeOnly()
+    @Assert(codeOpt.isSome())   // 前提：真的读到了源码
+    match (codeOpt) {
+        case Some(code) =>
+            let names = ["PassesProxyVariablesThrough", "DoesNotOverrideUserSshCommand"]
+            for (nm in names) {
+                let needle = "func testExecCapture" + nm + "()"
+                let bodyOpt = extractBracedBody(code, needle)
+                @Assert(bodyOpt.isSome())   // 前提：函数体抽得到
+                match (bodyOpt) {
+                    case Some(body) =>
+                        let (total, inside) = restoresInsideFinally(body)
+                        @Assert(total > 0)          // 前提：判据没失灵（真有还原可数）
+                        @Assert(total == inside)    // 全部还原都必须落在 finally 区间内
+                    case None => @Assert(false)
+                }
+            }
+        case None => @Assert(false)
+    }
 }

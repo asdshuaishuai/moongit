@@ -7,7 +7,12 @@
   output-type = "executable"
   compile-option = ""
   override-compile-option = ""
-  link-option = "-headerpad_max_install_names -rpath @executable_path/../runtime -rpath /Users/kelthas/.local/share/cangjie/current/runtime/lib/darwin_aarch64_cjnative -rpath /Users/kelthas/.local/share/cangjie/current/tools/lib"
+  # link-option 末尾的 -lsqlite3：graph db / confidence db 两个单文件 SQLite
+  # 能力经系统自带 libsqlite3 的 C 互操作实现（util/sqlite.cj 薄层）。
+  # 用户 directed 决策（2026-10-11）：存储采用 SQLite 且不引入第三方源码——
+  # libsqlite3 是操作系统组件，不破坏「零第三方依赖」口径。
+  # 链接需要 SDK 提供 libsqlite3.tbd（MacOSX.minimal 极简 SDK 已补入该存根）。
+  link-option = "-headerpad_max_install_names -rpath @executable_path/../runtime -rpath /Users/kelthas/.local/share/cangjie/current/runtime/lib/darwin_aarch64_cjnative -rpath /Users/kelthas/.local/share/cangjie/current/tools/lib -lsqlite3"
   package-configuration = {}
 
 [dependencies]

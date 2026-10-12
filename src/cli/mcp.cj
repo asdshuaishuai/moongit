@@ -90,15 +90,31 @@ public func mcpToolList(): JsonValue {
     // schema 是给模型看的契约，不是附注：少一项就是少一个能力。
     arr.add(mcpTool("milestone_action", "里程碑状态操作", mcpSchemaObject([("project", "string", "项目名或 ID"), ("name", "string", "里程碑名"), ("action", "string", "done|open|reopen|drop|remove")], ["project", "name", "action"])))
     arr.add(mcpTool("add_project", "注册一个项目目录", mcpSchemaObject([("path", "string", "项目绝对路径"), ("name", "string", "项目名（缺省取目录名）")], ["path"])))
+    // ── 图能力新工具面（第二阶段）：arch / index / confidence / render ──
+    // 实现与 CLI 同源（indexRebuild / archRebuild / renderIndexCore / renderArchCore /
+    // confidenceGenCore / confidenceQueryJson 等内部函数），不分叉第二实现。
+    arr.add(mcpTool("arch_gen", "架构构建：模块聚合 + 分层判定 + 泳道布局（布局坐标在 modules x/y/w/h 与 lanes 里），持久化 arch.json。默认返回模块/违规摘要文本；format=json 返回 archJson 全量（不含 HTML——交互图归 render）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "text|json，默认 text")], ["name"])))
+    arr.add(mcpTool("arch_update", "架构增量更新：源探针与 arch.json 一致则跳过（已最新），过期/缺失则重算重建（版本 +1）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("force", "boolean", "源未变也强制重建")], ["name"])))
+    arr.add(mcpTool("arch_query", "架构查询：不带 module 出总览（模块 fanIn/fanOut/instability + 违规/环计数）；给 module 出单模块详情（入/出依赖逐条 + 权重）；violations=true 出违规对全清单 + 环上模块（0 条明说）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("module", "string", "模块名（目录名）"), ("violations", "boolean", "只看违规与环"), ("json", "boolean", "返回 JSON（默认 true）")], ["name"])))
+    arr.add(mcpTool("index_gen", "符号级索引生成：写 codegraph.db（store_meta 含探针/版本/时间）+ index.json，返回统计（文件/符号/边/版本明话）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("depth", "integer", "目录深度，默认 6"), ("format", "string", "json|tree（回执视图），默认 json"), ("db", "boolean", "写库（默认 true）")], ["name"])))
+    arr.add(mcpTool("index_update", "索引增量更新：源探针一致则跳过（已最新），过期/缺失则重建（版本 +1）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("force", "boolean", "源未变也强制重建")], ["name"])))
+    arr.add(mcpTool("index_overview", "索引总览：db 的 SQL 聚合统计（符号/调用边/文件/按种类分桶）+ 版本与探针；探针过期先自动重建", mcpSchemaObject([("name", "string", "项目名或 ID")], ["name"])))
+    arr.add(mcpTool("index_query", "索引查询：symbol 模式 = 定义处 + 调用方 + 被调（含权重与确信度分层）；file 模式 = 该文件符号清单 + 调入/调出文件与权重。查不到报错，不编结果", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名（与 file 二选一）"), ("file", "string", "文件相对路径（与 symbol 二选一）")], ["name"])))
+    arr.add(mcpTool("confidence_gen", "置信度生成：前置自愈索引（过期先重建并披露）→ 结构性疑点确定性度量 → 持久化 confidence.json（render index --confidence 的消费端就吃它）。no_ast=true 跳过语法树层；db=true 额外写 confidence.db", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "text|json|llm（llm = 可直接喂给模型的逐条复核提示词），默认 json"), ("no_ast", "boolean", "跳过语法树层（纯词法）"), ("db", "boolean", "额外写 confidence.db")], ["name"])))
+    arr.add(mcpTool("confidence_query", "置信度快照查询：只读持久化 confidence.json，绝不重算（报告缺席报错，提示先 confidence_gen）。无过滤出总览（分数/维度/罚分 Top/限流披露）；file/symbol/kind/weight/top 过滤 findings；回执恒带快照元信息（generatedAt + 依据的索引版本）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("file", "string", "按文件过滤（精确或路径后缀）"), ("symbol", "string", "按符号过滤"), ("kind", "string", "按类别 id 过滤（如 orphan）"), ("weight", "integer", "按权重下限过滤"), ("top", "integer", "取前 N 条"), ("json", "boolean", "返回 JSON（默认 true）")], ["name"])))
+    arr.add(mcpTool("render", "渲染交付物：持久化 payload → 单文件交互 HTML（落盘到项目库，回执只带路径与复用/新绘判定，不内塞 HTML 全文）。target=arch|index；confidence=true 时 index 叠加 confidence.json（缺席则纯结构渲染并注明）；force=true 强制重绘", mcpSchemaObject([("name", "string", "项目名或 ID"), ("target", "string", "arch|index，默认 index"), ("confidence", "boolean", "index 叠加 confidence.json"), ("force", "boolean", "强制重绘")], ["name"])))
     // ── CodeGraph：代码图谱（仓颉引擎的确定性词法分析，零依赖）──
-    arr.add(mcpTool("codegraph_overview", "代码图谱概览：文件/符号/引用边统计，按语言与符号种类分桶", mcpSchemaObject([("name", "string", "项目名或 ID")], ["name"])))
-    arr.add(mcpTool("codegraph_tree", "索引关系树：目录→文件→符号（JSON 形态为全量图：文件事实 + import 边 + 引用边）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("depth", "integer", "目录深度，默认 6")], ["name"])))
-    arr.add(mcpTool("codegraph_symbol", "符号定位：定义处 + 词法引用文件", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"])))
-    arr.add(mcpTool("codegraph_impact", "影响面分析：符号定义 + 引用文件 + 受影响符号（词法文件级粒度，非语义调用图）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"])))
-    arr.add(mcpTool("codegraph_arch", "技术架构图：模块聚合 + 分层判定（治理信号：分层违规/依赖环）。format=scene 出 moongit-graph-scene v1——主题 token/形状/粒子/hits 点击区/panels 详情面板的交互契约，任何 Canvas2D 移植（浏览器/Swift/Skia）按 docs/graph-scene-schema.md 驱动；html=零依赖单文件交互图；另有 mermaid / dot / json", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "scene|html|mermaid|dot|json，默认 html")], ["name"])))
+    // ⚠️ 改名期兼容：旧 codegraph_*（patch 两工具除外）保留为**别名**——
+    //    执行仍走各自原有的 handler（行为不变，已配好的客户端不断），
+    //    描述尾注「（旧名别名，将移除）」提醒模型优先用新工具面。
+    arr.add(mcpTool("codegraph_overview", "代码图谱概览：文件/符号/引用边统计，按语言与符号种类分桶（旧名别名，将移除——新面用 index_overview / index_gen）", mcpSchemaObject([("name", "string", "项目名或 ID")], ["name"])))
+    arr.add(mcpTool("codegraph_tree", "索引关系树：目录→文件→符号（JSON 形态为全量图：文件事实 + import 边 + 引用边）（旧名别名，将移除——新面用 index_gen / index_query）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("depth", "integer", "目录深度，默认 6")], ["name"])))
+    arr.add(mcpTool("codegraph_symbol", "符号定位：定义处 + 词法引用文件（旧名别名，将移除——新面用 index_query）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"])))
+    arr.add(mcpTool("codegraph_impact", "影响面分析：符号定义 + 引用文件 + 受影响符号（词法文件级粒度，非语义调用图）（旧名别名，将移除）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"])))
+    arr.add(mcpTool("codegraph_arch", "技术架构图：模块聚合 + 分层判定（治理信号：分层违规/依赖环）。format=scene 出 moongit-graph-scene v1——主题 token/形状/粒子/hits 点击区/panels 详情面板的交互契约，任何 Canvas2D 移植（浏览器/Swift/Skia）按 docs/graph-scene-schema.md 驱动；html=零依赖单文件交互图；另有 mermaid / dot / json（旧名别名，将移除——新面用 arch_gen / render）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "scene|html|mermaid|dot|json，默认 html")], ["name"])))
     arr.add(mcpTool("codegraph_patch_confidence", "补丁级置信度 Layer 1（算法层）：S1..S10 信号 + certain/uncertain 分层。uncertain 是给 Agent 的待办清单（配合 --skill 的任务说明）。name=项目名，patch_path=diff 文件路径", mcpSchemaObject([("name", "string", "项目名或 ID"), ("patch_path", "string", "unified diff 文件路径")], ["name", "patch_path"])))
     arr.add(mcpTool("codegraph_patch_merge", "补丁级置信度 Layer 3（合并器）：algorithm.json + agent.json → final.json。规则：agent resolved ×0.9 / unresolved 计负分 / ambiguous 0.5 / 未处理 deferred 0.5", mcpSchemaObject([("algorithm_json", "string", "Layer 1 输出的 JSON 文本"), ("agent_json", "string", "Layer 2 输出的 JSON 文本")], ["algorithm_json", "agent_json"])))
-    arr.add(mcpTool("codegraph_confidence", "代码置信度：结构性疑点（孤儿/占位/吞错/魔法数/重复体…）的确定性度量。被动能力——只在本工具被显式调用时分析。format=json|text|llm（llm 产出可直接喂模型的逐条复核提示词）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "json|text|llm，默认 json")], ["name"])))
+    arr.add(mcpTool("codegraph_confidence", "代码置信度：结构性疑点（孤儿/占位/吞错/魔法数/重复体…）的确定性度量。被动能力——只在本工具被显式调用时分析。format=json|text|llm（llm 产出可直接喂模型的逐条复核提示词）（旧名别名，将移除——新面用 confidence_gen / confidence_query）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "json|text|llm，默认 json")], ["name"])))
     let o = Json.obj()
     Json.set(o, "tools", JArr(arr))
     return o
@@ -159,6 +175,10 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                 }
             case None => return ""
         }
+    }
+    // 布尔取参：缺省 false（与 CLI 的 hasFlag 同语义——flag 不给 = 不开启）。
+    func boolArg(key: String): Bool {
+        return Json.boolAt(args, key, false)
     }
     // 严格的整数取参。**本文件所有数值参数都必须走这里**。
     //
@@ -569,7 +589,14 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                 let mn = getStr("name")
                 let action = getStr("action")
                 if (action == "remove") {
-                    return mcpText(if (removeMilestone(p.id, mn)) { "已删除 ${mn}" } else { "未找到 ${mn}" }, false)
+                    // ⚠️ remove 是写操作，「未找到」必须 isError:true ——
+                    // 与下面 done/drop/reopen 找不到里程碑时的同谓词一致。
+                    // 原来把成败整句包进一次调用且恒报成功位，宿主与模型
+                    // 读到「未找到 X」+ 成功标志会认定无事发生、停止追查。
+                    if (removeMilestone(p.id, mn)) {
+                        return mcpOk("已删除 ${mn}")
+                    }
+                    return mcpText("未找到 ${mn}", true)
                 }
                 var status = ""
                 if (action == "done") {
@@ -615,6 +642,252 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                 let name = getStr("name")
                 let (p, created) = addProject(path, if (name.isEmpty()) { basename(normalizePath(expandHome(path))) } else { name }, ArrayList<String>(), "")
                 return mcpText(if (created) { "已注册：${p.name}（${p.path}）" } else { "已存在：${p.name}" }, false)
+            // ── 图能力新工具面（第二阶段）：与 CLI 走同一批内部函数，
+            //    只有回执组装是 MCP 自己的（stdout 是协议通道，不 printOut）──
+            case "arch_gen" =>
+                let p = mcpRequireProject(getStr("name"))
+                var format = "text"
+                let f = getStr("format")
+                if (!f.isEmpty()) { format = f }
+                if (format != "json" && format != "text") {
+                    return mcpErr("format accepts text | json (got: ${format})")
+                }
+                let (count, _) = archRebuild(p, archCurrentCount(p))
+                let payloadText = readFileTextOr(archJsonPathOf(p), "")
+                if (format == "json") {
+                    return mcpOk(payloadText)
+                }
+                let payload = match (Json.parse(payloadText)) {
+                    case Some(j) => j
+                    case None => return mcpErr("刚写出的 arch.json 不是合法 JSON——引擎缺陷")
+                }
+                let warns = Json.getOr(payload, "warnings")
+                let lines = ArrayList<String>()
+                lines.add("${p.name}：架构已生成——${indexVersionLabel(count)}")
+                lines.add("  模块 ${Json.arrAt(payload, "modules").size} 个 · 文件 ${Json.intAt(payload, "totalFiles", 0)} · 符号 ${Json.intAt(payload, "totalSymbols", 0)} · 违规 ${Json.intAt(warns, "violations", 0)} · 环边 ${Json.intAt(warns, "cycleEdges", 0)}")
+                lines.add("  arch.json：${archJsonPathOf(p)}")
+                lines.add("  下一步：arch_query（总览/模块/违规）、render(target=arch)（交互图）")
+                return mcpOk(joinStrings(lines, "\n"))
+            case "arch_update" =>
+                let p = mcpRequireProject(getStr("name"))
+                let force = boolArg("force")
+                let (fresh, oldProbe, _) = archProbeFresh(p)
+                let count = archCurrentCount(p)
+                if (fresh && !force) {
+                    return mcpOk("${p.name}：已最新——${indexVersionLabel(count)}，源状态探针一致，未改动任何文件")
+                }
+                let (newCount, newProbe) = archRebuild(p, count)
+                return mcpOk("${p.name}：架构已重建——${indexVersionLabel(newCount)}\n  ${indexProbeChangeText(oldProbe, newProbe)}\n  arch.json：${archJsonPathOf(p)}")
+            case "arch_query" =>
+                let p = mcpRequireProject(getStr("name"))
+                let moduleId = getStr("module")
+                let violations = boolArg("violations")
+                let wantJson = Json.boolAt(args, "json", true)
+                let (_, healed) = archEnsureFresh(p)
+                let payload = match (archStoreRead(p)) {
+                    case Some(j) => j
+                    case None => return mcpErr("arch.json 缺失：${archJsonPathOf(p)}——先调 arch_gen")
+                }
+                if (violations) {
+                    let o = archViolationsJson(p, payload, healed)
+                    return mcpOk(if (wantJson) { Json.pretty(o) } else { archQueryTextBrief(o) })
+                }
+                if (moduleId.isEmpty()) {
+                    let o = archOverviewJson(p, payload, healed)
+                    return mcpOk(if (wantJson) { Json.pretty(o) } else { archQueryTextBrief(o) })
+                }
+                match (archModuleJson(p, payload, moduleId, healed)) {
+                    case Some(o) =>
+                        return mcpOk(if (wantJson) { Json.pretty(o) } else { archQueryTextBrief(o) })
+                    case None =>
+                        return mcpErr("模块不在架构中：${moduleId}（先 arch_query 不带 module 查总览拿模块清单）")
+                }
+            case "index_gen" =>
+                let p = mcpRequireProject(getStr("name"))
+                var depth: Int64 = 6
+                if (Json.has(args, "depth")) {
+                    match (strictIntArg("depth")) {
+                        case Some(d) =>
+                            depth = if (d < 1) { 1 } else { if (d > 24) { 24 } else { d } }
+                        case None => return mcpErr("depth 需要整数")
+                    }
+                }
+                var format = "json"
+                let f = getStr("format")
+                if (!f.isEmpty()) { format = f }
+                if (format != "json" && format != "tree") {
+                    return mcpErr("format accepts json | tree (got: ${format})")
+                }
+                let writeDb = Json.boolAt(args, "db", true)
+                if (!writeDb) {
+                    // db=false = 跳过重建：返回现有库统计（读语义），回执注明没重建
+                    let dbPath = indexDbPathOf(p)
+                    match (indexOverviewRead(dbPath)) {
+                        case Some(ov) =>
+                            let o = Json.obj()
+                            Json.set(o, "project", Json.of(p.name))
+                            Json.set(o, "rebuild", Json.of(false))
+                            Json.set(o, "updateCount", Json.of(indexCurrentCount(p)))
+                            Json.set(o, "nodes", Json.of(ov.nodes))
+                            Json.set(o, "edges", Json.of(ov.edges))
+                            Json.set(o, "files", Json.of(ov.files))
+                            Json.set(o, "note", Json.of("db=false：未重建，以上是现有索引库统计；要重建请省略 db 或传 true"))
+                            return mcpOk(Json.pretty(o))
+                        case None =>
+                            return mcpErr("读不出索引库：${dbPath}——先调 index_gen（db 省略或 true）")
+                    }
+                }
+                let (count, probe) = indexRebuild(p, depth, indexCurrentCount(p))
+                let ovOpt = indexOverviewRead(indexDbPathOf(p))
+                let o = Json.obj()
+                Json.set(o, "project", Json.of(p.name))
+                Json.set(o, "rebuild", Json.of(true))
+                Json.set(o, "updateCount", Json.of(count))
+                Json.set(o, "generatedAt", match (indexMetaRead(indexDbPathOf(p))) {
+                    case Some(m) => Json.of(m.generatedAt)
+                    case None => Json.of("")
+                })
+                Json.set(o, "probe", probe.toJson())
+                match (ovOpt) {
+                    case Some(ov) =>
+                        Json.set(o, "nodes", Json.of(ov.nodes))
+                        Json.set(o, "edges", Json.of(ov.edges))
+                        Json.set(o, "files", Json.of(ov.files))
+                    case None => ()
+                }
+                Json.set(o, "indexJson", Json.of(indexJsonPathOf(p)))
+                return mcpOk(Json.pretty(o))
+            case "index_update" =>
+                let p = mcpRequireProject(getStr("name"))
+                let force = boolArg("force")
+                let (fresh, oldProbe, _) = indexProbeFresh(p)
+                let count = indexCurrentCount(p)
+                if (fresh && !force) {
+                    return mcpOk("${p.name}：已最新——${indexVersionLabel(count)}，源状态探针一致，未改动任何文件")
+                }
+                let (newCount, newProbe) = indexRebuild(p, indexCurrentDepth(p), count)
+                return mcpOk("${p.name}：索引已重建——${indexVersionLabel(newCount)}\n  ${indexProbeChangeText(oldProbe, newProbe)}\n  index.json：${indexJsonPathOf(p)}")
+            case "index_overview" =>
+                let p = mcpRequireProject(getStr("name"))
+                let (count, healed) = indexEnsureFresh(p)
+                let dbPath = indexDbPathOf(p)
+                match (indexOverviewRead(dbPath)) {
+                    case Some(ov) =>
+                        let o = Json.obj()
+                        Json.set(o, "project", Json.of(p.name))
+                        Json.set(o, "updateCount", Json.of(count))
+                        Json.set(o, "generatedAt", match (indexMetaRead(dbPath)) {
+                            case Some(m) => Json.of(m.generatedAt)
+                            case None => Json.of("")
+                        })
+                        Json.set(o, "selfHealed", Json.of(healed))
+                        Json.set(o, "nodes", Json.of(ov.nodes))
+                        Json.set(o, "edges", Json.of(ov.edges))
+                        Json.set(o, "files", Json.of(ov.files))
+                        let bk = Json.obj()
+                        for ((k, v) in ov.byKind) {
+                            Json.set(bk, k, Json.of(v))
+                        }
+                        Json.set(o, "byKind", bk)
+                        return mcpOk(Json.pretty(o))
+                    case None =>
+                        return mcpErr("读不出索引库：${dbPath}——先调 index_gen")
+                }
+            case "index_query" =>
+                let p = mcpRequireProject(getStr("name"))
+                let fileArg = getStr("file")
+                let symbolArg = getStr("symbol")
+                if (!fileArg.isEmpty()) {
+                    match (indexQueryFile(indexDbPathOf(p), fileArg)) {
+                        case Some(q) => return mcpOk(Json.pretty(q))
+                        case None => return mcpErr("文件不在索引中：${fileArg}（先调 index_gen；索引只覆盖受支持的源码语言）")
+                    }
+                }
+                if (symbolArg.isEmpty()) {
+                    return mcpErr("symbol 与 file 至少给一个")
+                }
+                match (indexQuerySymbol(indexDbPathOf(p), symbolArg)) {
+                    case Some(q) => return mcpOk(Json.pretty(q))
+                    case None => return mcpErr("符号不在索引中：${symbolArg}（先调 index_gen；索引只覆盖受支持的源码语言）")
+                }
+            case "confidence_gen" =>
+                let p = mcpRequireProject(getStr("name"))
+                var format = "json"
+                let f = getStr("format")
+                if (!f.isEmpty()) { format = f }
+                if (format != "text" && format != "json" && format != "llm") {
+                    return mcpErr("format accepts text | json | llm (got: ${format})")
+                }
+                let useAst = !boolArg("no_ast")
+                let wantDb = boolArg("db")
+                let (info, report) = confidenceGenCore(p, useAst, wantDb)
+                if (format == "llm") {
+                    return mcpOk(confidenceLlmPrompt(report, p.name))
+                }
+                if (format == "text") {
+                    let lines = ArrayList<String>()
+                    lines.add(confidenceText(report))
+                    let healedNote = if (Json.boolAt(info, "selfHealedIndex", false)) {
+                        "（索引已过期——已先自动重建）"
+                    } else {
+                        ""
+                    }
+                    lines.add("快照：${Json.strAt(info, "path", "")} · 生成于 ${Json.strAt(info, "generatedAt", "")} · 依据索引 ${indexVersionLabel(Json.intAt(info, "indexUpdateCount", -1))}${healedNote}")
+                    return mcpOk(joinStrings(lines, "\n"))
+                }
+                return mcpOk(Json.pretty(info))
+            case "confidence_query" =>
+                let p = mcpRequireProject(getStr("name"))
+                let jsonPath = indexConfidencePathOf(p)
+                let snapOpt: Option<JsonValue> = match (readFileText(jsonPath)) {
+                    case Some(text) =>
+                        match (Json.parse(text)) {
+                            case Some(j) => Some(j)
+                            case None => None
+                        }
+                    case None => None
+                }
+                let snap = match (snapOpt) {
+                    case Some(j) => j
+                    case None =>
+                        return mcpErr("置信度快照缺席：${jsonPath}——先调 confidence_gen（query 只读持久化快照，绝不重算）")
+                }
+                var weightArg: Int64 = -1
+                if (Json.has(args, "weight")) {
+                    match (strictIntArg("weight")) {
+                        case Some(w) => weightArg = w
+                        case None => return mcpErr("weight 需要整数")
+                    }
+                }
+                var topArg: Int64 = -1
+                if (Json.has(args, "top")) {
+                    match (strictIntArg("top")) {
+                        case Some(t) =>
+                            if (t < 1) {
+                                return mcpErr("top 需要正整数，收到：${t}")
+                            }
+                            topArg = t
+                        case None => return mcpErr("top 需要整数")
+                    }
+                }
+                let result = confidenceQueryJson(snap, p, getStr("file"), getStr("symbol"), getStr("kind"), weightArg, topArg)
+                if (Json.boolAt(args, "json", true)) {
+                    return mcpOk(Json.pretty(result))
+                }
+                return mcpOk(confidenceQueryTextBrief(result))
+            case "render" =>
+                let p = mcpRequireProject(getStr("name"))
+                var target = getStr("target")
+                if (target.isEmpty()) { target = "index" }
+                if (target != "arch" && target != "index") {
+                    return mcpErr("target accepts arch | index (got: ${target})")
+                }
+                let force = boolArg("force")
+                // HTML 落盘到项目库；回执只带路径与复用/新绘判定（不内塞 3MB 全文）
+                if (target == "arch") {
+                    return mcpOk(Json.pretty(renderArchCore(p, force, "")))
+                }
+                return mcpOk(Json.pretty(renderIndexCore(p, boolArg("confidence"), force, "")))
             case _ =>
                 return mcpErr("未知工具：${name}")
         }
@@ -889,44 +1162,50 @@ func testMcpToolsCallOnTempRepo(): Unit {
     let home = "${base}/home"
     ensureDir(home)
     enterTestHome(home)
-    let (p, created) = addProject(base, "mcp-demo", ArrayList<String>(), "")
-    @Assert(created)
+    // ⚠️ 断言全在 try 里、清理绑 finally（对齐 testShallowUpdateKeeps… 的写法）：
+    // 这条测试改的是进程级全局量（DEEPGIT_HOME），断言一挂就跳过
+    // exitTestHome / removePathIfExists 的话，全局量留在一个临时目录上，
+    // 污染同进程后续所有测试（home 在 base 之下，删 base 即连 store 一起带走）。
+    try {
+        let (p, created) = addProject(base, "mcp-demo", ArrayList<String>(), "")
+        @Assert(created)
 
-    // get_project_status
-    let req = Json.obj()
-    Json.set(req, "id", Json.of(3))
-    Json.set(req, "method", Json.of("tools/call"))
-    let params = Json.obj()
-    Json.set(params, "name", Json.of("get_project_status"))
-    let args = Json.obj()
-    Json.set(args, "name", Json.of("mcp-demo"))
-    Json.set(params, "arguments", args)
-    Json.set(req, "params", params)
-    let resp = mcpHandle(req).getOrThrow()
-    let result = Json.getOr(resp, "result")
-    let contentArr = Json.arrAt(result, "content")
-    @Assert(contentArr.size == 1)
-    let text = Json.strAt(contentArr[0], "text", "")
-    @Assert(text.contains("mcp-demo"))
-    @Assert(Json.boolAt(result, "isError", true) == false)
+        // get_project_status
+        let req = Json.obj()
+        Json.set(req, "id", Json.of(3))
+        Json.set(req, "method", Json.of("tools/call"))
+        let params = Json.obj()
+        Json.set(params, "name", Json.of("get_project_status"))
+        let args = Json.obj()
+        Json.set(args, "name", Json.of("mcp-demo"))
+        Json.set(params, "arguments", args)
+        Json.set(req, "params", params)
+        let resp = mcpHandle(req).getOrThrow()
+        let result = Json.getOr(resp, "result")
+        let contentArr = Json.arrAt(result, "content")
+        @Assert(contentArr.size == 1)
+        let text = Json.strAt(contentArr[0], "text", "")
+        @Assert(text.contains("mcp-demo"))
+        @Assert(Json.boolAt(result, "isError", true) == false)
 
-    // milestone roundtrip
-    let req2 = Json.obj()
-    Json.set(req2, "id", Json.of(4))
-    Json.set(req2, "method", Json.of("tools/call"))
-    let params2 = Json.obj()
-    Json.set(params2, "name", Json.of("milestone_add"))
-    let args2 = Json.obj()
-    Json.set(args2, "project", Json.of("mcp-demo"))
-    Json.set(args2, "name", Json.of("v9.9"))
-    Json.set(params2, "arguments", args2)
-    Json.set(req2, "params", params2)
-    let resp2 = mcpHandle(req2).getOrThrow()
-    let text2 = Json.strAt(Json.arrAt(Json.getOr(resp2, "result"), "content")[0], "text", "")
-    @Assert(text2.contains("已创建"))
-
-    exitTestHome()
-    removePathIfExists(base)
+        // milestone roundtrip
+        let req2 = Json.obj()
+        Json.set(req2, "id", Json.of(4))
+        Json.set(req2, "method", Json.of("tools/call"))
+        let params2 = Json.obj()
+        Json.set(params2, "name", Json.of("milestone_add"))
+        let args2 = Json.obj()
+        Json.set(args2, "project", Json.of("mcp-demo"))
+        Json.set(args2, "name", Json.of("v9.9"))
+        Json.set(params2, "arguments", args2)
+        Json.set(req2, "params", params2)
+        let resp2 = mcpHandle(req2).getOrThrow()
+        let text2 = Json.strAt(Json.arrAt(Json.getOr(resp2, "result"), "content")[0], "text", "")
+        @Assert(text2.contains("已创建"))
+    } finally {
+        exitTestHome()
+        removePathIfExists(base)
+    }
 }
 
 /// isError 的语义不得反转 —— 走真实的工具分发验证。
@@ -943,6 +1222,8 @@ func testMcpToolsCallOnTempRepo(): Unit {
 func testMcpToolResultsCarryCorrectIsError(): Unit {
     let base = "/tmp/deepgit-mcperr-${nowMillis()}"
     let testHome = base + "-home"
+    var pid = ""
+    try {
     ensureDir(testHome)
     enterTestHome(testHome)
     ensureDir(base)
@@ -954,7 +1235,7 @@ func testMcpToolResultsCarryCorrectIsError(): Unit {
     // 局部 Registry 对象它看不见（第一版就栽在这里 —— 项目找不到 → 抛错 →
     // 走 mcpErr → isError:true，看起来像修复没生效）。
     let (_, _) = addProject(base, "mcp-err", ArrayList<String>(), "")
-    let pid = projectIdFor(base)
+    pid = projectIdFor(base)
 
     // 成功路径：run_track 应当 isError:false
     let okArgs = Json.obj()
@@ -972,11 +1253,58 @@ func testMcpToolResultsCarryCorrectIsError(): Unit {
 
     // 未知工具仍走 mcpErr
     @Assert(Json.boolAt(mcpCallTool("no_such_tool", Json.obj()), "isError", false) == true)
+    } finally {
+        // deepgitPath 解析依赖 DEEPGIT_HOME：先删 store 再复位环境
+        removePathIfExists(base)
+        if (!pid.isEmpty()) {
+            removePathIfExists(deepgitPath(["store", pid]))
+        }
+        exitTestHome()
+        removePathIfExists(testHome)
+    }
+}
 
-    removePathIfExists(base)
-    removePathIfExists(deepgitPath(["store", pid]))
-    exitTestHome()
-    removePathIfExists(testHome)
+/// milestone_action 的 remove 分支：删一个不存在的里程碑必须 isError:true。
+///
+/// 同一工具里 done/drop/reopen 找不到里程碑时回错误位（见上方 setMilestoneStatus
+/// 失败的那条路径），而 remove 原来把成败整句塞进同一次调用的文本里、
+/// 错误位恒为成功 —— 写操作失败被渲染成成功，宿主与模型都会停止追查。
+/// 必须走真实 mcpCallTool 分发：错的是调用点的参数，不是文本辅助函数。
+@Test
+func testMcpMilestoneRemoveNotFoundIsError(): Unit {
+    let base = "/tmp/deepgit-mcpmsrm-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    // ⚠️ storeDir 必须在 try 外声明、在 exitTestHome **之前**算好：
+    // deepgitPath 依赖进程级 DEEPGIT_HOME，finally 里 exitTestHome 之后再取
+    // 拿到的是别人的沙箱路径。清理顺序与原版逐条一致，只是绑上了 finally。
+    var storeDir = ""
+    try {
+        ensureDir(base)
+        gitRun(base, ["init", "-b", "main"], false)
+        writeFileAtomic(base + "/a.txt", "1")
+        gitRun(base, ["add", "."], false)
+        gitRun(base, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"], false)
+        let (_, _) = addProject(base, "mcp-msrm", ArrayList<String>(), "")
+        let pid = projectIdFor(base)
+        storeDir = deepgitPath(["store", pid])
+
+        let args = Json.obj()
+        Json.set(args, "project", Json.of("mcp-msrm"))
+        Json.set(args, "name", Json.of("不存在的里程碑"))
+        Json.set(args, "action", Json.of("remove"))
+        let res = mcpCallTool("milestone_action", args)
+        @Assert(mcpIsError(res))
+        @Assert(mcpTextOf(res).contains("未找到"))
+    } finally {
+        removePathIfExists(base)
+        if (!storeDir.isEmpty()) {
+            removePathIfExists(storeDir)
+        }
+        exitTestHome()
+        removePathIfExists(testHome)
+    }
 }
 
 @Test
@@ -1020,6 +1348,85 @@ func mcpTextOf(r: JsonValue): String {
 
 func mcpIsError(r: JsonValue): Bool {
     return Json.boolAt(r, "isError", false)
+}
+
+/// arch_query 的文本回执投影（json=false 时用）：archOverviewJson /
+/// archModuleJson / archViolationsJson 三种 core 形状各取关键行。
+/// 构造点只有 archQueryTextBrief 一份——JSON 形状变了这里跟着编译红不了，
+/// 但三个 core 的键集测试会红（同一个键集的两半）。
+func archQueryTextBrief(o: JsonValue): String {
+    let lines = ArrayList<String>()
+    lines.add("${Json.strAt(o, "project", "")} · 第 ${Json.intAt(o, "updateCount", -1)} 版 · 生成于 ${Json.strAt(o, "generatedAt", "")}${if (Json.boolAt(o, "selfHealed", false)) { "（已自动重建）" } else { "" }}")
+    // 总览形状：modules 数组
+    let mods = Json.arrAt(o, "modules")
+    if (Int64(mods.size) > 0) {
+        lines.add("  模块 ${mods.size} 个 · 违规 ${Json.intAt(Json.getOr(o, "warnings"), "violations", 0)} · 环边 ${Json.intAt(Json.getOr(o, "warnings"), "cycleEdges", 0)}")
+        for (m in mods) {
+            lines.add("  ${Json.strAt(m, "id", "")}（${Json.strAt(m, "layerName", "")}）· 入 ${Json.intAt(m, "fanIn", 0)} / 出 ${Json.intAt(m, "fanOut", 0)} · 不稳定度 ${Json.intAt(m, "instability", 0)}%")
+        }
+        return joinStrings(lines, "\n")
+    }
+    // 违规形状：violations 数组
+    let viols = Json.arrAt(o, "violations")
+    if (Json.has(o, "violationCount")) {
+        if (Int64(viols.size) == 0) {
+            lines.add("  违规：0 对——分层健康（低层没有依赖高层）")
+        } else {
+            lines.add("  违规 ${Json.intAt(o, "violationCount", 0)} 对：")
+            for (pr in viols) {
+                lines.add("    ${Json.strAt(pr, "from", "")} → ${Json.strAt(pr, "to", "")}")
+            }
+        }
+        let cm = Json.strArrAt(o, "cycleModules")
+        if (Int64(cm.size) == 0) {
+            lines.add("  环：无（没有模块处于依赖环上）")
+        } else {
+            lines.add("  环上模块：${joinStrings(cm, " · ")}")
+        }
+        return joinStrings(lines, "\n")
+    }
+    // 单模块形状：dependsOn / dependedBy
+    if (Json.has(o, "module")) {
+        lines.add("  模块 ${Json.strAt(o, "module", "")}（${Json.strAt(o, "layerName", "")}）· 入 ${Json.intAt(o, "fanIn", 0)} / 出 ${Json.intAt(o, "fanOut", 0)} · 不稳定度 ${Json.intAt(o, "instability", 0)}%")
+        let outs = Json.arrAt(o, "dependsOn")
+        lines.add("  出向依赖（${outs.size}）：")
+        for (e in outs) {
+            lines.add("    ${Json.strAt(e, "to", "")} · 权重 ${Json.intAt(e, "weight", 0)}")
+        }
+        let ins = Json.arrAt(o, "dependedBy")
+        lines.add("  入向依赖（${ins.size}）：")
+        for (e in ins) {
+            lines.add("    ${Json.strAt(e, "from", "")} · 权重 ${Json.intAt(e, "weight", 0)}")
+        }
+        return joinStrings(lines, "\n")
+    }
+    return joinStrings(lines, "\n")
+}
+
+/// confidence_query 的文本回执投影（json=false 时用）：总览形状与
+/// 过滤形状各取关键行（构造点只有 confidenceQueryJson 一份）。
+func confidenceQueryTextBrief(o: JsonValue): String {
+    let lines = ArrayList<String>()
+    let head = "${Json.strAt(o, "project", "")} · 生成于 ${Json.strAt(o, "generatedAt", "")} · 依据索引 ${indexVersionLabel(Json.intAt(o, "indexUpdateCount", -1))}"
+    if (Json.has(o, "score")) {
+        lines.add("置信度快照：${head} · 分数 ${Json.intAt(o, "score", 0)}/100 · ${Json.intAt(o, "findingCount", 0)} 条疑点")
+        if (Json.boolAt(o, "cappedTotal", false)) {
+            lines.add("  ⚠ 疑点已达全量上限——快照里是子集，不是全部")
+        }
+        for (d in Json.arrAt(o, "dimensions")) {
+            lines.add("  ${Json.strAt(d, "label", "")}：${Json.intAt(d, "score", 0)}/100（罚分 ${Json.intAt(d, "penalty", 0)} · ${Json.intAt(d, "findings", 0)} 条）")
+        }
+        return joinStrings(lines, "\n")
+    }
+    lines.add("置信度快照：${head} · 匹配 ${Json.intAt(o, "matched", 0)} 条 · 显示 ${Json.intAt(o, "shown", 0)} 条")
+    if (Json.boolAt(o, "topTruncated", false)) {
+        lines.add("  ⚠ 已按 top 截断——匹配的疑点未全部显示")
+    }
+    for (f in Json.arrAt(o, "findings")) {
+        lines.add("  [${Json.strAt(f, "kind", "")}] ${Json.strAt(f, "file", "")}:${Json.intAt(f, "line", 0)} · 权重 ${Json.intAt(f, "weight", 0)}")
+        lines.add("    ${Json.strAt(f, "evidence", "")}")
+    }
+    return joinStrings(lines, "\n")
 }
 
 @Test
@@ -1637,9 +2044,9 @@ func testAddProjectRefusesToRegisterAnUnnameableProject(): Unit {
 private func mcpSchemaRows(): ArrayList<(String, ArrayList<String>)> {
     let raw = readFileTextChecked("src/cli/mcp.cj").getOrThrow()
     let sb = StringBuilder()
-    var blk = false
+    var blk = CjStripState.Normal
     for (r in raw.split("\n")) {
-        let (l, nb) = stripCjComment(r, blk)
+        let (l, nb) = stripCjCommentEx(r, blk)
         blk = nb
         sb.append(l)
         sb.append("\n")
@@ -1743,9 +2150,9 @@ private func mcpHandlerBody(code: String, tool: String): String {
 func __lintMcpSchemaRequiredMatchesHandler(): Unit {
     let raw = readFileTextChecked("src/cli/mcp.cj").getOrThrow()
     let sb = StringBuilder()
-    var blk = false
+    var blk = CjStripState.Normal
     for (r in raw.split("\n")) {
-        let (l, nb) = stripCjComment(r, blk)
+        let (l, nb) = stripCjCommentEx(r, blk)
         blk = nb
         sb.append(l)
         sb.append("\n")
@@ -1822,43 +2229,48 @@ func testMcpCodegraphArchScene(): Unit {
     let home = "${base}/home"
     ensureDir(home)
     enterTestHome(home)
-    let (p, created) = addProject(base, "cg-demo", ArrayList<String>(), "")
-    @Assert(created)
+    // ⚠️ 断言全在 try 里、清理绑 finally（对齐 testShallowUpdateKeeps… 的写法）：
+    // 断言一挂就跳过 exitTestHome 的话，DEEPGIT_HOME 留在已删的临时目录上，
+    // 污染同进程后续所有测试。
+    try {
+        let (p, created) = addProject(base, "cg-demo", ArrayList<String>(), "")
+        @Assert(created)
 
-    // scene：契约关键字段必须在
-    let req = Json.obj()
-    Json.set(req, "id", Json.of(11))
-    Json.set(req, "method", Json.of("tools/call"))
-    let params = Json.obj()
-    Json.set(params, "name", Json.of("codegraph_arch"))
-    let args = Json.obj()
-    Json.set(args, "name", Json.of("cg-demo"))
-    Json.set(args, "format", Json.of("scene"))
-    Json.set(params, "arguments", args)
-    Json.set(req, "params", params)
-    let resp = mcpHandle(req).getOrThrow()
-    let result = Json.getOr(resp, "result")
-    @Assert(Json.boolAt(result, "isError", true) == false)
-    let text = Json.strAt(Json.arrAt(result, "content")[0], "text", "")
-    @Assert(text.contains("moongit-graph"))
-    @Assert(text.contains("nodeTheme"))
-    @Assert(text.contains("edgesDropped"))
+        // scene：契约关键字段必须在
+        let req = Json.obj()
+        Json.set(req, "id", Json.of(11))
+        Json.set(req, "method", Json.of("tools/call"))
+        let params = Json.obj()
+        Json.set(params, "name", Json.of("codegraph_arch"))
+        let args = Json.obj()
+        Json.set(args, "name", Json.of("cg-demo"))
+        Json.set(args, "format", Json.of("scene"))
+        Json.set(params, "arguments", args)
+        Json.set(req, "params", params)
+        let resp = mcpHandle(req).getOrThrow()
+        let result = Json.getOr(resp, "result")
+        @Assert(Json.boolAt(result, "isError", true) == false)
+        let text = Json.strAt(Json.arrAt(result, "content")[0], "text", "")
+        @Assert(text.contains("moongit-graph"))
+        @Assert(text.contains("nodeTheme"))
+        @Assert(text.contains("edgesDropped"))
 
-    // 非法 format 报错必须列出 scene（否则宿主不知道新格式存在）
-    let bad = Json.obj()
-    Json.set(bad, "id", Json.of(12))
-    Json.set(bad, "method", Json.of("tools/call"))
-    let bparams = Json.obj()
-    Json.set(bparams, "name", Json.of("codegraph_arch"))
-    let bargs = Json.obj()
-    Json.set(bargs, "name", Json.of("cg-demo"))
-    Json.set(bargs, "format", Json.of("svg"))
-    Json.set(bparams, "arguments", bargs)
-    Json.set(bad, "params", bparams)
-    let bresp = mcpHandle(bad).getOrThrow()
-    let btext = Json.strAt(Json.arrAt(Json.getOr(bresp, "result"), "content")[0], "text", "")
-    @Assert(btext.contains("scene"))
-
-    exitTestHome()
-    removePathIfExists(base)
+        // 非法 format 报错必须列出 scene（否则宿主不知道新格式存在）
+        let bad = Json.obj()
+        Json.set(bad, "id", Json.of(12))
+        Json.set(bad, "method", Json.of("tools/call"))
+        let bparams = Json.obj()
+        Json.set(bparams, "name", Json.of("codegraph_arch"))
+        let bargs = Json.obj()
+        Json.set(bargs, "name", Json.of("cg-demo"))
+        Json.set(bargs, "format", Json.of("svg"))
+        Json.set(bparams, "arguments", bargs)
+        Json.set(bad, "params", bparams)
+        let bresp = mcpHandle(bad).getOrThrow()
+        let btext = Json.strAt(Json.arrAt(Json.getOr(bresp, "result"), "content")[0], "text", "")
+        @Assert(btext.contains("scene"))
+    } finally {
+        exitTestHome()
+        removePathIfExists(base)
+    }
 }

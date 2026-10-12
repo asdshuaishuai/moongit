@@ -359,7 +359,10 @@ func extractCount(s: String, prefix: String): Int64 {
 /// 把 git 失败压成一行可读原因（给用户看的，不是给日志看的）。
 private func gitErrorText(r: ExecResult): String {
     if (r.timedOut) {
-        return "git 子进程超时（120s）"
+        // 秒数必须从 GIT_TRY_TIMEOUT_MS 派生，不许再写死 ——
+        // 它与 gitTry 的超时是同一个事实，两份拷贝必然漂移
+        // （上限一改，文案就变成假话，而且没人会想起来改它）。
+        return "git 子进程超时（${GIT_TRY_TIMEOUT_MS / 1000}s）"
     }
     let e = r.stderr.trimAscii()
     if (!e.isEmpty()) {
@@ -678,11 +681,11 @@ public func listFiles(dir: String, maxFiles: Int64): FileListing {
     if (!r.ok()) {
         // 失败 ≠ 空仓库。必须把原因带出去（#187）：
         //   · 真的 0 个文件 → 仓库确实是空的
-        //   · 采集失败     → ls-files 挂了（index 损坏 / 120s 超时 / 仓库不可达）
+        //   · 采集失败     → ls-files 挂了（index 损坏 / git 超时 / 仓库不可达）
         // 两者在下游（语言分布、结构树、「工程规模 N 个跟踪文件」）完全同形，
         // 混作一谈就等于把「核验不了」说成「没有」。
         let reason = if (r.timedOut) {
-            "git ls-files 超时（120s）"
+            "git ls-files 超时（${GIT_TRY_TIMEOUT_MS / 1000}s）"
         } else {
             oneLineClamped(if (r.stderr.trimAscii().isEmpty()) { "git ls-files 失败" } else {
                 "git ls-files 失败：${r.stderr.trimAscii()}"
@@ -1384,18 +1387,48 @@ public class UntrackedListing {
     public let names: ArrayList<UntrackedFile>
     public let total: Int64
     public let truncated: Bool
+    /// 采集失败原因；空串表示成功。**恒发**（K4，对齐 FileListing 的 #187 判例）。
+    ///
+    /// ⚠️ 原来失败时返回 `UntrackedListing(out, 0, false)` —— 把「读不出来」
+    /// 编码成了「0 个未跟踪且未截断」，而且 `truncated: false` 反而
+    /// **声称没截断**。失败与「真的没有未跟踪文件」在下游完全同形，
+    /// 读者无从分辨「干净的仓库」和「ls-files 挂了」。
+    public let error: String
 
     public init(names: ArrayList<UntrackedFile>, total: Int64, truncated: Bool) {
         this.names = names
         this.total = total
         this.truncated = truncated
+        this.error = ""
+    }
+
+    public init(names: ArrayList<UntrackedFile>, total: Int64, truncated: Bool, error: String) {
+        this.names = names
+        this.total = total
+        this.truncated = truncated
+        this.error = error
     }
 }
 
 public func listUntrackedFiles(root: String, maxFiles: Int64): UntrackedListing {
     let out = ArrayList<UntrackedFile>()
     let r = gitTry(root, ["ls-files", "--others", "--exclude-standard", "-z"])
-    if (!r.ok() || r.stdout.isEmpty()) {
+    if (!r.ok()) {
+        // 失败 ≠ 0 个未跟踪（K4，#187 在 listFiles 上修掉的同族）。
+        // 「干净的仓库」（真 0）与「ls-files 挂了」必须分得开：
+        // untrackedCount=0 会被下游读成「工作区干净」，而采集失败时
+        // 这个 0 是无知，不是结论。
+        let reason = if (r.timedOut) {
+            "git ls-files --others 超时（${GIT_TRY_TIMEOUT_MS / 1000}s）"
+        } else {
+            oneLineClamped(if (r.stderr.trimAscii().isEmpty()) { "git ls-files --others 失败" } else {
+                "git ls-files --others 失败：${r.stderr.trimAscii()}"
+            }, 120)
+        }
+        return UntrackedListing(out, 0, false, reason)
+    }
+    if (r.stdout.isEmpty()) {
+        // 探测成功且输出为空：真的 0 个未跟踪文件 —— 0 是结论，不是失败
         return UntrackedListing(out, 0, false)
     }
     var total: Int64 = 0
@@ -2425,4 +2458,43 @@ func testListStashesSurvivesControlCharInMessage(): Unit {
     @Assert(st.size == 1)
     @Assert(st[0].message.contains("msg"))
     removePathIfExists(base)
+}
+
+/// 超时文案里的秒数必须从 GIT_TRY_TIMEOUT_MS 派生，git.cj 里不许再出现
+/// 硬编码的「120s」—— 同一事实（git 子进程超时上限）两份拷贝必然漂移：
+/// 上限一改（exec.cj 的常量），三处文案就同时变成假话，且没人会想起来改它们。
+///
+/// 走源码 lint 而不是行为测试：超时本身在测试里造不出来（要真卡 git 子进程
+/// 120 秒），而「文案是否从常量派生」是静态事实。剥注释后扫描，避免被
+/// 解释性注释里的字样骗红/骗绿（AGENTS 不变量 30 的教训）。
+@Test
+func __lintTimeoutTextDerivesFromGitTryTimeoutConstant(): Unit {
+    let raw = readFileTextChecked("src/kernel/git.cj").getOrThrow()
+    // 剥注释（状态机，与仓库其他 lint 同款）
+    let sb = StringBuilder()
+    var blk = CjStripState.Normal
+    for (r in raw.split("\n")) {
+        let (l, nb) = stripCjCommentEx(r, blk)
+        blk = nb
+        sb.append(l)
+        sb.append("\n")
+    }
+    let code = sb.toString()
+    // needle 拼接：源码（含本 lint 自身）不出现完整 needle，否则匹配到自己
+    let literalSecs = "120" + "s"
+    @Assert(!code.contains(literalSecs))
+    // 接缝必须还在且被引用：把派生删掉、换回字面量之外，还有一种退化是
+    // 「文案整段消失」—— 引用数 >= 3（三处文案 + 本 lint 的契约断言各自
+    // 带一次引用）挡住它；不锁死精确条数，避免将来增删文案时假红
+    let constantRef = "GIT_TRY" + "_TIMEOUT_MS"
+    var refs = 0
+    for (line in code.split("\n")) {
+        if (line.contains(constantRef)) {
+            refs += 1
+        }
+    }
+    @Assert(refs >= 3)
+    // 常量本身的契约（util 同事持有定义）：毫秒值必须是整千，
+    // 否则 `/ 1000` 会把 120500ms 显示成 120s —— 又一份静默的口径漂移
+    @Assert(GIT_TRY_TIMEOUT_MS % 1000 == 0)
 }

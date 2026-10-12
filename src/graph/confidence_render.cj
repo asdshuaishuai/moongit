@@ -63,6 +63,11 @@ public func confidenceJson(r: ConfidenceReport): JsonValue {
     Json.set(o, "byKind", JArr(ks))
     Json.set(o, "astUsed", Json.of(r.astUsed))
     Json.set(o, "astNote", Json.of(r.astNote))
+    // 限流披露恒发（真值来自丢弃判定点的 CapDropCounter）：CLI/MCP 消费方
+    // 与 HTML 内嵌同口径—— findings 恰好等于上限时无法自证「没截断」，
+    // 缺键会被读成旧版本没有这个字段（不变量 33：披露必须在每一个出口）
+    Json.set(o, "cappedKind", Json.of(r.cappedKind))
+    Json.set(o, "cappedTotal", Json.of(r.cappedTotal))
     Json.set(o, "filesAnalyzed", Json.of(r.filesAnalyzed))
     // 语义边界恒发：分数是结构级度量，不是正确性证明
     Json.set(o, "semantics", Json.of(
@@ -79,6 +84,13 @@ public func confidenceText(r: ConfidenceReport): String {
     sb.append("代码置信度 · ${r.root}\n")
     sb.append("  分数 ${r.score}/100 · ${Int64(r.findings.size)} 条疑点 · 分析 ${r.filesAnalyzed} 文件\n")
     sb.append("  ${r.astNote}\n")
+    // 限流披露（不变量 56：每一层截断都要有自己那一句披露）——
+    // 上面的「N 条疑点」是封顶后的数量，不披露就是把「读了 N 条」当「一共 N 条」
+    if (r.cappedTotal) {
+        sb.append("  ⚠ 已达全量上限 ${Int64(CONF_MAX_FINDINGS)} 条——以上不是全部，超出部分未列出\n")
+    } else if (r.cappedKind) {
+        sb.append("  ⚠ 部分类别达到每文件上限，超出该类的疑点未逐一列出\n")
+    }
     sb.append("  （分数是结构性疑点汇总，不是正确性证明）\n")
     if (r.findings.size == 0) {
         sb.append("\n未发现结构性疑点。\n")
@@ -116,7 +128,13 @@ public func confidenceLlmPrompt(r: ConfidenceReport, projectName: String): Strin
     let sb = StringBuilder()
     sb.append("# 代码置信度复核任务\n\n")
     sb.append("项目：${projectName}\n")
-    sb.append("引擎预检：总分 ${r.score}/100 · ${Int64(r.findings.size)} 条疑点（词法+语法树级）。\n\n")
+    sb.append("引擎预检：总分 ${r.score}/100 · ${Int64(r.findings.size)} 条疑点（词法+语法树级）。\n")
+    // 模型拿到的疑点清单同样可能是封顶后的子集（本包 ≤80 条 + 引擎侧 400 条
+    // 总量闸门），不披露会让模型把样本当全量（不变量 56/57）
+    if (r.cappedTotal) {
+        sb.append("⚠ 引擎疑点已达全量上限 ${Int64(CONF_MAX_FINDINGS)}——下面只是子集，不是全部。\n")
+    }
+    sb.append("\n")
     sb.append("## 预检维度分\n\n")
     for ((d, pen, cnt, dScore) in r.dimensions) {
         sb.append("- ${dimensionLabel(d, true)}：${dScore}/100（${cnt} findings）\n")

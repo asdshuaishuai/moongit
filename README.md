@@ -298,6 +298,9 @@ scripts/      install.sh / moongit.sh / build-minimal-sdk.sh / package-release.s
   （**必须带单位**，如 `1gb`；范围 `[4MB, 系统内存]`，不带单位会被静默忽略）。
   `scripts/moongit.sh` 与 `install.sh` 安装出的启动器已默认注入 `cjHeapSize=1gb`
   （**不覆盖**你显式设置的值）；直接跑 `target/release/bin/main`、或客户端内嵌引擎副本时需自行设置。
+  发布包（`scripts/package-release.sh` 生成的 `moongit-v*.tar.gz`）根部同样带这个启动器，
+  且**自带仓颉 runtime dylib**（`runtime/lib/`）、二进制只保留 `@executable_path` 相对 rpath ——
+  解包后 `env -i ./moongit --help` 能跑即为包自包含的判据；产物在本地生成，不入库（见 `.gitignore`）。
   实测：deepGit / deepOrca / ddolphin 的 `--format json | html | scene` 在默认堆下会崩或**时崩时通**，
   `cjHeapSize=1gb` 下三者恒定通过（deepOrca 的最小可用值是 `512mb`）。
   `--format dot | mermaid` 只出模块级依赖，始终轻量。

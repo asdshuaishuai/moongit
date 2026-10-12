@@ -27,7 +27,13 @@ set -u
 # ⚠️ 不能写 `${SDKROOT:-…}`：envsetup 会在未设时把它设成 Xcode 全量 SDK
 # （macOS 26/27 的 libSystem.tbd 缺 arm64-macos 声明 ⇒ 链接报 undefined symbol: _strtod）。
 export SDKROOT="${MOONGIT_SDKROOT:-$HOME/.local/share/sdks/MacOSX.minimal/latest}"
-export DEEPGIT_HOME="${DEEPGIT_HOME:-/tmp/dg-nc-audit-home-$$}"
+# 自建默认 DEEPGIT_HOME 才在收尾时删；用户显式传入的绝不碰（里面可能有真实数据）。
+# 原来 cleanup() 只删 $SB，这个目录每次跑完都残留在 /tmp（缺陷同 #37 的沙箱兄弟目录）。
+DG_HOME_SELFMADE=false
+if [ -z "${DEEPGIT_HOME:-}" ]; then
+  export DEEPGIT_HOME="/tmp/dg-nc-audit-home-$$"
+  DG_HOME_SELFMADE=true
+fi
 
 SB="$(mktemp -d "${TMPDIR:-/tmp}/moonGit-nc-audit.XXXXXX")"
 FILES="src/graph/patchconf.cj src/graph/build.cj src/graph/model.cj src/util/paths.cj src/util/json.cj \
@@ -40,7 +46,11 @@ restore_all() {
     [ -f "$SB/backup/$f" ] && cp "$SB/backup/$f" "$f"
   done
 }
-cleanup() { restore_all; rm -rf "$SB"; }
+cleanup() {
+  restore_all
+  rm -rf "$SB"
+  if [ "$DG_HOME_SELFMADE" = true ]; then rm -rf "$DEEPGIT_HOME"; fi
+}
 trap cleanup EXIT INT TERM
 
 for f in $FILES; do

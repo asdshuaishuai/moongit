@@ -21,12 +21,23 @@ let REPORT_MAX_LANGS: Int64 = 8
 /// 报告那一格却是「进行中」、备注栏空白。
 ///
 /// 「核验不了」必须显示成核验不了，不能显示成任何一种确定状态。
+///
+/// ⚠️ `case _` 原来同时兜住 `open` 和**一切认不出的 status**（W1）。
+/// 认不出的 status（手写 milestones.json / 旧版本数据 / 未来新增枚举）
+/// 在 dashboard 计数侧已单列 other 桶（#182：既不并进 open 也不丢弃），
+/// 而报告这里把它们渲染成确定状态「进行中」—— 同一份 items，
+/// 两个出口两种口径，报告还偏偏是给出确定结论的那个。
+/// 现在只有 `open` 才谈进行中/逾期；unknown 与认不出的 status 一律三态文案，
+/// 原因写进备注格（见 milestoneCellNote）。
 public func milestoneCellStatus(status: String, overdue: Bool): String {
     return match (status) {
         case "done" => "✓ 已达成"
         case "dropped" => "✗ 已放弃"
-        case "unknown" => "? 无法核验"
-        case _ => if (overdue) { "⚠ 已逾期" } else { "进行中" }
+        case "open" => if (overdue) { "⚠ 已逾期" } else { "进行中" }
+        // 认不出的 status 哪怕标了 overdue 也不能渲染成「已逾期」：
+        // 逾期判定依赖 status=="open"（milestones.cj），而这里的 status 连认都认不出，
+        // 天数与 overdue 都不可信 —— 与上面 unknown 无视 overdue 是同一条理由。
+        case _ => "? 无法核验"
     }
 }
 
@@ -34,14 +45,27 @@ public func milestoneCellStatus(status: String, overdue: Bool): String {
 ///
 /// `unknown` 必须把核验失败的原因写出来 —— 只写「无法核验」等于
 /// 告诉读者「有问题」却不告诉他「为什么」，读者无从判断该重试还是该修仓库。
+/// 认不出的 status 同族同理（W1）：格子已是「? 无法核验」，备注若空着，
+/// 读者只知道「有问题」却不知道「为什么」—— 引擎不认为那是核验失败
+/// （数据里的值不在已知枚举里），那就把值本身写出来，读者还能去核对数据。
 public func milestoneCellNote(
     tagReached: Bool, status: String, days: Int64, unverifiedReason: String
 ): String {
     if (tagReached) {
         return "tag 已存在"
     }
-    if (status == "unknown") {
-        let why = if (unverifiedReason.isEmpty()) { "仓库读不出来" } else { unverifiedReason }
+    // unknown 与一切认不出的 status（非 open/done/dropped）同族处理，
+    // 与 milestoneCellStatus 的三态文案配对。
+    let unrecognized = status != "open" && status != "done" && status != "dropped" && status != "unknown"
+    if (status == "unknown" || unrecognized) {
+        let fallback = if (status == "unknown") {
+            "仓库读不出来"
+        } else if (status.isEmpty()) {
+            "状态为空"
+        } else {
+            "未知状态：${status}"
+        }
+        let why = if (unverifiedReason.isEmpty()) { fallback } else { unverifiedReason }
         return "无法核验：${why}"
     }
     // 逾期只对**进行中**的里程碑有意义。
@@ -129,6 +153,19 @@ public func renderReportMarkdown(statuses: ArrayList<JsonValue>, dash: JsonValue
     sb.append("| 有未提交改动 | ${Json.intAt(projs, "dirty", 0)} |\n")
     sb.append("| 待合入分支 | ${Json.intAt(work, "mergeCandidates", 0)} |\n")
     sb.append("| 未跟踪文件 | ${Json.intAt(work, "untrackedFiles", 0)} |\n")
+    // 契约C 汇总侧：有项目的未跟踪数读不到时（dashboard 恒发的
+    // work.untrackedFailed），上一行不含它们 —— 不说破，读者会把
+    // 「N 个未跟踪文件」当成整个项目群的完整口径（不变量 17：
+    // 数据里有 ≠ 用户看得到）。与 languageFailed 的披露行同族。
+    let untrackedFailed = Json.intAt(work, "untrackedFailed", 0)
+    if (untrackedFailed > 0) {
+        let untrackedFailedNote = if (zh) {
+            "⚠ ${untrackedFailed} 个项目的未跟踪文件数读不到，未计入上一行（不是「没有未跟踪文件」）"
+        } else {
+            "⚠ untracked file count unreadable for ${untrackedFailed} project(s), excluded from the row above (not \"none\")"
+        }
+        sb.append("\n_${untrackedFailedNote}_\n")
+    }
     sb.append("\n")
 
     // ---- 语言分布 ----
@@ -227,6 +264,19 @@ public func renderReportMarkdown(statuses: ArrayList<JsonValue>, dash: JsonValue
         let untracked = Json.intAt(s, "untrackedCount", 0)
         let stash = Json.intAt(s, "stashCount", 0)
         sb.append("- **工作区**：${dirty} 个未提交改动 · ${untracked} 个未跟踪文件 · ${stash} 条 stash\n")
+        // 契约C（untrackedError，status 恒发）：ls-files --others 采集失败时
+        // 上面的 untracked 是 0 —— 那是无知，不是结论。报告是人最可能照着
+        // 做事的文件，不说破「0 个未跟踪文件」就成了「工作面干净」的假事实
+        // （不变量 17：数据里有 ≠ 用户看得到）。与上面 storeHealth 的 ⚠ 行同族。
+        let untrackedErr = Json.strAt(s, "untrackedError", "")
+        if (!untrackedErr.isEmpty()) {
+            let untrackedNote = if (zh) {
+                "- ⚠ **未跟踪文件数读不到**：${oneLineClamped(untrackedErr, 90)}（不是「没有未跟踪文件」）\n"
+            } else {
+                "- ⚠ **untracked file count unreadable**: ${oneLineClamped(untrackedErr, 90)} (not \"no untracked files\")\n"
+            }
+            sb.append(untrackedNote)
+        }
         match (Json.get(s, "mergeHint")) {
             case Some(mh) =>
                 sb.append("- **合入提示**：`${Json.strAt(mh, "target", "")}` ${Json.strAt(mh, "description", "")}\n")
@@ -578,8 +628,18 @@ func testMilestoneCellStatusNeverFalsifiesUnknownAsInProgress(): Unit {
     // 哪怕同时逾期，也必须是「无法核验」而不是「已逾期」——
     // 逾期是从天数算出来的，而天数在核验失败时不可信
     @Assert(milestoneCellStatus("unknown", true) == "? 无法核验")
-    // 未知状态字符串也不能被兜成「进行中」
-    @Assert(milestoneCellStatus("某种没见过的状态", false) == "进行中")
+    // ⚠️ 2026-10-11 显式推翻（W1）：这条断言原本钉的是 `== "进行中"`，
+    // 而它上一行的注释写的恰恰是「未知状态字符串也不能被兜成『进行中』」——
+    // 注释说的是对的，断言钉死的却是错误行为，同一行自相矛盾。
+    // 推翻理由：dashboard 计数侧 #182 早已把认不出的 status 单列 other 桶
+    // （既不并进 open 也不丢弃），同一份 items 在报告表格里却渲染成确定状态
+    // 「进行中」—— 两个出口两种口径。按不变量 32（「不知道」和「没有」是
+    // 两个状态，渲染层不能合并），格子改发三态文案，原因进备注
+    // （milestoneCellNote 的「未知状态：X」）。这是有意的契约变更，不是改绿了事。
+    @Assert(milestoneCellStatus("某种没见过的状态", false) == "? 无法核验")
+    // 认不出的 status 哪怕 overdue=true 也不能渲染成「已逾期」：
+    // 逾期是从 status=="open" 的天数算的，status 连认都认不出时天数不可信
+    @Assert(milestoneCellStatus("某种没见过的状态", true) == "? 无法核验")
 }
 
 /// 核验失败时备注必须写出**原因**，只写「无法核验」等于让读者猜。
@@ -595,6 +655,73 @@ func testMilestoneCellNoteCarriesUnverifiedReason(): Unit {
     // unknown + tag 已存在：tag 是真的，但它不能掩盖「状态核验不了」
     let tagged = milestoneCellNote(true, "unknown", -1, "仓库读不出来")
     @Assert(!tagged.isEmpty())
+    // W1：认不出的 status 备注也不能空着 —— 格子已是「? 无法核验」，
+    // 只说「有问题」不说「为什么」，读者无从判断该重试还是该去核对数据。
+    let weird = milestoneCellNote(false, "active", -1, "")
+    @Assert(weird.contains("无法核验"))
+    @Assert(weird.contains("active"))   // 值本身写出来，读者才能去核对 milestones.json
+    // 有原因时优先披露原因，与 unknown 的既有处理对齐
+    let weirdWhy = milestoneCellNote(false, "active", -1, "仓库读不出来")
+    @Assert(weirdWhy.contains("无法核验"))
+    @Assert(weirdWhy.contains("仓库读不出来"))
+}
+
+/// W1 回归：认不出的 milestone status 在 dashboard 计数单列 other 桶（#182），
+/// 报告表格却把它兜成确定状态「进行中」—— 同一份 items 两个出口两种口径。
+///
+/// 走真实路径，不手搓 dash JSON：setMilestoneStatus 不校验枚举（正是 #182
+/// 实测「手写 status:"active"」的入口）→ buildMilestoneOverview 原样透传
+/// effectiveStatus → renderReportMarkdown 渲染。纯函数断言钉的是格式，
+/// 这条钉的是「数据真的这么流」，两者缺一则负控各漏一半。
+@Test
+func testReportCellForUnrecognizedMilestoneStatusIsUnverifiable(): Unit {
+    let base = "/tmp/deepgit-repunknown-${nowMillis()}"
+    let testHome = base + "-home"
+    let repo = base + "/repo"
+    var pid = ""
+    try {
+        // setup 必须在 try **内**：gitRun(false) 抛 GIT_FAILED、writeFileAtomic 抛 IO、
+        // addProject 抛 notFound 时，沙箱与 DEEPGIT_HOME 都要有 finally 兜底 ——
+        // 原来这段在 try 外，setup 一红 /tmp 就漏目录，且 DEEPGIT_HOME
+        // 停在 testHome 上不复位（enterTestHome 没有配对的 exitTestHome）。
+        ensureDir(repo)
+        gitRun(repo, ["init", "-b", "main"], false)
+        writeFileAtomic(repo + "/a.txt", "1")
+        gitRun(repo, ["add", "."], false)
+        gitRun(repo, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "feat: one"], false)
+        ensureDir(testHome)
+        enterTestHome(testHome)
+        let (p, _) = addProject(repo, "rep-unknown", ArrayList<String>(), "")
+        pid = p.id
+        let (_, created) = addMilestone(p.id, "v1.0", "", "", "")
+        @Assert(created)
+        // 手工塞一个认不出的 status —— 引擎入口不校验枚举，数据里存什么就流什么
+        @Assert(setMilestoneStatus(p.id, "v1.0", "active"))
+
+        let projects = ArrayList<ProjectEntry>([p])
+        let dash = buildDashboard(projects, Config.defaults())
+        // 前提自证（不变量 18）：dashboard 侧确实把它计进 other 桶 ——
+        // 没有这个前提，下面的报告断言可能测的根本不是「认不出的 status」路径
+        let counts = Json.getOr(Json.getOr(dash, "milestones"), "counts")
+        @Assert(Json.intAt(counts, "other", -1) == 1)
+
+        let md = renderReportMarkdown(allProjectStatuses(projects, Config.defaults(), false), dash, "zh")
+        // 格子：含「无法核验」，且那条里程碑绝不能被渲染成「进行中」
+        @Assert(md.contains("v1.0 | ? 无法核验"))
+        @Assert(!md.contains("v1.0 | 进行中"))
+        // 备注：披露原因（不变量 32），把值本身写出来供读者核对
+        @Assert(md.contains("未知状态：active"))
+    } finally {
+        removePathIfExists(repo)
+        if (!pid.isEmpty()) {
+            removePathIfExists(deepgitPath(["store", pid]))
+        }
+        // setup 中途抛出时 enterTestHome 可能没跑到：exitTestHome 回到兜底沙箱，
+        // 绝不回到真实 home（这正是它存在的理由，见 paths.cj）
+        exitTestHome()
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
 }
 
 /// #177 回归：里程碑小节恒发，且区分「读不出来」与「真的没有」。
@@ -667,6 +794,68 @@ func testReportLanguageSectionSurvivesTotalCollectionFailure(): Unit {
     let md3 = renderReportMarkdown(ArrayList<JsonValue>(), dash3, "zh")
     @Assert(md3.contains("Rust (3)"))
     @Assert(md3.contains("1 个项目语言采集失败"))
+}
+
+/// 契约C 消费侧（报告）：untrackedError 非空时，项目详情的未跟踪行与
+/// 项目群总览的未跟踪行都必须披露「读不到」—— 采集失败时 untrackedCount=0，
+/// 不说破就会被读成「工作面干净」（不变量 17：数据里有 ≠ 用户看得到）。
+///
+/// 走真实 renderReportMarkdown；statuses / dash 按真实形状手搓 ——
+/// 「untrackedError 非空且 status 成功」在磁盘上构造不出来（能让
+/// `git ls-files --others` 失败的确定性手段都会先让 `git status --porcelain`
+/// 失败 ⇒ REPO_UNREADABLE，status 条目整个变错误桩），与
+/// testReportLanguageSectionSurvivesTotalCollectionFailure 的做法同族。
+@Test
+func testReportDisclosesUntrackedReadFailurePerProjectAndInSummary(): Unit {
+    // 项目条目：按 projectStatus 的真实形状（untrackedError 恒发，空串 = 正常）
+    let okS = Json.obj()
+    Json.set(okS, "name", Json.of("rep-ok"))
+    Json.set(okS, "branches", JArr(ArrayList<JsonValue>()))
+    Json.set(okS, "userDirtyCount", Json.of(0))
+    Json.set(okS, "untrackedCount", Json.of(3))
+    Json.set(okS, "untrackedError", Json.of(""))
+    Json.set(okS, "stashCount", Json.of(0))
+    let badS = Json.obj()
+    Json.set(badS, "name", Json.of("rep-ut"))
+    Json.set(badS, "branches", JArr(ArrayList<JsonValue>()))
+    Json.set(badS, "userDirtyCount", Json.of(0))
+    Json.set(badS, "untrackedCount", Json.of(0))
+    Json.set(badS, "untrackedError", Json.of("git ls-files --others 失败：fatal: index file corrupt"))
+    Json.set(badS, "stashCount", Json.of(0))
+
+    let dash = dashProjectsJson(2, 0)
+    let work = Json.obj()
+    Json.set(work, "branches", Json.of(0))
+    Json.set(work, "mergeCandidates", Json.of(0))
+    Json.set(work, "untrackedFiles", Json.of(3))   // 只有 rep-ok 的 3 个
+    Json.set(work, "untrackedFailed", Json.of(1))
+    let utReasons = ArrayList<JsonValue>()
+    utReasons.add(Json.of("git ls-files --others 失败：fatal: index file corrupt"))
+    Json.set(work, "untrackedFailedReasons", JArr(utReasons))
+    Json.set(work, "stashes", Json.of(0))
+    Json.set(dash, "work", work)
+
+    let md = renderReportMarkdown(ArrayList<JsonValue>([okS, badS]), dash, "zh")
+    // 项目详情：rep-ut 的 ⚠ 行在，且原因要带上（只说「读不到」等于让读者猜）
+    @Assert(md.contains("- ⚠ **未跟踪文件数读不到**"))
+    @Assert(md.contains("不是「没有未跟踪文件」"))
+    @Assert(md.contains("fatal: index file corrupt"))
+    // 汇总行：披露必须在，总览表的「未跟踪文件 | 3」不再是整个项目群的口径
+    @Assert(md.contains("1 个项目的未跟踪文件数读不到，未计入上一行"))
+
+    // en 分支（报告的双语另一半）
+    let mdEn = renderReportMarkdown(ArrayList<JsonValue>([okS, badS]), dash, "en")
+    @Assert(mdEn.contains("- ⚠ **untracked file count unreadable**"))
+    @Assert(mdEn.contains("not \"no untracked files\""))
+    @Assert(mdEn.contains("unreadable for 1 project"))
+
+    // 对照：健康态（untrackedError 全空 + untrackedFailed=0）两个出口零噪音
+    Json.set(badS, "untrackedError", Json.of(""))
+    Json.set(work, "untrackedFailed", Json.of(0))
+    Json.set(work, "untrackedFailedReasons", JArr(ArrayList<JsonValue>()))
+    let mdClean = renderReportMarkdown(ArrayList<JsonValue>([okS, badS]), dash, "zh")
+    @Assert(!mdClean.contains("未跟踪文件数读不到"))
+    @Assert(!mdClean.contains("未计入上一行"))
 }
 
 /// 造一个只够 renderReportMarkdown 用的 projects 摘要块。

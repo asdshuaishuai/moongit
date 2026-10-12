@@ -533,20 +533,24 @@ public func renderJournalEntry(e: JsonValue): String {
     }
     let summary = Json.strAt(e, "summary", "")
     if (!summary.isEmpty()) {
-        sb.append("\n**摘要**：${oneLine(summary)}\n")
+        // ⚠️ 用户文本必须过 oneLineClamped：oneLine 只折叠不截断，
+        // 超长 summary 会把 journal.md 撑出任意长的单行。
+        // README 侧（render.cj branchBlock）的同族早已按 160 收口，
+        // 这里是同一契约的镜像侧 —— 两套标准并存必然漏点。
+        sb.append("\n**摘要**：${oneLineClamped(summary, 160)}\n")
     }
     let highlights = Json.strArrAt(e, "highlights")
     if (!highlights.isEmpty()) {
         sb.append("\n**近期进展**\n")
         for (h in highlights) {
-            sb.append("- ${oneLine(h)}\n")
+            sb.append("- ${oneLineClamped(h, 160)}\n")
         }
     }
     let nextSteps = Json.strArrAt(e, "nextSteps")
     if (!nextSteps.isEmpty()) {
         sb.append("\n**下一步**\n")
         for (h in nextSteps) {
-            sb.append("- ${oneLine(h)}\n")
+            sb.append("- ${oneLineClamped(h, 160)}\n")
         }
     }
     let docs = Json.strArrAt(e, "docs")
@@ -795,6 +799,68 @@ func testRenderJournalEntry(): Unit {
     @Assert(md.contains("main"))
     @Assert(md.contains("完成核心层"))
     @Assert(md.contains("- a"))
+}
+
+/// journal.md 镜像里的用户文本必须限长（oneLineClamped），不许只折叠不截断。
+///
+/// 旧实现 summary / highlights / nextSteps 走 oneLine（折叠不限长），
+/// 一条超长 summary 就让 journal.md 出现任意长的单行 ——
+/// 而 README 侧（render.cj）的同族字段早已按 oneLineClamped 收口，
+/// 两侧两套标准必然漏点（render.cj 的契约测试先例：20000 字符 commit message
+/// 撑坏 README 布局且每次 update 复现）。
+///
+/// ⚠️ 必须走 appendJournal 真实写路径读回 journal.md ——
+/// 只断 renderJournalEntry 纯函数证明不了镜像文件真的被钳制。
+@Test
+func testJournalMdClampsRunawayUserText(): Unit {
+    let base = "/tmp/deepgit-jclamp-${nowMillis()}"
+    let testHome = "${base}-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    var pid = ""
+    try {
+        pid = "p_jclamp_${nowMillis()}"
+        let huge = StringBuilder()
+        for (i in 0..20000) {
+            huge.append("A")
+        }
+        let long = huge.toString()
+        @Assert(long.size == 20000)
+        let e = Json.obj()
+        Json.set(e, "at", Json.of("2026-10-01T10:00:00+08:00"))
+        Json.set(e, "branch", Json.of("main"))
+        Json.set(e, "mode", Json.of("deep"))
+        Json.set(e, "summary", Json.of(long))
+        Json.set(e, "highlights", Json.strArray([long, "正常条目"]))
+        Json.set(e, "nextSteps", Json.strArray([long]))
+        appendJournal(pid, e, "demo")
+        let md = readFileTextOr(StorePaths(pid).journalMd, "<缺>")
+        // 前提：镜像文件真的写出来了、且包含这三个小节（否则断言空转）
+        @Assert(md.contains("**摘要**"))
+        @Assert(md.contains("**近期进展**"))
+        @Assert(md.contains("**下一步**"))
+        // 镜像里不得出现超长单行（200 = 160 钳制 + 行内前缀余量）
+        for (line in md.split("\n")) {
+            @Assert(displayWidth(line) <= 200)
+        }
+        // 超长原文不得整段出现（5000 连 A 是它的任意子串）
+        let probe = StringBuilder()
+        for (i in 0..5000) {
+            probe.append("A")
+        }
+        @Assert(!md.contains(probe.toString()))
+        // 正常长度的条目原样保留（钳制不许误伤）
+        @Assert(md.contains("正常条目"))
+    } finally {
+        // deepgitPath 解析依赖 DEEPGIT_HOME：先删 store 再复位环境
+        //（反过来的话这里的 remove 静默 no-op，全靠 testHome 递归兜底才没泄漏）
+        if (!pid.isEmpty()) {
+            removePathIfExists(deepgitPath(["store", pid]))
+        }
+        exitTestHome()
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
 }
 
 /// 测试辅助：构造 JSON 对象

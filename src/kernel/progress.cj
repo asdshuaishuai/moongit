@@ -137,11 +137,28 @@ public func branchDelta(root: String, branch: String, tracked: String, maxCommit
 /// `overallLine`（报告总体行）、`renderFacts`（README 托管区的工程规模行）。
 /// 各写一遍必然漂移，而 README 那一处是**写进用户仓库的持久文件** —— 谎报会跟着仓库活很久。
 public func fileCountLabel(a: ActivitySnapshot, zh: Bool): String {
-    if (a.unreadable > 0) {
-        return if (zh) { "至少 ${a.fileCount} 个文件（另有 ${a.unreadable} 处读不到）" }
-               else { "at least ${a.fileCount} files (${a.unreadable} unreadable)" }
+    // 「没看全」有三种成因（K3 补齐后两种），任一命中 fileCount 都是下界：
+    //   unreadable  —— 有地方读不到（我们**看不到**）
+    //   fileCapHit  —— 文件数撞采集上限（我们**主动停了**）
+    //   depthCapHit —— 目录深度撞采集上限（我们**主动不下了**）
+    // 成因可以叠加，各自一句话，不许合并成一个标志 ——
+    // 用户据此做的处置完全不同（放权/挂载 vs 无需处置、只是样本）。
+    let notes = ArrayList<String>()
+    if (a.fileCapHit) {
+        notes.add(if (zh) { "文件数达采集上限" } else { "file cap reached" })
     }
-    return if (zh) { "${a.fileCount} 个文件" } else { "${a.fileCount} files" }
+    if (a.depthCapHit) {
+        notes.add(if (zh) { "目录深度达采集上限" } else { "depth cap reached" })
+    }
+    if (a.unreadable > 0) {
+        notes.add(if (zh) { "另有 ${a.unreadable} 处读不到" } else { "${a.unreadable} unreadable" })
+    }
+    if (notes.isEmpty()) {
+        return if (zh) { "${a.fileCount} 个文件" } else { "${a.fileCount} files" }
+    }
+    let joined = joinStrings(notes, if (zh) { "，" } else { "; " })
+    return if (zh) { "至少 ${a.fileCount} 个文件（${joined}）" }
+           else { "at least ${a.fileCount} files (${joined})" }
 }
 
 /// 读不到的具体路径（一行，用户知道该去放权/挂载哪）。没有读不到的地方就返回空串。
@@ -419,6 +436,46 @@ func testFileCountLabelIsLowerBoundWhenUnreadable(): Unit {
     @Assert(unreadablePathsLine(clean, true).isEmpty())
 }
 
+/// K3 回归：撞采集上限（fileCapHit / depthCapHit）时，fileCount 同样是下界，
+/// label 必须带「至少」限定 —— 与 unreadable 的既有措辞同一套。
+///
+/// 原来只有 unreadable 进了 label 的判据：触顶（我们**主动停了**）被漏掉，
+/// 12000 这个采集上限就被当成仓库文件总数写出去。
+@Test
+func testFileCountLabelIsLowerBoundWhenCapHit(): Unit {
+    let empty5 = ArrayList<(String, String, Int64)>()
+    let emptyD = ArrayList<(String, Int64)>()
+    let fileCapped = ActivitySnapshot(12000, 0, empty5, emptyD, "", 0, ArrayList<String>(),
+        fileCapHit: true, depthCapHit: false)
+    let depthCapped = ActivitySnapshot(6, 0, empty5, emptyD, "", 0, ArrayList<String>(),
+        fileCapHit: false, depthCapHit: true)
+    let both = ActivitySnapshot(12000, 0, empty5, emptyD, "", 3, ArrayList<String>(),
+        fileCapHit: true, depthCapHit: true)
+
+    let zhFile = fileCountLabel(fileCapped, true)
+    @Assert(zhFile.contains("至少"))
+    @Assert(zhFile.contains("12000"))
+    @Assert(zhFile.contains("文件数达采集上限"))
+    @Assert(!zhFile.contains("目录深度"))          // 没撞深度却写深度 = 谎报成因
+    @Assert(!zhFile.contains("读不到"))            // unreadable=0 不许凭空造
+
+    let zhDepth = fileCountLabel(depthCapped, true)
+    @Assert(zhDepth.contains("至少"))
+    @Assert(zhDepth.contains("目录深度达采集上限"))
+    @Assert(!zhDepth.contains("文件数达"))
+
+    // 两种上限 + 读不到叠加：三个成因各自出现，不许互相吞并
+    let zhBoth = fileCountLabel(both, true)
+    @Assert(zhBoth.contains("文件数达采集上限"))
+    @Assert(zhBoth.contains("目录深度达采集上限"))
+    @Assert(zhBoth.contains("3 处读不到"))
+
+    // 英文侧同判（headline 的 en 出口共用这一个函数）
+    @Assert(fileCountLabel(fileCapped, false).contains("at least"))
+    @Assert(fileCountLabel(fileCapped, false).contains("file cap reached"))
+    @Assert(fileCountLabel(depthCapped, false).contains("depth cap reached"))
+}
+
 /// 三个出口必须共用同一个口径函数，不许各自拼一遍字符串。
 ///
 /// ⚠️ 这里踩过一个和「lint 前必须剥注释」同类的坑：**判据会匹配到自己**。
@@ -442,9 +499,9 @@ func __lintAllFileCountOutletsShareOneLabel(): Unit {
     for (f in ["src/kernel/progress.cj", "src/kernel/render.cj"]) {
         let raw = readFileTextChecked(f).getOrThrow()
         let sb = StringBuilder()
-        var blk = false
+        var blk = CjStripState.Normal
         for (r in raw.split("\n")) {
-            let (l, nb) = stripCjComment(r, blk)
+            let (l, nb) = stripCjCommentEx(r, blk)
             blk = nb
             sb.append(l)
             sb.append("\n")

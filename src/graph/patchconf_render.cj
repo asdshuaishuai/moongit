@@ -158,10 +158,16 @@ public func mergePatchConfidence(algorithm: JsonValue, agent: JsonValue): Option
     // ① 算法层 entities：原样保留
     for (e in Json.arrAt(algorithm, "entities")) {
         let o = Json.obj()
-        Json.set(o, "id", Json.getOr(e, "id"))
-        Json.set(o, "confidence", Json.getOr(e, "confidence"))
+        // 逐键拷贝**全部既有键**，不是手挑四个：Layer-1 出口（patchConfidenceJson）
+        // 补的 file/line/kind 曾在这里被丢掉 —— 消费方只能在 id 字符串里抠路径
+        // （id 是给人读的，不是给程序的）。逐键拷贝让 Layer-1 新增字段自动流到
+        // final（同「journalEntryJson 唯一构造点」的纪律：投影不重写字段清单）。
+        match (e) {
+            case JObj(m) =>
+                for ((k, v) in m) { Json.set(o, k, v) }
+            case _ => ()
+        }
         Json.set(o, "source", Json.of("algorithm"))
-        Json.set(o, "relations", Json.getOr(e, "relations"))
         entities.add(o)
         sum += Json.numAt(e, "confidence", 0.0)
         n += 1
@@ -174,6 +180,10 @@ public func mergePatchConfidence(algorithm: JsonValue, agent: JsonValue): Option
         let o = Json.obj()
         Json.set(o, "id", Json.of(uid))
         Json.set(o, "issue", Json.of(issue))
+        // context_ref 与 Layer-1 的构造对齐（file+line 是 Layer-2/消费方的定位
+        // 入口）：原实现合并时丢掉它 —— Agent 复核过的条目反而没了定位。
+        // 放在 match 之前，resolved 与 deferred 两个分支都带上。
+        Json.set(o, "context_ref", Json.getOr(u, "context_ref"))
         match (agentMap.get(uid)) {
             case Some(a) =>
                 reviewed += 1

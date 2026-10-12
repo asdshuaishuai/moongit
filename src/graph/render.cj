@@ -58,13 +58,54 @@ public func overviewJson(graph: CodeGraph): JsonValue {
     // M7：超大文件跳过数**恒发**（0 也发）——「没有」与「没扫描」是两件事，
     // 缺键会让下游把后者读成前者。
     Json.set(o, "oversizeSkipped", Json.of(graph.oversizeSkipped))
+    // R1/M11：JObj 按插入序序列化，而 HashMap 迭代序不可依赖 —— 直接迭代会把
+    // 随机键序固化进 JSON 契约。入 JSON 前按键升序物化（本包出口排序纪律）。
     let langs = Json.obj()
-    for ((k, v) in byLang) { Json.set(langs, k, Json.of(v)) }
+    for (k in sortedKeysOf(byLang)) {
+        match (byLang.get(k)) {
+            case Some(v) => Json.set(langs, k, Json.of(v))
+            case None => ()
+        }
+    }
     Json.set(o, "byLang", langs)
     let kinds = Json.obj()
-    for ((k, v) in byKind) { Json.set(kinds, k, Json.of(v)) }
+    for (k in sortedKeysOf(byKind)) {
+        match (byKind.get(k)) {
+            case Some(v) => Json.set(kinds, k, Json.of(v))
+            case None => ()
+        }
+    }
     Json.set(o, "byKind", kinds)
+    // 契约A（出口侧）：读不到的目录恒发披露（空数组也发）
+    setUnreadableDirsDisclosure(o, graph)
     return o
+}
+
+/// HashMap 键的升序物化（M11：出口迭代 HashMap 前必须显式排序）。
+func sortedKeysOf<T>(m: HashMap<String, T>): ArrayList<String> {
+    let keys = ArrayList<String>()
+    for ((k, _) in m) { keys.add(k) }
+    insertionSortBy(keys, { a, b => a < b })
+    return keys
+}
+
+/// unreadableDirs 出口最多展示的条数（契约A：核心侧收集上限 200，出口只发
+/// 前 N 条；超出时 unreadableDirsTruncated=true 说明「数组之外还有」）。
+let UNREADABLE_DIRS_SHOWN: Int64 = 20
+
+/// 「读不到的目录」的披露构造（契约A 出口侧）：fullGraphJson 与 overviewJson
+/// 共用这一份 —— 两出口同一事实同一形状。「读不到」与「没有」是两个状态，
+/// 两个键**恒发**（空数组 / false 也发），缺键会被下游读成「这里没有」。
+func setUnreadableDirsDisclosure(o: JsonValue, graph: CodeGraph): Unit {
+    let dirs = ArrayList<JsonValue>()
+    var i: Int64 = 0
+    while (i < UNREADABLE_DIRS_SHOWN && i < Int64(graph.unreadableDirs.size)) {
+        dirs.add(Json.of(graph.unreadableDirs[i]))
+        i += 1
+    }
+    Json.set(o, "unreadableDirs", JArr(dirs))
+    Json.set(o, "unreadableDirsTruncated",
+        Json.of(Int64(graph.unreadableDirs.size) > UNREADABLE_DIRS_SHOWN))
 }
 
 public func overviewText(graph: CodeGraph): String {
@@ -120,7 +161,9 @@ public func overviewText(graph: CodeGraph): String {
 /// 完整图谱的机读形态：文件事实 + 两类边。契约键名稳定。
 ///
 /// `maxDepth <= 0` = 不截断（默认全量）。> 0 时只留**目录深度**不超过它的文件
-/// （根目录下的文件深度 0，`a/b.cj` 深度 1，与 treeText 的目录层级语义一致）。
+/// （根目录下的文件深度 0，`a/b.cj` 深度 1）。treeText 用**同一口径**：同一
+/// depth 下两边展示同一文件集（testTreeDepthMatchesFullGraphJsonFileSet 钉住
+/// —— 原 text 出口把 ≤0 当截到第 1 层、正数又比 JSON 少一层，同一 flag 两个答案）。
 ///
 /// ⚠️ M16：MCP 的 codegraph_tree 与 CLI 的 `graph tree --json` 都声明了
 /// `--depth`，而原先**解析完就把它丢掉**（fullGraphJson 根本没有这个参数）——
@@ -174,6 +217,8 @@ public func fullGraphJson(graph: CodeGraph, maxDepth: Int64): JsonValue {
     Json.set(o, "truncated", Json.of(graph.truncated))
     Json.set(o, "skipped", Json.of(graph.skipped))
     Json.set(o, "oversizeSkipped", Json.of(graph.oversizeSkipped))
+    // 契约A（出口侧）：读不到的目录恒发披露（空数组也发）
+    setUnreadableDirsDisclosure(o, graph)
     // depth 截断的两个轴（M16）：请求的深度 + 因它没进本次输出的文件数。
     Json.set(o, "depth", Json.of(maxDepth))
     Json.set(o, "depthOmitted", Json.of(depthOmitted))
@@ -181,7 +226,8 @@ public func fullGraphJson(graph: CodeGraph, maxDepth: Int64): JsonValue {
 }
 
 /// 文件的目录深度：根目录下的文件 = 0，`a/b.cj` = 1，`a/b/c.cj` = 2。
-/// 与 treeText 的目录层级同口径（那里根目录是深度 1，文件挂在目录下）。
+/// fullGraphJson 的截断与 treeText 的 renderDir 守卫都以它为准 ——
+/// 同一 depth 两边展示同一文件集（口径统一后这句话才真的成立）。
 public func dirDepthOf(relPath: String): Int64 {
     let segs = relPath.split("/")
     return Int64(segs.size) - 1
@@ -278,12 +324,28 @@ func totalSymbols(graph: CodeGraph): Int64 {
 }
 
 /// ASCII 关系树：目录 → 文件 → 符号；目录行带**子树汇总**，深度截断处披露。
+/// depth 口径与 fullGraphJson 一致：`maxDepth <= 0` 不截断；> 0 时可见文件的
+/// 目录深度 ≤ maxDepth（R2：原实现 ≤0 截到第 1 层、正数又比 JSON 少一层）。
 public func treeText(graph: CodeGraph, maxDepth: Int64): String {
     let sb = StringBuilder()
     sb.append("${graph.root}  (${Int64(graph.files.size)} 文件 · ${totalSymbols(graph)} 符号 · ${sumLines(graph)} 行)\n")
     renderDir(graph, buildTree(graph), 1, maxDepth, "", subtreeStats(graph), sb)
     if (graph.truncated) {
         sb.append("⚠ 文件数达到上限 ${GRAPH_MAX_FILES}，以上不是全量\n")
+    }
+    // 契约A（出口侧）：读不到的目录非空时披露（与 truncated 同一收尾风格；
+    // JSON 侧两键恒发，文本行只在确有读不到的目录时出现——空态天天提醒
+    // 会被学会无视）。数量分**两档**：核心侧收集上限
+    // （GRAPH_MAX_UNREADABLE_DIRS=200）与出口展示上限（UNREADABLE_DIRS_SHOWN=20）
+    // 是两个不同的「没看完」，达到收集上限时数字停在 200——那 200 是**下界**
+    // 不是全量，必须说清（否则「恰好 200」与「至少 200」在文本里同形）。
+    if (graph.unreadableDirs.size > 0) {
+        if (Int64(graph.unreadableDirs.size) >= GRAPH_MAX_UNREADABLE_DIRS) {
+            sb.append("⚠ 至少 ${Int64(graph.unreadableDirs.size)} 个目录读不到" +
+                "（已达收集上限 ${GRAPH_MAX_UNREADABLE_DIRS}，以上不含它们的内容，不是全量）\n")
+        } else {
+            sb.append("⚠ ${Int64(graph.unreadableDirs.size)} 个目录读不到（以上不含它们的内容，不是全量）\n")
+        }
     }
     return sb.toString()
 }
@@ -380,7 +442,12 @@ func renderDir(graph: CodeGraph, node: TreeDir, depth: Int64, maxDepth: Int64,
                     case None => ()
                 }
                 sb.append("${prefix}${connector}${d.name}/${note}\n")
-                if (depth + 1 > maxDepth) {
+                // R2：与 fullGraphJson 同口径。renderDir 以「本目录深度 = depth-1」
+                // 被调用（根目录 depth=1），子目录深度恰为 depth；保留子目录 ⇔
+                // 其目录深度 ≤ maxDepth —— 与 fullGraphJson 保留 dirDepth ≤ maxDepth
+                // 的文件完全一致。maxDepth ≤ 0 = 不截断（同 fullGraphJson 的
+                // `maxDepth > 0 &&` 前置条件）。
+                if (maxDepth > 0 && depth > maxDepth) {
                     sb.append("${childPrefix}   … 深度截断（提高 --depth 展开）\n")
                 } else {
                     renderDir(graph, d, depth + 1, maxDepth, childPrefix, stats, sb)
@@ -489,6 +556,11 @@ public func impactJson(res: ImpactResult): JsonValue {
     }
     Json.set(o, "impactedSymbols", JArr(im))
     Json.set(o, "granularity", Json.of("lexical-file-level"))
+    // 契约B（出口侧）：两个收集上限各自恒发 capped 标志（false 也发）。
+    // 静默截断 = 消费方把「200 个」当成全集；「没截断」是有意义的事实，缺键
+    // 会被读成旧版本没有这个字段（同 depth/depthOmitted 的恒发纪律）。
+    Json.set(o, "refFilesCapped", Json.of(res.refFilesCapped))
+    Json.set(o, "impactedCapped", Json.of(res.impactedCapped))
     return o
 }
 
@@ -503,10 +575,16 @@ public func impactText(res: ImpactResult): String {
     for (f in res.refFiles) {
         sb.append("    ${f}\n")
     }
+    if (res.refFilesCapped) {
+        sb.append("    ⚠ 已达上限 ${IMPACT_MAX_FILES}，列表可能不完整\n")
+    }
     if (res.impactedSymbols.size > 0) {
         sb.append("  受影响符号（${res.impactedSymbols.size} 个，上限 ${IMPACT_MAX_FILES}）：\n")
         for ((f, s) in res.impactedSymbols) {
             sb.append("    ${symKindId(s.kind)} ${s.name}  ${f}\n")
+        }
+        if (res.impactedCapped) {
+            sb.append("    ⚠ 已达上限 ${IMPACT_MAX_FILES}，列表可能不完整\n")
         }
     }
     return sb.toString()

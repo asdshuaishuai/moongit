@@ -276,6 +276,24 @@ public func registerCandidates(candidates: ArrayList<ScanCandidate>): (Int64, In
         var added: Int64 = 0
         var existing: Int64 = 0
         for (c in candidates) {
+            // ⚠️⚠️ #198 的空名闸门：registry.json 的**第二个写入者**同样要拦。
+            //
+            // addProject（registry.cj）在 #198 修掉了「basename("/") 为空串仍注册」，
+            // 而这里没跟上 —— scan 的根目录本身成为 candidate 时
+            // （`moongit scan /`），basename("/") 算出的就是空串，
+            // 于是静默写进一条 `name=""` 的项目。后果与 add 侧一模一样：
+            //   ① 那条项目**永远引用不到** —— findProjectIn 对空 ref 返回 None，
+            //      连 `remove` 都删不掉它（用户连补救手段都没有）；
+            //   ② 它**永久污染每一次聚合命令**（status/dashboard/report 各自带上
+            //      一条读不出状态的项目）。
+            // 处置与 add 侧不同：add 是单项目命令，拒绝并教回怎么改；
+            // scan 是批量操作，一条坏候选不该掀翻整批 —— 跳过 + 告警，
+            // 其余候选照常注册。
+            if (c.name.trimAscii().isEmpty()) {
+                Log.warn("扫描候选 ${c.path} 的名称为空，已跳过注册" +
+                    "（空名项目引用不到、且会污染聚合命令；如确需注册请用 moongit add --name）")
+                continue
+            }
             let id = projectIdFor(c.path)
             var found = false
             for (p in reg.projects) {
@@ -381,6 +399,48 @@ func testScanNonGitDisabled(): Unit {
     removePathIfExists(base)
 }
 
+/// #198 的空名闸门必须盖住 registry.json 的**第二个写入者**。
+///
+/// addProject（registry.cj）修掉了「basename("/") 为空仍注册」，
+/// 而 registerCandidates 没跟上 —— scan 根目录本身成为 candidate 时
+/// （`moongit scan /`，根目录里有 .git 时它就是 candidate），
+/// basename("/") 是空串，会被静默写进一条 `name=""` 的项目：
+/// findProjectIn 对空 ref 返回 None，那条项目永远引用不到、连 remove
+/// 都删不掉，还永久污染每一次聚合命令（status/dashboard/report）。
+///
+/// 直接构造 candidate 列表调 registerCandidates（真实写入路径），
+/// 不必真去 scan /——candidate 的 name 就是 scanRoots 里 basename(dir)
+/// 的产物，空串等价。
+@Test
+func testRegisterCandidatesSkipsEmptyName(): Unit {
+    let base = "/tmp/dg-scan-emptyname-${nowMillis()}"
+    let testHome = "${base}-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    try {
+        // 一条空名 + 一条纯空白名 + 一条正常名。
+        // 纯空白（"   "）与空串同侧：trimAscii 之后都引用不到。
+        let cands = ArrayList<ScanCandidate>()
+        cands.add(ScanCandidate("/", "", "git", ArrayList<String>(), ""))
+        cands.add(ScanCandidate("/w", "   ", "git", ArrayList<String>(), ""))
+        cands.add(ScanCandidate("/tmp/ok-proj", "ok-proj", "git", ArrayList<String>(), ""))
+        let (added, _) = registerCandidates(cands)
+
+        // 空名候选不进注册表；正常候选照常注册（闸门不许误伤好数据）
+        @Assert(added == 1)
+        let reg = loadRegistry()
+        @Assert(reg.projects.size == 1)
+        @Assert(reg.projects[0].name == "ok-proj")
+        for (p in reg.projects) {
+            @Assert(!p.name.trimAscii().isEmpty())
+        }
+    } finally {
+        exitTestHome()
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
 // ------------------------------ #199：扫描器不许被 stat 失败掀翻 ------------------------------
 
 /// `scanRoots` 走真实调用链：树里必须有一个 stat 不到的东西，
@@ -459,9 +519,9 @@ func __lintOnlyTheSeamMayCallThrowingStatPropsDirectly(): Unit {
                "src/util/json.cj", "src/main.cj", "src/cli/mcp.cj"]) {
         let raw = readFileTextChecked(f).getOrThrow()
         let sb = StringBuilder()
-        var blk = false
+        var blk = CjStripState.Normal
         for (r in raw.split("\n")) {
-            let (l, nb) = stripCjComment(r, blk)
+            let (l, nb) = stripCjCommentEx(r, blk)
             blk = nb
             sb.append(l)
             sb.append("\n")

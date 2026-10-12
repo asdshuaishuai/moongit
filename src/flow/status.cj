@@ -200,6 +200,11 @@ public func projectStatus(project: ProjectEntry, config: Config, journalLimit: I
     // 实测 23 提交（feat 20/fix 2/chore 1）报成 commitCount=23 + feat×12。
     Json.set(o, "commitTypesTruncated", Json.of(facts.commitTypesTruncated))
     Json.set(o, "untrackedCount", Json.of(facts.untrackedCount))
+    // 契约C（kernel → flow）：untrackedCount 只说「多少」，不说「这个数可不可信」。
+    // ls-files --others 采集失败时消费方拿到的是缺依据的数字；原因单独随行
+    // （空串 = 正常）。⚠️ 恒发、不能「失败时才加」：键集随数据漂移是
+    // envelope 分歧的来源（同 journalTruncated 那三个键的口径）。
+    Json.set(o, "untrackedError", Json.of(facts.untrackedError))
     Json.set(o, "worktreeCount", Json.of(facts.worktreeCount))
     match (facts.mergeHint) {
         case Some(m) => Json.set(o, "mergeHint", m.toJson())
@@ -340,6 +345,12 @@ func errorStatusJson(p: ProjectEntry, message: String): JsonValue {
     // （groupSummary 的 branchUnknownProjects 就是同一套约定）。
     Json.set(err, "userDirtyCount", Json.of(-1))
     Json.set(err, "untrackedCount", Json.of(-1))
+    // 契约C 键集对齐：成功态恒发 untrackedError，错误桩必须跟上 ——
+    // 少一个键整个对象解码失败，唯一有用的那句 error 反而被吞掉。
+    // 取空串而不是塞采集失败原因：原因已经在 `error` 键里，再塞一遍就是
+    // 同一个问题两种措辞，日后必然漂移（与上面 warnings 同一条纪律）；
+    // 「untracked 读不出来」由上行的 -1 表达。
+    Json.set(err, "untrackedError", Json.of(""))
     Json.set(err, "stashCount", Json.of(-1))
     Json.set(err, "worktreeCount", Json.of(-1))
     Json.set(err, "lastCommitAgo", Json.of(""))
@@ -1264,7 +1275,16 @@ func testErrorStatusJsonHasEveryKeyOfSuccessShape(): Unit {
     // 从「截断时才发」改成恒发，成功态因此多 3 个键。
     // 这条断言又一次发挥了它本来的作用 —— 它红了，逼着人把错误桩一起补上，
     // 而不是让客户端去撞解码失败。
-    @Assert(okKeys.size == 32)
+    //
+    // 2026-10-11：32 → 33。契约C（kernel → flow）：项目条目恒发 untrackedError
+    // （取 RepoFacts.untrackedError，空串 = 正常），让消费方能区分
+    // 「untrackedCount 是真数」与「ls-files --others 采集失败」。
+    // 有意的契约变更：错误桩已同步补键（空串，见 errorStatusJson 内注释）。
+    @Assert(okKeys.size == 33)
+    // 契约C 回归：新键恒发，且正常项目（采集成功、ls-files 正常）为空串。
+    // 默认值给 "?" 而不是 "" —— 键缺失时这条必须红，而不是静默通过。
+    @Assert(Json.has(ok, "untrackedError"))
+    @Assert(Json.strAt(ok, "untrackedError", "?") == "")
 
     let bad = allProjectStatuses(
         ArrayList<ProjectEntry>([goneProjectEntry("gone")]), Config.defaults(), false,
@@ -1281,6 +1301,8 @@ func testErrorStatusJsonHasEveryKeyOfSuccessShape(): Unit {
     }
     // 失败信息：missing = ${missing}
     @Assert(missing.isEmpty())
+    // 契约C：错误桩也恒发该键（missing.isEmpty() 已隐式覆盖，显式钉住防回退）
+    @Assert(Json.has(bad[0], "untrackedError"))
     // 错误桩必须比成功态恰好多一个 error，否则失败原因无处可读
     @Assert(badKeys.size == okKeys.size + 1)
 

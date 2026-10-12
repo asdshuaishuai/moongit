@@ -859,33 +859,83 @@ private func isIdentByte(b: UInt8): Bool {
         || (b >= 0x61u8 && b <= 0x7au8) || b == 0x5fu8
 }
 
-/// 剥掉 Cangjie 注释，保留字符串字面量内容。逐字节状态机。
+/// 剥注释器的跨行词法状态。
+///
+/// 旧签名 `(line, inBlock: Bool)` 只有一位状态，装不下「块注释」与
+/// 「三引号多行字符串」**两种**跨行形态——这正是本轮修掉的坑：
+/// 前提「代码里没有跨行字符串」失效后（src/ 现有 5 个文件含 `"""`：
+/// graph 的 archfix_test / treehtml / archhtml / graph_test / extract），
+/// 旧状态机把串内容里的 `//` 当注释剥掉、把 `/*` 当块注释开启，
+/// 于是**串内容之后的真代码整段被吞**。以它为地基的源码 lint
+/// （本文件两条 + graph/cli/kernel 的十几条）此前靠「串内容恰好
+/// 不含注释样记号」维持正确——那是巧合，不是保证。
+public enum CjStripState {
+    /// 常态：代码。行内普通字符串态是函数局部状态，不跨行
+    | Normal
+    /// 跨行块注释 `/* ... */` 中
+    | BlockComment
+    /// 跨行三引号多行字符串 `""" ... """` 中
+    | TripleQuoted
+}
+
+/// 剥掉 Cangjie 注释（完整版），保留字符串字面量内容。逐字节状态机。
 ///
 /// 不能用 `split("//")`：`"/a//b/./c"` 是合法字符串，里面就有 `//`；
 /// `"${joinStrings(args, " ")}"` 在插值里**嵌了引号**。
 /// 简单切分会把这两种都切坏，坏掉的行会让本检查误判。
-/// 前提：代码里没有跨行字符串（已核过，奇数引号的行都是转义造成的）。
-/// 剥掉单行的 `//` 与跨行 `/* */`。返回 (剥后的行, 是否仍在块注释里)。
+/// 剥掉单行的 `//` 与跨行 `/* */`。返回 (剥后的行, 新状态)。
 ///
-/// 提到 public（#194）：配置死键的 lint（config.cj）需要同一份实现。
-/// 自己再写一份的代价已经付过一次 ——
+/// 三引号规则（与 graph/extract.cj 的 `stripCode` 状态 2 语义对齐）：
+///   · 常态遇 `"""`（三个连续双引号字节）**优先于**普通字符串判定——
+///     仓颉里 `"""` 只能开启多行字符串，不可能同时是普通字符串的开始；
+///   · 三引号态内：内容是字符串字面量不是注释，**原样保留**；
+///     普通引号的奇偶翻转逻辑挂起，`//` 不剥、`/*` 不开块，
+///     直到下一个 `"""` 闭合回到常态（闭合同行的行尾注释照常剥）；
+///   · 三引号态内不处理反斜杠转义（同 extract.cj）：闭合只认三个
+///     **连续**双引号，而 `\"\"\"` 的三个引号中间夹着反斜杠、并不连续，
+///     天然不会误闭合。
+///
+/// 提到 public：它是全部源码 lint 的共同地基（本文件两条、
+/// strippedCodeSkippingFunction，以及 graph/cli/kernel 的 lint）。
+/// 「剥注释」这件事只有一份实现才谈得上可靠——
 ///   · 第一版没处理**字符串字面量**里的 `//`（路径类字符串最常见），
 ///     剥完的源码里字符串被截断，lint 拿着垃圾去匹配，红得莫名其妙；
 ///   · 第二版忘了 `StringBuilder.append(UInt8)` 会走 `Any` 重载把字节
 ///     拼成十进制数字串，于是 `contains("public class Config")` 恒为 false。
-/// 「剥注释」这件事只有一份实现才谈得上可靠。
-public func stripCjComment(line: String, inBlock: Bool): (String, Bool) {
+public func stripCjCommentEx(line: String, state: CjStripState): (String, CjStripState) {
     let bs = line.toArray()
     let out = ArrayList<UInt8>()
     var i = 0
-    var block = inBlock
+    var st = state
     var inStr = false
     while (i < bs.size) {
         let c = bs[i]
-        if (block) {
+        let inBlk = match (st) {
+            case CjStripState.BlockComment => true
+            case _ => false
+        }
+        let inTri = match (st) {
+            case CjStripState.TripleQuoted => true
+            case _ => false
+        }
+        if (inBlk) {
             if (c == 0x2au8 && i + 1 < bs.size && bs[i + 1] == 0x2fu8) {
-                block = false
+                st = CjStripState.Normal
                 i += 2
+            } else {
+                i += 1
+            }
+            continue
+        }
+        if (inTri) {
+            // 多行字符串内容：原样保留（它是字符串字面量，不是注释），
+            // 引号奇偶翻转、行注释、块注释判定全部挂起
+            out.add(c)
+            if (c == 0x22u8 && i + 2 < bs.size && bs[i + 1] == 0x22u8 && bs[i + 2] == 0x22u8) {
+                out.add(bs[i + 1])
+                out.add(bs[i + 2])
+                st = CjStripState.Normal
+                i += 3
             } else {
                 i += 1
             }
@@ -905,6 +955,15 @@ public func stripCjComment(line: String, inBlock: Bool): (String, Bool) {
             continue
         }
         if (c == 0x22u8) {
+            // 三引号优先于普通字符串判定（见函数文档）
+            if (i + 2 < bs.size && bs[i + 1] == 0x22u8 && bs[i + 2] == 0x22u8) {
+                out.add(c)
+                out.add(bs[i + 1])
+                out.add(bs[i + 2])
+                st = CjStripState.TripleQuoted
+                i += 3
+                continue
+            }
             inStr = true
             out.add(c)
             i += 1
@@ -914,14 +973,14 @@ public func stripCjComment(line: String, inBlock: Bool): (String, Bool) {
             break
         }
         if (c == 0x2fu8 && i + 1 < bs.size && bs[i + 1] == 0x2au8) {
-            block = true
+            st = CjStripState.BlockComment
             i += 2
             continue
         }
         out.add(c)
         i += 1
     }
-    return (fromUtf8Lossy(out.toArray()), block)
+    return (fromUtf8Lossy(out.toArray()), st)
 }
 
 /// 表达式里的空白全去掉，让 `base + "-ok"` 与 `base+"-ok"` 视为同一个。
@@ -1035,10 +1094,10 @@ func testEveryTestSandboxIsRemovedInTheSameTest(): Unit {
         }
         let src = maybeSrc.getOrThrow()
         let clean = ArrayList<String>()
-        var inBlock = false
+        var lexSt = CjStripState.Normal
         for (raw in src.split("\n")) {
-            let (l, b) = stripCjComment(raw, inBlock)
-            inBlock = b
+            let (l, ns) = stripCjCommentEx(raw, lexSt)
+            lexSt = ns
             clean.add(l)
         }
         var i = 0
@@ -1135,6 +1194,11 @@ func __lintTransportLayerHasOnlyTwoSurfaces(): Unit {
 
     let hits = ArrayList<String>()
     for (f in files) {
+        // src/util/sqlite.cj 整文件豁免（2026-10-12，用户-directed）：它是存储层
+        // 对系统 libsqlite3 的 FFI（graph db / confidence db 单文件库），不是
+        // 客户端传输面——不变量 58 禁的是「客户端进程内调用引擎」的影子路径，
+        // 与「引擎读写单文件存储库」是两类事。豁免边界 = 仅此一个文件。
+        if (f == "src/util/sqlite.cj") { continue }
         let skip = if (f == "src/util/paths.cj") {
             Option<String>.Some(selfName)
         } else {
@@ -1168,11 +1232,11 @@ func __lintTransportLayerHasOnlyTwoSurfaces(): Unit {
 
     // 结构判据（替代按词封杀 serve）：CLI dispatch 表里不许出现 serve 条目。
     let cliRaw = readFileTextChecked("src/cli/cli.cj").getOrThrow()
-    var cliBlock = false
+    var cliSt = CjStripState.Normal
     let cliClean = StringBuilder()
     for (raw in cliRaw.split("\n")) {
-        let (l, b) = stripCjComment(raw, cliBlock)
-        cliBlock = b
+        let (l, ns) = stripCjCommentEx(raw, cliSt)
+        cliSt = ns
         cliClean.append(l)
         cliClean.append("\n")
     }
@@ -1204,10 +1268,10 @@ public func strippedCodeSkippingFunction(path: String, skip: Option<String>): Op
     }
     // ① 剥注释，得到纯代码行
     let code = ArrayList<String>()
-    var inBlock = false
+    var stripSt = CjStripState.Normal
     for (raw in maybeSrc.getOrThrow().split("\n")) {
-        let (l, b) = stripCjComment(raw, inBlock)
-        inBlock = b
+        let (l, ns) = stripCjCommentEx(raw, stripSt)
+        stripSt = ns
         code.add(l)
     }
     // ② 算函数体区间（两趟）。skip = None 时不排除任何东西。
@@ -1497,4 +1561,92 @@ func testClassifyEntryNeverThrowsOnRealTree(): Unit {
     @Assert(sawRegular)  // plain.txt
     @Assert(sawOther)    // dangling
     removePathIfExists(base)
+}
+
+/// 三引号多行字符串态回归：串内容是字符串字面量不是注释。
+///
+/// 旧状态机没有三引号意识，遇 `"""` 文件时（src/ 现有 5 个）：
+///   · 串内 `//` 被当行注释剥掉（内容丢失）；
+///   · 串内 `/*` 被当块注释开启——**之后的真代码整段被吞**。
+/// 本测试的判别力正在后一条：串内放一个 `/*`，断言闭合之后的
+/// `let after = 2` 仍然活着。
+@Test
+func testStripCjCommentTripleQuotedStringState(): Unit {
+    // 三个引号用拼接构造（不变量 55 的教训：needle 字面量写在源码里会匹配到自己）
+    let dq = "\""
+    let tq = dq + dq + dq
+    let sb = StringBuilder()
+    sb.append("let before = 1 // TRAIL_OUTSIDE_A\n")
+    sb.append("let doc = " + tq + "\n")
+    sb.append("串内容带 NEEDLE_IN_STR 与奇数引号\"\n")
+    sb.append("串内假行注释 // FAKE_LINE_COMMENT\n")
+    sb.append("串内假块注释起点 /* FAKE_BLOCK_OPEN\n")
+    sb.append(tq + " // TRAIL_ON_CLOSE_LINE\n")
+    sb.append("let after = 2 // TRAIL_OUTSIDE_B\n")
+    var st = CjStripState.Normal
+    let out = ArrayList<String>()
+    for (raw in sb.toString().split("\n")) {
+        let (l, ns) = stripCjCommentEx(raw, st)
+        st = ns
+        out.add(l)
+    }
+    let all = StringBuilder()
+    for (l in out) {
+        all.append(l)
+        all.append("\n")
+    }
+    let text = all.toString()
+    // (a) 串外注释（含闭合行行尾注释）必须被剥离
+    @Assert(!text.contains("TRAIL_OUTSIDE_A"))
+    @Assert(!text.contains("TRAIL_OUTSIDE_B"))
+    @Assert(!text.contains("TRAIL_ON_CLOSE_LINE"))
+    // (c) 多行字符串内容必须保留——与普通单/双引号串的行为一致（内容保留）
+    @Assert(text.contains("NEEDLE_IN_STR"))
+    @Assert(text.contains("FAKE_LINE_COMMENT"))   // 串内 // 不剥
+    @Assert(text.contains("FAKE_BLOCK_OPEN"))     // 串内 /* 不开块
+    // (b) 串内奇数引号与假注释不得干扰后续代码：代码本体活着、终态收敛
+    @Assert(text.contains("let before = 1"))
+    @Assert(text.contains("let after = 2"))
+    match (st) {
+        case CjStripState.Normal => ()
+        case _ => @Assert(false)
+    }
+}
+
+/// 真实源码上的收敛守卫：全 src/ 扫完必须回到 Normal 态。
+///
+/// 不收敛 = 状态被串内内容带偏，该文件后续所有行的剥注释都不可信，
+/// 以剥注释为地基的 lint 全部失真——这条必须在 lint 之前红。
+/// 前提守卫（不变量 18）：必须真的扫到过三引号文件，否则整条空转绿。
+@Test
+func testStripCjCommentConvergesOnRealTripleQuotedSources(): Unit {
+    let files = ArrayList<String>()
+    cjSourceFiles("src", files)
+    @Assert(files.size > 20)   // 确认真的读到了源码，不是空跑
+    var sawTriple = 0
+    for (f in files) {
+        let maybeSrc = readFileTextChecked(f)
+        if (maybeSrc.isNone()) {
+            continue
+        }
+        var st = CjStripState.Normal
+        var lineCount: Int64 = 0
+        for (raw in maybeSrc.getOrThrow().split("\n")) {
+            let (_, ns) = stripCjCommentEx(raw, st)
+            st = ns
+            lineCount += 1
+            match (ns) {
+                case CjStripState.TripleQuoted => sawTriple += 1
+                case _ => ()
+            }
+        }
+        @Assert(lineCount > 0)
+        match (st) {
+            case CjStripState.Normal => ()
+            case _ =>
+                eprintln("stripCjCommentEx 未收敛：${f}（终态非 Normal，该文件后续剥注释不可信）")
+                @Assert(false)
+        }
+    }
+    @Assert(sawTriple > 0)
 }

@@ -64,6 +64,12 @@ public class RepoFacts {
     public let commitTypesTruncated: Bool
     public let mergeHint: Option<MergePlan>
     public let hotFiles: ArrayList<(String, Int64)>
+    /// 未跟踪文件采集失败原因；空串表示成功。**恒发**（K4，契约C kernel 侧）。
+    ///
+    /// ⚠️ 原来 listUntrackedFiles 失败被编码成 `untrackedCount=0 +
+    /// untrackedTruncated=false`（#187 在 listFiles 上修掉的同族），
+    /// 下游把「采集失败」读成「工作区干净」。空串=正常，非空=失败原因。
+    public let untrackedError: String
 
     public init(
         kind: String, name: String, path: String, remote: String, currentBranch: String, defaultBranch: String,
@@ -78,6 +84,7 @@ public class RepoFacts {
         trackedTruncated!: Bool = false, untrackedTruncated!: Bool = false,
         activityTruncated!: Bool = false,
         commitTypesTruncated!: Bool = false,
+        untrackedError!: String = "",
     ) {
         this.kind = kind
         this.name = name
@@ -114,6 +121,7 @@ public class RepoFacts {
         this.untrackedTruncated = untrackedTruncated
         this.activityTruncated = activityTruncated
         this.commitTypesTruncated = commitTypesTruncated
+        this.untrackedError = untrackedError
     }
 
     public func toJson(): JsonValue {
@@ -222,6 +230,9 @@ public class RepoFacts {
         }
         Json.set(o, "commitTypes", JArr(ctArr))
         Json.set(o, "untrackedCount", Json.of(this.untrackedCount))
+        // 恒发（K4，契约C）：空串=正常。「有失败原因」与「没有」是两个状态，
+        // 键集不得随数据漂 —— 条件性发键会把故障藏进「键不在」里。
+        Json.set(o, "untrackedError", Json.of(this.untrackedError))
         Json.set(o, "trackedTruncated", Json.of(this.trackedTruncated))
         Json.set(o, "untrackedTruncated", Json.of(this.untrackedTruncated))
         Json.set(o, "activityTruncated", Json.of(this.activityTruncated))
@@ -598,6 +609,7 @@ public func collectFacts(root: String, kind: String, config: Config, commits: In
         trackedTruncated: fileList.truncated, untrackedTruncated: uts.truncated,
         activityTruncated: hasMoreCommits(root, ACTIVITY_SCAN_LIMIT),
         commitTypesTruncated: hasMoreCommits(root, commits),
+        untrackedError: uts.error,
     )
 }
 
@@ -663,12 +675,23 @@ public class ActivitySnapshot {
     public let unreadable: Int64
     /// 读不到的路径样本（上限 5 条），让用户知道该去放权/挂载哪。
     public let unreadableSamples: ArrayList<String>
+    /// 文件数撞采集上限（maxFiles）**主动停了** —— 队列里还有没走到的目录。
+    ///
+    /// ⚠️ K3（审查）：unreadable 早就把「没看到」披露出去了，
+    /// 而触顶是**第三种独立的**覆盖不完整成因（采样上限，见 collectActivity
+    /// 头部注释「触顶是我们主动停了，读不到是我们看不到」），却零披露 ——
+    /// 假总数「12000 个文件」就这么写进 README 托管区与 headline。
+    /// 与 unreadable 一样，命中时 fileCount 是**下界**不是总数。
+    public let fileCapHit: Bool
+    /// 目录深度撞采集上限（maxDepth）**主动不往下走** ——
+    /// 被跳过的那个目录条目本身就是一棵没被看过的子树。
+    public let depthCapHit: Bool
 
     public init(fileCount: Int64, totalBytes: Int64, newest: ArrayList<(String, String, Int64)>, topDirs: ArrayList<(String, Int64)>, newestMtime: String) {
         this(fileCount, totalBytes, newest, topDirs, newestMtime, 0, ArrayList<String>())
     }
 
-    public init(fileCount: Int64, totalBytes: Int64, newest: ArrayList<(String, String, Int64)>, topDirs: ArrayList<(String, Int64)>, newestMtime: String, unreadable: Int64, unreadableSamples: ArrayList<String>) {
+    public init(fileCount: Int64, totalBytes: Int64, newest: ArrayList<(String, String, Int64)>, topDirs: ArrayList<(String, Int64)>, newestMtime: String, unreadable: Int64, unreadableSamples: ArrayList<String>, fileCapHit!: Bool = false, depthCapHit!: Bool = false) {
         this.fileCount = fileCount
         this.totalBytes = totalBytes
         this.newest = newest
@@ -676,6 +699,8 @@ public class ActivitySnapshot {
         this.newestMtime = newestMtime
         this.unreadable = unreadable
         this.unreadableSamples = unreadableSamples
+        this.fileCapHit = fileCapHit
+        this.depthCapHit = depthCapHit
     }
 
     public func toJson(): JsonValue {
@@ -685,6 +710,10 @@ public class ActivitySnapshot {
         // 恒发：这两个键缺席时，「没看到」和「不存在」就无法区分。
         // 客户端拿 fileCount 当总数用，缺席就等于默认 0，也就是默认「全都看到了」。
         Json.set(o, "unreadable", Json.of(this.unreadable))
+        // 恒发（K3）：这两个键缺席时，「触顶停了」和「看全了」就无法区分 ——
+        // 调用方会把 12000 这个采集上限当成仓库的文件总数。
+        Json.set(o, "fileCapHit", Json.of(this.fileCapHit))
+        Json.set(o, "depthCapHit", Json.of(this.depthCapHit))
         let unreadArr = ArrayList<JsonValue>()
         for (p in this.unreadableSamples) {
             unreadArr.add(Json.of(p))
@@ -723,6 +752,42 @@ func shouldSkipDir(name: String): Bool {
     return false
 }
 
+/// 撞界目录里是否还有**会被采集的**条目（#197 scanner 同款判据）。
+///
+/// 一见边界就置位 = 谎报「没看完」：边界处常常是叶子目录（空的、或只有
+/// 点开头 / skip 名单里的东西），那种情况是**真的看全了**，置位反而骗人。
+/// 必须确认被跳过的子树里还有会被采集的条目（文件、或未入 skip 名单的目录），
+/// 才算真的被截断。
+///
+/// 判定与主循环逐条对齐（否则确认就与采集口径漂移）：
+///   · 点开头 → 主循环直接 continue，不算「会被采集」；
+///   · skip 名单目录 → 主循环跳过，不算；
+///   · Unreadable → 保守算「有」：读不出来 = 可能有没看过的文件，
+///     宁可说「可能没看完」（对齐 scanner 的 hasUnexploredSubdir 取向）；
+///   · 读不到目录本身 → 同上，保持置位。
+/// 每个边界目录只付一次 listDir 的代价。
+func hasCollectibleEntry(dir: String): Bool {
+    let (entries, readable) = listDirChecked(dir)
+    if (!readable) {
+        return true
+    }
+    for (info in entries) {
+        if (info.name.startsWith(".")) {
+            continue
+        }
+        match (classifyEntry(info)) {
+            case EntryKind.Unreadable => return true
+            case EntryKind.Dir =>
+                if (!shouldSkipDir(info.name)) {
+                    return true
+                }
+            case EntryKind.Regular => return true
+            case EntryKind.Other => continue
+        }
+    }
+    return false
+}
+
 /// 扫描目录活动（基于 mtime，深度有界）
 ///
 /// ⚠️ 这个遍历里原来有**两个**独立缺陷，都表现为「一棵树里只要有一个读不到的
@@ -749,6 +814,12 @@ public func collectActivity(dir: String, maxFiles: Int64, maxDepth: Int64): Acti
     var totalBytes: Int64 = 0
     var unreadable: Int64 = 0
     let unreadableSamples = ArrayList<String>()
+    // K3：触顶是第三种「覆盖不完整」成因，必须与 unreadable 一样被披露。
+    //   fileCapHit  —— 文件数撞 maxFiles 主动停了，队列里还有没走的目录；
+    //   depthCapHit —— 深度撞 maxDepth 主动不下了，被跳过的目录本身是没看过的子树。
+    // 不置位 ⇒ fileCount 被下游当总数（headline / README 托管区）⇒ 假总数。
+    var hitFileCap = false
+    var hitDepthCap = false
     let queue = ArrayList<(String, Int64)>()
     queue.add((dir, 0))
     var head = 0
@@ -779,7 +850,18 @@ public func collectActivity(dir: String, maxFiles: Int64, maxDepth: Int64): Acti
                     }
                     continue
                 case EntryKind.Dir =>
-                    if (shouldSkipDir(nm) || depth >= maxDepth) {
+                    if (shouldSkipDir(nm)) {
+                        continue
+                    }
+                    if (depth >= maxDepth) {
+                        // 这个目录条目本身就是一棵没被看过的子树 —— 但要先确认
+                        // 它非空才算「被截断」（#197 scanner 同款判据）：
+                        // 边界处常常是叶子目录，一见边界就置位 = 谎报「没看完」，
+                        // 读者于是不信「看全了」的那次真话。
+                        // 只在尚未置位时才付确认的代价；读不到时按「有」处理。
+                        if (!hitDepthCap && hasCollectibleEntry(cur + "/" + nm)) {
+                            hitDepthCap = true
+                        }
                         continue
                     }
                     queue.add((cur + "/" + nm, depth + 1))
@@ -858,8 +940,26 @@ public func collectActivity(dir: String, maxFiles: Int64, maxDepth: Int64): Acti
         topDirs = trimmed
     }
 
+    // 循环退出有两种成因：队列排空（看全了），或文件数撞上限主动停了。
+    // 只有**队列里还有会被采集的条目**时才算触顶 —— 恰好数到 maxFiles 且队列
+    // 同时排空的情况下没有遗漏任何目录，不置位（对齐 #48「到边界 ≠ 被截断」）。
+    // 队列非空也不够：剩余目录可能全是空的（或只剩点开头 / skip 名单里的东西），
+    // 那也是真的看全了。从队首开始逐个确认，找到第一个还有可采集条目的目录
+    // 才置位并停止（每个目录一次 listDir，通常第一个就有结论）；
+    // 读不到的目录按「有」处理 —— 宁可说「可能没看完」。
+    if (files.size >= maxFiles && head < queue.size) {
+        var k = head
+        while (k < queue.size) {
+            if (hasCollectibleEntry(queue[k][0])) {
+                hitFileCap = true
+                break
+            }
+            k += 1
+        }
+    }
     let newestMtime = if (newest.isEmpty()) { "" } else { newest[0][1] }
-    return ActivitySnapshot(files.size, totalBytes, newest, topDirs, newestMtime, unreadable, unreadableSamples)
+    return ActivitySnapshot(files.size, totalBytes, newest, topDirs, newestMtime, unreadable, unreadableSamples,
+        fileCapHit: hitFileCap, depthCapHit: hitDepthCap)
 }
 
 func relativeTo(base: String, abs: String): String {
@@ -877,8 +977,10 @@ func indexOfStr(s: String, needle: String): Int64 {
     }
 }
 
-func collectDirFacts(root: String, config: Config): RepoFacts {
-    let activity = collectActivity(root, 12000, 6)
+/// maxFiles / maxDepth 做成可注入（K3）：生产值仍是 (12000, 6)，
+/// 测试用小上限就能真实触顶，不必真造一万个文件（触顶路径本身要被测到）。
+func collectDirFacts(root: String, config: Config, maxFiles!: Int64 = 12000, maxDepth!: Int64 = 6): RepoFacts {
+    let activity = collectActivity(root, maxFiles, maxDepth)
     let manifests = detectManifests(root, config)
     let docsPresent = detectDocsPresent(root, config)
     let structure = ArrayList<String>()
@@ -1180,6 +1282,82 @@ func testListUntrackedCountsBeyondSampleCap(): Unit {
     removePathIfExists(base)
 }
 
+/// K4 回归：ls-files --others 失败必须带出原因，不许编码成「0 个未跟踪且未截断」。
+///
+/// 原实现把 `!r.ok() || r.stdout.isEmpty()` 合并成一个分支，返回
+/// `UntrackedListing(out, 0, false)` —— 「采集失败」与「真的没有未跟踪文件」
+/// 在下游完全同形，untrackedCount=0 会被读成「工作区干净」（#187 在 listFiles
+/// 上修掉的同族，UntrackedListing 没跟上）。
+///
+/// 走真实失败路径：损坏 .git/index（实测 rc=128、stderr「fatal: index file corrupt」，
+/// 本轮在 /tmp 沙箱用系统 git 验证过），不是手搓返回值。
+@Test
+func testListUntrackedReportsErrorInsteadOfZeroOnFailure(): Unit {
+    let base = "/tmp/deepgit-uterr-${nowMillis()}"
+    ensureDir(base)
+    gitRun(base, ["init", "-b", "main"], false)
+    File.writeTo(Path("${base}/seed.txt"), "x".toArray())
+    gitRun(base, ["add", "."], false)
+    gitRun(base, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"], false)
+    File.writeTo(Path("${base}/u.txt"), "x".toArray())
+
+    // 对照：健康仓库 —— 真的 1 个未跟踪，error 必须是空串（0 是结论不是失败）
+    let healthy = listUntrackedFiles(base, 20)
+    @Assert(healthy.total == 1)
+    @Assert(healthy.error.isEmpty())
+
+    // 真空对照：一个未跟踪都没有的仓库，error 也必须是空串 ——
+    // 「没有」与「读不出来」两个状态都要钉住，不许修一边坏一边
+    let clean = "/tmp/deepgit-uterr-clean-${nowMillis()}"
+    ensureDir(clean)
+    gitRun(clean, ["init", "-b", "main"], false)
+    File.writeTo(Path("${clean}/seed.txt"), "x".toArray())
+    gitRun(clean, ["add", "."], false)
+    gitRun(clean, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"], false)
+    let empty = listUntrackedFiles(clean, 20)
+    @Assert(empty.total == 0)
+    @Assert(empty.error.isEmpty())
+    @Assert(!empty.truncated)
+    removePathIfExists(clean)
+
+    // 损坏 index：ls-files --others 真实失败（fatal: index file corrupt）
+    File.writeTo(Path("${base}/.git/index"), "GARBAGENOTANINDEXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx".toArray())
+    let broken = listUntrackedFiles(base, 20)
+    @Assert(!broken.error.isEmpty())          // 关键：原因必须带出来
+    @Assert(broken.error.contains("失败"))     // 文案能指导下一步
+    @Assert(broken.total == 0)                // 形状保持（0 是无知，靠 error 区分）
+    removePathIfExists(base)
+}
+
+/// K4 回归（契约C kernel 侧）：RepoFacts.toJson 恒发 untrackedError，空串也发。
+/// 键集不得随数据漂 —— 条件性发键会把「采集失败」藏进「键不在」里。
+/// 走真实 collectFacts 路径（git 与 dir 两种 kind），不是手搓 RepoFacts。
+@Test
+func testFactsAlwaysEmitUntrackedErrorKey(): Unit {
+    let base = "/tmp/deepgit-utkey-${nowMillis()}"
+    ensureDir(base)
+    gitRun(base, ["init", "-b", "main"], false)
+    File.writeTo(Path("${base}/seed.txt"), "x".toArray())
+    gitRun(base, ["add", "."], false)
+    gitRun(base, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"], false)
+    let gitFacts = collectFacts(base, "git", Config.defaults(), 10, false)
+    let j = gitFacts.toJson()
+    @Assert(Json.has(j, "untrackedError"))
+    @Assert(Json.strAt(j, "untrackedError", "MISSING") == "")
+
+    // dir 分支（collectDirFacts）同样恒发：非 git 项目没有 untracked 概念，
+    // 但键必须在 —— 消费方（契约C 的 flow 侧）按同一形状解码
+    let dirBase = "/tmp/deepgit-utkey-dir-${nowMillis()}"
+    ensureDir(dirBase + "/sub")
+    writeFileAtomic(dirBase + "/a.txt", "a")
+    let dirFacts = collectFacts(dirBase, "dir", Config.defaults(), 10, false)
+    let jd = dirFacts.toJson()
+    @Assert(Json.has(jd, "untrackedError"))
+    @Assert(Json.strAt(jd, "untrackedError", "MISSING") == "")
+    removePathIfExists(dirBase)
+    removePathIfExists(base)
+}
+
 /// langStats 并列时保留首次出现顺序 —— 改成 Counter 后最容易悄悄丢掉的性质。
 @Test
 func testLangStatsTieKeepsFirstSeenOrder(): Unit {
@@ -1367,4 +1545,126 @@ func testActivitySnapshotLegacyInitStillMeansZeroUnreadable(): Unit {
     @Assert(a.unreadable == 0)
     @Assert(a.unreadableSamples.isEmpty())
     @Assert(entryKindLabel(EntryKind.Unreadable) == "unreadable")
+}
+
+/// K3 回归：撞采集上限（maxFiles / maxDepth）必须置位 + 恒发，不许把上限当总数。
+///
+/// 触顶是第三种「覆盖不完整」成因（我们**主动停了**），与 unreadable
+/// （我们**看不到**）成因不同、危害同构：12000 个文件的仓库在 README
+/// 托管区与 headline 里就写着「12000 个文件」，像真的一样。
+/// 上限做成可注入（collectDirFacts 的 maxFiles/maxDepth），小上限就能真实触顶，
+/// 不必真造一万个文件 —— 触顶路径本身必须被测到，而不是只测默认参数。
+@Test
+func testCollectActivityDisclosesCapHits(): Unit {
+    let base = "/tmp/deepgit-act-caps-${nowMillis()}"
+    ensureDir(base + "/d1")
+    ensureDir(base + "/d2")
+    writeFileAtomic(base + "/a.txt", "a")
+    writeFileAtomic(base + "/b.txt", "b")
+    writeFileAtomic(base + "/c.txt", "c")
+    writeFileAtomic(base + "/d1/hidden.txt", "h")   // 撞上限时这两棵子树没被走到
+    writeFileAtomic(base + "/d2/hidden.txt", "h")
+    try {
+    // fileCap：maxFiles=2 —— 根目录的 3 个文件全数到（内层循环不截断），
+    // 但退出时队列里还有 d1/d2 没走：fileCount 是下界
+    let capped = collectActivity(base, 2, 6)
+    @Assert(capped.fileCount == 3)
+    @Assert(capped.fileCapHit)
+    @Assert(!capped.depthCapHit)
+
+    // depthCap：maxDepth=0 —— d1/d2 作为目录条目被跳过，整棵子树没看
+    let shallow = collectActivity(base, 12000, 0)
+    @Assert(shallow.fileCount == 3)
+    @Assert(shallow.depthCapHit)
+    @Assert(!shallow.fileCapHit)
+
+    // 对照：上限宽裕时两个标志都必须是 false ——「看全了」也是事实，不许谎报
+    let full = collectActivity(base, 12000, 6)
+    @Assert(full.fileCount == 5)
+    @Assert(!full.fileCapHit)
+    @Assert(!full.depthCapHit)
+
+    // toJson 恒发两键（含 false）：默认值取反再判，缺席就红（同 git.cj 的判例）
+    let jCapped = capped.toJson()
+    @Assert(Json.boolAt(jCapped, "fileCapHit", false))
+    @Assert(!Json.boolAt(jCapped, "depthCapHit", true))
+    let jFull = full.toJson()
+    @Assert(!Json.boolAt(jFull, "fileCapHit", true))
+    @Assert(!Json.boolAt(jFull, "depthCapHit", true))
+
+    // 注入点必须真的把上限传到采集层（不是只改 collectActivity 的调用方默认值）
+    let facts = collectDirFacts(base, Config.defaults(), maxFiles: 2)
+    match (facts.activity) {
+        case Some(a) => @Assert(a.fileCapHit)
+        case None => @Assert(false)   // dir 项目的 activity 不许缺席
+    }
+    } finally {
+        removePathIfExists(base)
+    }
+}
+
+
+/// #197 判据在 collectActivity 的落地：边界目录为空 → 不置位；
+/// 边界目录有会被采集的条目 → 置位；读不到 → 保持置位。
+///
+/// 原实现 depth/fileCap 一见边界就置位，未确认被跳过的子树非空 ——
+/// scanner 修 #197 时已确立「边界处常常是叶子目录，一见边界就置位 = 谎报没看完」。
+/// 危害方向与 scanner 相同：空目录撞界也报 depthCapHit=true，
+/// 下游披露「文件数是下界、可能没看完」，读者从此不信任何一次「看全了」。
+@Test
+func testCollectActivityDoesNotFlagCapWhenBoundaryDirsAreEmpty(): Unit {
+    let base = "/tmp/deepgit-act-emptyb-${nowMillis()}"
+    let baseSkip = "/tmp/deepgit-act-emptyb-sk-${nowMillis()}"
+    let baseClosed = "/tmp/deepgit-act-emptyb-cl-${nowMillis()}"
+    try {
+    ensureDir(base + "/e1")
+    ensureDir(base + "/e2")
+    writeFileAtomic(base + "/a.txt", "a")
+    writeFileAtomic(base + "/b.txt", "b")
+
+    // 空边界：e1/e2 都是空目录 ——
+    //   depthCap：maxDepth=0，e1/e2 作为目录条目撞界，但确认后无会被采集的条目；
+    //   fileCap ：maxFiles=1，根目录 2 个文件触顶退出，队列剩 e1/e2，同样确认无内容。
+    // 两个方向都是「真的看全了」，不许谎报没看完。
+    let empty = collectActivity(base, 1, 0)
+    @Assert(empty.fileCount == 2)
+    @Assert(!empty.depthCapHit)
+    @Assert(!empty.fileCapHit)
+
+    // 边界目录有文件 → 必须置位（同测试自带正例，负例才有判别力）。
+    // 两个轴分开打：maxDepth=0 时 e1/e2 在根部就撞深度界、根本不进队，
+    // 文件轴的「队列剩余确认」没有输入，不会置位 —— 深度轴用 maxDepth=0 打；
+    // 文件轴用 maxDepth=1（e1/e2 进队后触顶退出，队列剩余里有 h.txt）。
+    writeFileAtomic(base + "/e1/h.txt", "h")
+    let filledDepth = collectActivity(base, 1, 0)
+    @Assert(filledDepth.depthCapHit)
+    @Assert(!filledDepth.fileCapHit)   // e1/e2 触顶后根本没出队，文件轴没有输入
+    let filledFile = collectActivity(base, 1, 1)
+    @Assert(filledFile.fileCapHit)
+    @Assert(!filledFile.depthCapHit)   // e1 触顶后根本没出队（循环在此之前退出），深度轴没有输入
+
+    // 边界目录只装点开头 / skip 名单里的东西 → 对采集口径而言是空的，不置位。
+    // （确认逻辑必须与主循环同口径：主循环本来就跳过这些，它们不算「没看到」）
+    ensureDir(baseSkip + "/only/.git")
+    writeFileAtomic(baseSkip + "/only/.git/HEAD", "ref")
+    writeFileAtomic(baseSkip + "/a.txt", "a")
+    let skipped = collectActivity(baseSkip, 1, 0)
+    @Assert(!skipped.depthCapHit)
+    @Assert(!skipped.fileCapHit)
+
+    // 读不到的边界目录 → 保持置位：读不出来 = 可能有没看过的文件，
+    // 宁可说「可能没看完」（对齐 scanner 的 hasUnexploredSubdir 取向）。
+    ensureDir(baseClosed + "/closed")
+    writeFileAtomic(baseClosed + "/a.txt", "a")
+    let ch = execCapture("chmod", ["000", baseClosed + "/closed"], None, 8000)
+    @Assert(ch.ok())
+    let unreadable = collectActivity(baseClosed, 12000, 0)
+    // 先恢复权限再断言，否则清理会失败
+    execCapture("chmod", ["755", baseClosed + "/closed"], None, 8000)
+    @Assert(unreadable.depthCapHit)
+    } finally {
+        removePathIfExists(base)
+        removePathIfExists(baseSkip)
+        removePathIfExists(baseClosed)
+    }
 }

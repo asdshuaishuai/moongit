@@ -2,10 +2,12 @@
 package moongit.cli
 
 import std.collection.*
+import std.convert.*
 import std.env.*
 import std.unittest.*
 import std.unittest.testmacro.*
 import moongit.flow.*
+import moongit.graph.*
 import moongit.kernel.*
 import moongit.util.*
 
@@ -31,10 +33,13 @@ func testValueFlagsValueIsNeverTreatedAsProject(): Unit {
     //
     // 这个测试按行为断言，而不是抄 VALUE_FLAGS 自身 —— 抄写式断言发现不了清单缺项。
     // 新增任何 `flagValue(x, "--foo")` 时，必须把 --foo 同时加进 cases 和 VALUE_FLAGS。
+    // ⚠️ --host / --port 已从 VALUE_FLAGS 删除（本轮审查：HTTP 层遗留死 flag，
+    // 全仓零 flagValue/hasFlag 消费点）；它们现在归 testUnknownFlagsAreRejected 管 ——
+    // 再传就是「未知 flag」exit 2，而不是被静默吞值。
     let cases: Array<String> = [
-        "--name", "--depth", "--docs", "--scope", "--branch", "--port",
+        "--name", "--depth", "--docs", "--scope", "--branch",
         "--source", "--tag", "--date", "--desc", "--out", "--message",
-        "--budget", "--dir", "--limit", "--note", "--host",
+        "--budget", "--dir", "--limit", "--note", "--format", "--patch", "--file",
     ]
     for (f in cases) {
         let args = ArrayList<String>(["someproject", f, "VALUE_THAT_IS_A_PROJECT_NAME"])
@@ -215,6 +220,113 @@ func testMilestoneLineFormatting(): Unit {
     @Assert(milestoneLine(od, "zh").contains("逾期 9 天"))
     @Assert(milestoneLine(od, "en").contains("overdue"))
     @Assert(milestoneLine(od, "en").contains("9 days overdue"))
+}
+
+/// 认不出的 status 不得渲染成「进行中」（本轮审查，对齐 report 出口三态）。
+///
+/// 原来 milestoneLine 的 `case _` 同时兜住 open 与**一切认不出的 status**，
+/// 而 report 出口（flow/report.cj milestoneCellStatus）上一轮已改为三态 ——
+/// 同一份数据 milestone list 说「进行中」、report 说「? 无法核验」，两个出口两种口径。
+/// 认不出的 status 哪怕标了 overdue 也不许渲染「已逾期」：逾期判定依赖
+/// status=="open"，status 连认都认不出时 overdue 不可信（与 report 同一条理由）。
+@Test
+func testMilestoneLineUnrecognizedStatusIsUnverifiableNotInProgress(): Unit {
+    let it = Json.obj()
+    Json.set(it, "projectName", Json.of("demo"))
+    Json.set(it, "name", Json.of("v2.0"))
+    Json.set(it, "status", Json.of("active"))
+    Json.set(it, "targetDate", Json.of(""))
+    Json.set(it, "daysToTarget", Json.of(-1))
+    Json.set(it, "commitsSince", Json.of(0))
+    Json.set(it, "tagReached", Json.of(false))
+    Json.set(it, "overdue", Json.of(true))   // 哪怕 overdue=true 也不许借机渲染「已逾期」
+    let zh = milestoneLine(it, "zh")
+    @Assert(!zh.contains("进行中"))
+    @Assert(!zh.contains("已逾期"))
+    @Assert(zh.contains("无法核验"))
+    // 值本身必须披露（对齐 report milestoneCellNote 的「未知状态：X」口径）：
+    // 只说「有问题」不说「为什么」，读者无从去 milestones.json 核对数据。
+    @Assert(zh.contains("未知状态"))
+    @Assert(zh.contains("active"))
+    // en 分支同口径（M15：本行曾被整行硬编码中文）
+    let en = milestoneLine(it, "en")
+    @Assert(!en.contains("in progress"))
+    @Assert(en.contains("unverifiable"))
+    @Assert(en.contains("unknown status"))
+
+    // 对照组：认得出的状态不受影响（修复不许把正常状态改坏）
+    let ok = Json.obj()
+    Json.set(ok, "projectName", Json.of("demo"))
+    Json.set(ok, "name", Json.of("v1"))
+    Json.set(ok, "status", Json.of("open"))
+    Json.set(ok, "targetDate", Json.of(""))
+    Json.set(ok, "daysToTarget", Json.of(-1))
+    Json.set(ok, "commitsSince", Json.of(0))
+    Json.set(ok, "tagReached", Json.of(false))
+    Json.set(ok, "overdue", Json.of(false))
+    @Assert(milestoneLine(ok, "zh").contains("进行中"))
+    @Assert(!milestoneLine(ok, "zh").contains("无法核验"))
+
+    // 判定本身：open/done/dropped/unknown 之外全是「认不出」
+    @Assert(unrecognizedMilestoneStatus("active"))
+    @Assert(unrecognizedMilestoneStatus(""))
+    @Assert(unrecognizedMilestoneStatus("in_progress"))
+    @Assert(!unrecognizedMilestoneStatus("open"))
+    @Assert(!unrecognizedMilestoneStatus("done"))
+    @Assert(!unrecognizedMilestoneStatus("dropped"))
+    @Assert(!unrecognizedMilestoneStatus("unknown"))
+}
+
+/// 端到端：用 setMilestoneStatus 把 "active" 写进真实 milestones.json
+///（kernel 侧不校验枚举，与 dashboard.cj 的 testUnrecognizedMilestoneStatusIsCountedNotDropped
+/// 同款手法），再走 cmdMilestone 的 list 分支**同一条数据管线**
+///（loadMilestonesChecked → milestoneListSelection → milestoneJson → milestoneLine），
+/// 断言文本行不出现「进行中」、出现「无法核验」。
+/// 不直接调 cmdMilestone 是因为它的文本出口走 printOut（stdout），断言不到。
+@Test
+func testMilestoneListPipelineRendersUnrecognizedStatusAsUnverifiable(): Unit {
+    let base = "/tmp/deepgit-msactive-${nowMillis()}"
+    let repo = base + "/repo"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    try {
+        ensureDir(repo)
+        gitRun(repo, ["init", "-b", "main"], false)
+        writeFileAtomic(repo + "/a.txt", "1")
+        gitRun(repo, ["add", "."], false)
+        gitRun(repo, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"], false)
+        let (p, okProj) = addProject(repo, "active-demo", ArrayList<String>(), "")
+        @Assert(okProj)
+        let (_, created) = addMilestone(p.id, "v-active", "", "", "")
+        @Assert(created)
+        // kernel 不校验枚举：写一个引擎认不出的状态
+        @Assert(setMilestoneStatus(p.id, "v-active", "active"))
+
+        // 与 cmdMilestone 的 list 分支逐环相同（除 printOut 本身）
+        let projects = ArrayList<ProjectEntry>([p])
+        let (allMs, _) = loadMilestonesChecked()
+        let sel = milestoneListSelection(projects, allMs)
+        // 前提守卫：条目没进来时下面全空转成绿（不变量 18）
+        @Assert(sel.matched.size == 1)
+        for (m in sel.matched) {
+            let mp = m[0]
+            let ms = m[1]
+            let item = milestoneJson(mp, milestoneProgress(ms, mp.path, ""))
+            // 前提守卫：状态必须原样流到 JSON（milestoneProgress 的 effective
+            // 只在 open 时改写；被改写则测的是别的路径）
+            @Assert(Json.strAt(item, "status", "") == "active")
+            let line = milestoneLine(item, "zh")
+            @Assert(!line.contains("进行中"))
+            @Assert(line.contains("无法核验"))
+            @Assert(line.contains("active"))
+        }
+    } finally {
+        exitTestHome()
+        removePathIfExists(repo)
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
 }
 
 @Test
@@ -541,7 +653,9 @@ func testUnknownFlagsAreRejected(): Unit {
     // 旧实现里未知 flag 落进 positionals 后被无声丢弃：
     // `moongit status --bogus` 照常 exit 0，`--limti 5` 照常用默认 20 条。
     // 打错一个字母 = 「命令成功执行，但用的是默认值」，自动化里最难查的一类。
-    for (bad in ["--bogus", "--limti", "--dryrun", "--jsonn", "-z"]) {
+    // --host / --port / --open（本轮审查）：HTTP 层遗留死 flag，原先在白名单里
+    // 被静默吞值 —— 现在删出名单，必须与真·未知 flag 同判据（exit 2 + 「未知 flag」）。
+    for (bad in ["--bogus", "--limti", "--dryrun", "--jsonn", "-z", "--host", "--port", "--open"]) {
         var threw = false
         try {
             validateKnownFlags(ArrayList<String>(["status", bad]))
@@ -850,9 +964,9 @@ func testVerifyTextPathMustShareTheSameOutcomeComputation(): Unit {
     let src = readFileTextChecked("src/cli/cli.cj").getOrThrow()
     // 剥注释后再数：注释里为了说明历史必然提到这两处，别把它算进去
     let sb = StringBuilder()
-    var blk = false
+    var blk = CjStripState.Normal
     for (raw in src.split("\n")) {
-        let (l, nb) = stripCjComment(raw, blk)
+        let (l, nb) = stripCjCommentEx(raw, blk)
         blk = nb
         sb.append(l)
         sb.append("\n")
@@ -1782,9 +1896,9 @@ func testMultiProjectCommandsMustNotHandRollRefs0(): Unit {
     let src = readFileTextChecked("src/cli/cli.cj").getOrThrow()
     // 剥注释（复用唯一那份实现，见不变量 45）
     let sb = StringBuilder()
-    var blk = false
+    var blk = CjStripState.Normal
     for (raw in src.split("\n")) {
-        let (l, nb) = stripCjComment(raw, blk)
+        let (l, nb) = stripCjCommentEx(raw, blk)
         blk = nb
         sb.append(l)
         sb.append("\n")
@@ -1898,9 +2012,9 @@ func testScanTextExitsShareTheSameIncompletePredicate(): Unit {
     // 两个出口都得问它。剥注释后再数 —— 注释里必然提到这两个成因。
     let src = readFileTextChecked("src/cli/cli.cj").getOrThrow()
     let sb = StringBuilder()
-    var blk = false
+    var blk = CjStripState.Normal
     for (raw in src.split("\n")) {
-        let (l, nb) = stripCjComment(raw, blk)
+        let (l, nb) = stripCjCommentEx(raw, blk)
         blk = nb
         sb.append(l)
         sb.append("\n")
@@ -2075,9 +2189,9 @@ func testScanLeftoversSeparatesUnreadableFromEmpty(): Unit {
 func __lintDoctorLeftoverRowMustUseTheThreeStateSeam(): Unit {
     let raw = readFileTextChecked("src/cli/cli.cj").getOrThrow()
     let sb = StringBuilder()
-    var blk = false
+    var blk = CjStripState.Normal
     for (r in raw.split("\n")) {
-        let (l, nb) = stripCjComment(r, blk)
+        let (l, nb) = stripCjCommentEx(r, blk)
         blk = nb
         sb.append(l)
         sb.append("\n")
@@ -2149,9 +2263,9 @@ func testEveryKnownConfigKeyHasAValidSample(): Unit {
 func __lintConfigKeyTableMatchesBothAccessors(): Unit {
     let raw = readFileTextChecked("src/cli/cli.cj").getOrThrow()
     let sb = StringBuilder()
-    var blk = false
+    var blk = CjStripState.Normal
     for (r in raw.split("\n")) {
-        let (l, nb) = stripCjComment(r, blk)
+        let (l, nb) = stripCjCommentEx(r, blk)
         blk = nb
         sb.append(l)
         sb.append("\n")
@@ -2280,4 +2394,1134 @@ func testSkillMarkdownCoversFullCapabilitySurface(): Unit {
     @Assert(md.contains("patchconf --patch"))
     // 词法级红线进红线节
     @Assert(md.contains("词法级候选"))
+}
+
+/// skill 教学包的工具清单必须与 MCP 工具表对账（本轮审查 L2）。
+///
+/// 原来清单是手抄副本：标题硬写「23 个」而正文实际只枚举 22 个（缺
+/// get_group_context）—— 第二份副本必然漂移（不变量 26/43 同族）。
+/// 现在正文由 mcpToolList() 派生（skillToolSection），这条测试双向钉住：
+///   · 标题数字 == mcpToolList 名字数（数字跟着单一来源走）
+///   · 正文枚举的名字集合 == mcpToolList 名字集合（不多、不少）
+///   · 分组数 == 实际渲染的组行数
+/// 必须解析 skillMarkdown() 全文：测派生辅助函数测不到「skillMarkdown 真的用了它」。
+@Test
+func testSkillMarkdownToolListMatchesMcpToolList(): Unit {
+    let md = skillMarkdown()
+    // —— 从 mcpToolList 提取名字集合（唯一来源）——
+    let mcpNames = HashSet<String>()
+    for (t in Json.arrAt(mcpToolList(), "tools")) {
+        mcpNames.add(Json.strAt(t, "name", ""))
+    }
+    // 前提：工具表为空时下面全部断言会空转成绿，必须先证明有东西可对账
+    @Assert(mcpNames.size >= 20)
+
+    // —— 解析 skill 文本：标题行 + 其后的组行 ——
+    var claimedCount: Int64 = -1
+    var claimedGroups: Int64 = -1
+    let groupLines = ArrayList<String>()
+    var inSection = false
+    for (line in md.split("\n")) {
+        if (!inSection && line.contains("工具（") && line.contains("个，分") && line.contains("组）：")) {
+            inSection = true
+            // 行形如「工具（23 个，分 3 组）：」，按空格切出数字段
+            let parts = line.trimAscii().split(" ")
+            @Assert(parts.size >= 4)
+            claimedCount = Int64.parse(parts[0][9..])   // 掐掉前缀「工具（」（9 字节，ASCII 边界安全）
+            claimedGroups = Int64.parse(parts[2])
+            continue
+        }
+        if (inSection) {
+            if (line.startsWith("   - ")) {
+                groupLines.add(line)
+            } else {
+                break   // 组行结束，别把后面章节的内容也算进来
+            }
+        }
+    }
+    @Assert(claimedCount > 0)      // 没找到标题 = 解析器坏了，不许静默通过
+    @Assert(claimedGroups > 0)
+    @Assert(groupLines.size > 0)
+
+    // —— 从组行解析工具名 token（剥组名前缀与全角注解，只留 a-z/_ 名字）——
+    let listed = HashSet<String>()
+    for (g in groupLines) {
+        let body = match (g.indexOf("：")) {
+            case Some(i) => g[(i + 3)..]   // 全角冒号 3 字节；组名是中文不含分隔符
+            case None => g
+        }
+        for (arrowPart in body.split("→")) {
+            for (seg in arrowPart.split(" / ")) {
+                var tok = seg.trimAscii()
+                let cut = tok.indexOf("（")   // 剥全角注解
+                if (cut.isSome()) {
+                    tok = tok[0..cut.getOrThrow()]
+                }
+                var legal = tok.size > 0
+                for (b in tok) {
+                    if (!((b >= 0x61u8 && b <= 0x7au8) || b == 0x5fu8)) {
+                        legal = false
+                        break
+                    }
+                }
+                if (legal) {
+                    listed.add(tok)
+                }
+            }
+        }
+    }
+    // 双向包含：mcpToolList 里每一个都必须出现在教学包（防漏，如 get_group_context），
+    // 教学包里出现的每一个都必须真实存在（防幻觉名字）。
+    for (n in mcpNames) {
+        @Assert(listed.contains(n))
+    }
+    for (n in listed) {
+        @Assert(mcpNames.contains(n))
+    }
+    @Assert(claimedCount == mcpNames.size)
+    @Assert(claimedGroups == groupLines.size)
+}
+
+/// graph tree 的 `--depth` 必须与 scan 同判据：小于 1 直接 usage 报错（本轮审查 L3）。
+///
+/// #197 在 scan 上修过同一个 flag（0/-1 静默接受 → 一句误导性的「未发现项目」
+/// exit 0），而 graph tree 的解析是另一份拷贝，当时漏了 —— 同一 flag 两种判据。
+/// 必须走真实 cmdGraph：错的是命令入口的校验位置，不是 Int64.parse 本身。
+@Test
+func testGraphTreeRejectsNonsensicalDepth(): Unit {
+    let base = "/tmp/deepgit-gtree-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    ensureDir(base)
+    gitRun(base, ["init", "-b", "main"], false)
+    writeFileAtomic(base + "/a.cj", "package demo\npublic func hello(): Int64 { return 1 }\n")
+    gitRun(base, ["add", "."], false)
+    gitRun(base, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"], false)
+    let (_, _) = addProject(base, "gtree-demo", ArrayList<String>(), "")
+    let pid = projectIdFor(base)
+
+    for (bad in ["0", "-1", "-99"]) {
+        var threw = false
+        var code: Int64 = -1
+        var msg = ""
+        try {
+            let _ = cmdGraph(ArrayList<String>(["tree", "gtree-demo", "--depth", bad, "--format", "text"]),
+                CliContext(ArrayList<String>(["graph"])))
+        } catch (e: DgError) {
+            threw = true
+            code = e.exitCode
+            msg = e.message
+        }
+        @Assert(threw)
+        @Assert(code == 2)          // usage 报错，与 scan 的处置同一退出码
+        @Assert(msg.contains("--depth"))
+    }
+    // 合法深度不得被守卫误伤（--format text 保持输出轻量）
+    let rc = cmdGraph(ArrayList<String>(["tree", "gtree-demo", "--depth", "1", "--format", "text"]),
+        CliContext(ArrayList<String>(["graph"])))
+    @Assert(rc == 0)
+
+    removePathIfExists(base)
+    removePathIfExists(deepgitPath(["store", pid]))
+    exitTestHome()
+    removePathIfExists(testHome)
+}
+
+// ------------------------------ 本轮审查：位置参数不许静默蒸发（#196 同族） ------------------------------
+
+/// graph symbol/impact 与 tools 的多余位置参数必须报 usage（exit 2）。
+///
+/// resolveGraphProject 原来只设下限不设上限：`graph symbol alpha foo extra`
+/// 的 extra 蒸发、rc=0；cmdTools 干脆不吃参数也不查 —— `tools foo` 同样蒸发。
+/// 元数固定 ⇒ rejectExtraPositionals 处置（对齐 #196/#197）。
+/// 元数错误必须在项目查找**之前**报出：拼错参数与项目不存在是两种错，
+/// 前者是 usage(2)、后者是 NOT_FOUND(1)。
+@Test
+func testGraphSymbolAndToolsRejectExtraPositionals(): Unit {
+    let base = "/tmp/deepgit-gextra-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    try {
+        // graph symbol：项目 + 符号 + 多余（项目名不需要真的存在 —— 元数错先于查找）
+        for (sub in ["symbol", "impact"]) {
+            var threw = false
+            var code: Int64 = -1
+            var msg = ""
+            try {
+                let _ = cmdGraph(ArrayList<String>([sub, "someproj", "someSymbol", "extra"]),
+                    CliContext(ArrayList<String>(["graph"])))
+            } catch (e: DgError) {
+                threw = true
+                code = e.exitCode
+                msg = e.message
+            }
+            let want = "graph ${sub}"
+            @Assert(threw)
+            @Assert(code == 2)
+            @Assert(msg.contains(want))
+        }
+
+        // tools：任何位置参数都多余
+        var threwTools = false
+        var codeTools: Int64 = -1
+        try {
+            let _ = cmdTools(ArrayList<String>(["extra"]), CliContext(ArrayList<String>(["tools"])))
+        } catch (e: DgError) {
+            threwTools = true
+            codeTools = e.exitCode
+        }
+        @Assert(threwTools)
+        @Assert(codeTools == 2)
+
+        // 对照组：恰好 2 个位置参数（项目 + 符号）不该被元数守卫拦 ——
+        // 项目不存在报 NOT_FOUND(1)，与 usage(2) 是两种错，不许混同。
+        var threwOk = false
+        var codeOk: Int64 = -1
+        try {
+            let _ = cmdGraph(ArrayList<String>(["symbol", "someproj", "someSymbol"]),
+                CliContext(ArrayList<String>(["graph"])))
+        } catch (e: DgError) {
+            threwOk = true
+            codeOk = e.exitCode
+        }
+        @Assert(threwOk)
+        @Assert(codeOk == 1)
+    } finally {
+        exitTestHome()
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
+/// 用法校验必须先于 buildGraph（本轮审查）：整图构建是 graph tree 在大仓库上
+/// 最贵的开销，「--depth 0」这种一眼能判死的参数不该先付一遍构建代价再报错。
+/// 「先构建了再报错」是**结构**属性（行为测试区分不了快慢路径），用源码 lint 钉住：
+/// cmdGraph 里 parseGraphTreeDepth 的调用点必须出现在 buildGraph(p.path) 之前。
+/// 行为侧（0/-1/abc 仍报 usage）由 testGraphTreeRejectsNonsensicalDepth 覆盖。
+@Test
+func __lintGraphTreeDepthIsValidatedBeforeBuildingGraph(): Unit {
+    let raw = readFileTextChecked("src/cli/cli.cj").getOrThrow()
+    let sb = StringBuilder()
+    var blk = CjStripState.Normal
+    for (r in raw.split("\n")) {
+        let (l, nb) = stripCjCommentEx(r, blk)
+        blk = nb
+        sb.append(l)
+        sb.append("\n")
+    }
+    let code = sb.toString()
+    let a = code.indexOf("func cmdGraph(")
+    @Assert(a.isSome())
+    let rest = code[a.getOrThrow()..]
+    let b = rest.indexOf("\nfunc ")
+    let body = if (b.isSome()) { rest[0..b.getOrThrow()] } else { rest }
+    // 前提守卫（不变量 22）：两个锚点都得抓到，抓不到就说明接缝被改写/改名了，
+    // 这条 lint 不许静默空转成绿。
+    let parse = body.indexOf("parseGraphTreeDepth(args)")
+    let build = body.indexOf("buildGraph(p.path)")
+    @Assert(parse.isSome())
+    @Assert(build.isSome())
+    // 核心断言：校验先于构建
+    @Assert(parse.getOrThrow() < build.getOrThrow())
+    // 接缝本体还在（校验逻辑必须住在 parseGraphTreeDepth 里，不许内联回 tree 分支）
+    @Assert(code.contains("func parseGraphTreeDepth("))
+}
+
+/// help 文本只许宣传真实存在的 flag（本轮审查）。
+///
+/// help 的 update 行一直写着 `--no-ai`，而 --no-ai 不在 KNOWN_FLAGS ——
+/// 用户照 help 敲必 rc=2（src/ai 删除后的过期文档）。printHelp 直接 println，
+/// 行为层抓不到 stdout，用源码 lint：printHelp 正文里出现的每个 `--flag`
+/// 必须都在 KNOWN_FLAGS 里 —— 死 flag 写进 help、或 help 宣传未注册的 flag，都红。
+@Test
+func __lintHelpMustNotAdvertiseUnknownFlags(): Unit {
+    let raw = readFileTextChecked("src/cli/cli.cj").getOrThrow()
+    let sb = StringBuilder()
+    var blk = CjStripState.Normal
+    for (r in raw.split("\n")) {
+        let (l, nb) = stripCjCommentEx(r, blk)
+        blk = nb
+        sb.append(l)
+        sb.append("\n")
+    }
+    let code = sb.toString()
+    let a = code.indexOf("func printHelp()")
+    @Assert(a.isSome())
+    let rest = code[a.getOrThrow()..]
+    let b = rest.indexOf("\nfunc ")
+    let body = if (b.isSome()) { rest[0..b.getOrThrow()] } else { rest }
+
+    // 提取正文里所有 --flag 记号（记号是纯 ASCII，字节切片安全；
+    // 中文破折号「——」是 U+2014，不是 0x2d，不会被误抓）
+    let mentioned = HashSet<String>()
+    var i: Int64 = 0
+    let n = Int64(body.size)
+    while (i < n - 1) {
+        if (body[i] == 0x2du8 && body[i + 1] == 0x2du8) {
+            var j = i + 2
+            while (j < n) {
+                let c = body[j]
+                if ((c >= 0x61u8 && c <= 0x7au8) || (c >= 0x30u8 && c <= 0x39u8) || c == 0x2du8) {
+                    j += 1
+                } else {
+                    break
+                }
+            }
+            if (j > i + 2) {
+                mentioned.add(body[i..j])
+            }
+            i = j
+        } else {
+            i += 1
+        }
+    }
+    // 前提守卫（不变量 22）：提取器坏了/正文空了，下面全空转成绿 ——
+    // 用三个长期稳定的 flag 证明提取真的在工作。
+    @Assert(mentioned.contains("--json"))
+    @Assert(mentioned.contains("--dry-run"))
+    @Assert(mentioned.contains("--depth"))
+    // 每个被宣传的 flag 必须真实存在
+    for (f in mentioned) {
+        @Assert(KNOWN_FLAGS.contains(f))
+    }
+}
+
+// ------------------------------ graph db / confidence db ------------------------------
+
+/// cli 包内的计数查询 helper（graph 包的 dbScalar 是包私有的；
+/// COUNT 与 meta 数值列都走 columnInt）。
+func dbCountCli(db: SqliteDb, sql: String): Int64 {
+    let stOpt = db.prepare(sql)
+    if (stOpt.isNone()) { return -1 }
+    let st = stOpt.getOrThrow()
+    if (!st.stepHasRow()) {
+        st.finalize()
+        return -1
+    }
+    let v = st.columnInt(0)
+    st.finalize()
+    return v
+}
+
+/// 造一个带「自由调用边 + 疑点」的沙箱项目：beta 调 alpha（边）、
+/// beta 无人调（orphan 疑点）——graph db 与 confidence db 两条命令共用。
+func dbCliFixtureProject(base: String, name: String): ProjectEntry {
+    let repo = base + "/repo"
+    ensureDir("${repo}/src")
+    writeFileAtomic("${repo}/src/a.cj", """
+package demo
+
+public func alpha(s: String): String {
+    return s
+}
+
+public func beta(): String {
+    return alpha("x")
+}
+""")
+    let (p, ok) = addProject(repo, name, ArrayList<String>(), "")
+    @Assert(ok)
+    return p
+}
+
+@Test
+func testGraphDbCommandWritesSqliteFile(): Unit {
+    let base = "/tmp/deepgit-graphdb-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    try {
+        let p = dbCliFixtureProject(base, "graphdb-demo")
+        let dbPath = base + "/out.db"
+        let ctx = CliContext(ArrayList<String>(["graph"]))
+        let rc = cmdGraph(ArrayList<String>(["db", "graphdb-demo", "--out", dbPath]), ctx)
+        @Assert(rc == 0)
+        // 副作用：单文件 SQLite 真的落盘，且能只读重开、行数对得上
+        @Assert(fileExists(dbPath))
+        let ro = SqliteDb.openReadonly(dbPath)
+        @Assert(ro.isSome())
+        let db = ro.getOrThrow()
+        @Assert(dbCountCli(db, "SELECT COUNT(*) FROM nodes") >= 2)
+        @Assert(dbCountCli(db, "SELECT COUNT(*) FROM edges") >= 1)
+        db.close()
+        // 缺省路径语义：不传 --out 时落进度库（不变量 1：产物不进项目工作区）
+        let defaultPath = deepgitPath(["store", p.id, "codegraph.db"])
+        let rc2 = cmdGraph(ArrayList<String>(["db", "graphdb-demo"]), ctx)
+        @Assert(rc2 == 0)
+        @Assert(fileExists(defaultPath))
+        // 项目工作区必须干净（progress 状态永不写进项目工作区）
+        @Assert(!fileExists(p.path + "/codegraph.db"))
+    } finally {
+        exitTestHome()
+        removePathIfExists(base + "/repo")
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
+@Test
+func testConfidenceDbCommandWritesSqliteFile(): Unit {
+    let base = "/tmp/deepgit-confdb-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    try {
+        let p = dbCliFixtureProject(base, "confdb-demo")
+        let dbPath = base + "/out.db"
+        let ctx = CliContext(ArrayList<String>(["confidence"]))
+        let rc = cmdConfidence(ArrayList<String>(["db", "confdb-demo", "--out", dbPath]), ctx)
+        @Assert(rc == 0)
+        @Assert(fileExists(dbPath))
+        let ro = SqliteDb.openReadonly(dbPath)
+        @Assert(ro.isSome())
+        let db = ro.getOrThrow()
+        // beta 没人调 ⇒ 至少一条 orphan 疑点；score 是 0..100 的合法值
+        @Assert(dbCountCli(db, "SELECT COUNT(*) FROM findings") >= 1)
+        @Assert(dbCountCli(db, "SELECT value FROM meta WHERE key='score'") >= 0)
+        @Assert(dbCountCli(db, "SELECT value FROM meta WHERE key='score'") <= 100)
+        db.close()
+        // 缺省路径同 graph db
+        let rc2 = cmdConfidence(ArrayList<String>(["db", "confdb-demo"]), ctx)
+        @Assert(rc2 == 0)
+        @Assert(fileExists(deepgitPath(["store", p.id, "confidence.db"])))
+    } finally {
+        exitTestHome()
+        removePathIfExists(base + "/repo")
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
+/// 两个 --json 出口的形状守卫（构造与打印分离：stdout 在测试里捕获不到，
+/// 键集断言只能落在构造函数上——与 journal/update 的既有处理一致）。
+@Test
+func testDbJsonPayloadShapesAreStable(): Unit {
+    let g = graphDbResultJson("/tmp/x.db", 3, 2, 1)
+    for (k in ["path", "nodes", "edges", "files"]) {
+        @Assert(Json.has(g, k))
+    }
+    @Assert(Json.intAt(g, "nodes", -1) == 3)
+    @Assert(Json.intAt(g, "edges", -1) == 2)
+    @Assert(Json.intAt(g, "files", -1) == 1)
+    let c = confidenceDbResultJson("/tmp/y.db", 5, 2, 3, 77)
+    for (k in ["path", "findings", "dimensions", "files", "score"]) {
+        @Assert(Json.has(c, k))
+    }
+    @Assert(Json.intAt(c, "findings", -1) == 5)
+    @Assert(Json.intAt(c, "score", -1) == 77)
+}
+
+@Test
+func testGraphDbUnknownProjectFailsLoudly(): Unit {
+    let base = "/tmp/deepgit-graphdb-miss-${nowMillis()}"
+    ensureDir(base)
+    enterTestHome(base)
+    let ctx = CliContext(ArrayList<String>(["graph"]))
+    var threw = false
+    try {
+        cmdGraph(ArrayList<String>(["db", "__no_such_project__"]), ctx)
+    } catch (e: DgError) {
+        threw = true
+        @Assert(e.exitCode == 1)
+    }
+    @Assert(threw)
+    exitTestHome()
+    removePathIfExists(base)
+}
+
+@Test
+func testConfidenceDbUnknownProjectFailsLoudly(): Unit {
+    let base = "/tmp/deepgit-confdb-miss-${nowMillis()}"
+    ensureDir(base)
+    enterTestHome(base)
+    let ctx = CliContext(ArrayList<String>(["confidence"]))
+    var threw = false
+    try {
+        cmdConfidence(ArrayList<String>(["db", "__no_such_project__"]), ctx)
+    } catch (e: DgError) {
+        threw = true
+        @Assert(e.exitCode == 1)
+    }
+    @Assert(threw)
+    exitTestHome()
+    removePathIfExists(base)
+}
+
+// ------------------------------ 图能力重设计第一阶段：index / render / 骨架 ------------------------------
+
+/// index gen 的两态与产物（走真实 cmdIndex）：
+/// gen 首版 = 0 → db + index.json 落盘；update 新鲜跳过（不动任何文件）；
+/// 源变化后重建 +1；--force 再重建 +1。overview/query 走 db 读路径。
+@Test
+func testIndexGenUpdateLifecycle(): Unit {
+    let base = "/tmp/deepgit-idx-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    try {
+        let p = dbCliFixtureProject(base, "idx-demo")
+        let ctx = CliContext(ArrayList<String>(["index"]))
+        let store = deepgitPath(["store", p.id])
+        let dbPath = store + "/codegraph.db"
+        let jsonPath = store + "/index.json"
+
+        // ── gen：首版（第 0 版）──
+        @Assert(cmdIndex(ArrayList<String>(["gen", "idx-demo"]), ctx) == 0)
+        @Assert(fileExists(dbPath))
+        @Assert(fileExists(jsonPath))
+        match (indexMetaRead(dbPath)) {
+            case Some(m) =>
+                @Assert(m.updateCount == 0)   // gen 首版 = 0
+                @Assert(m.probe().isSome())
+                @Assert(m.depth == 6)         // 默认 depth 进 store_meta
+            case None => @Assert(false)
+        }
+        match (Json.parse(readFileTextOr(jsonPath, ""))) {
+            case Some(pl) =>
+                // 渲染派生物的形状：持久化 payload 带全部域键
+                @Assert(Json.has(pl, "functionGraph"))
+                @Assert(Json.has(pl, "confidence"))
+                @Assert(Json.has(pl, "graphModules"))
+                @Assert(Json.has(pl, "probe"))
+                @Assert(Json.intAt(pl, "updateCount", -1) == 0)
+            case None => @Assert(false)
+        }
+        // db 行数与写入同源（nodes ≥ 2 / edges ≥ 1 / store_meta 4 键）
+        let ro = SqliteDb.openReadonly(dbPath)
+        @Assert(ro.isSome())
+        let db = ro.getOrThrow()
+        @Assert(dbCountCli(db, "SELECT COUNT(*) FROM nodes") >= 2)
+        @Assert(dbCountCli(db, "SELECT COUNT(*) FROM edges") >= 1)
+        @Assert(dbCountCli(db, "SELECT COUNT(*) FROM store_meta") == 4)
+        db.close()
+
+        // ── update：新鲜 → 跳过，不动任何文件 ──
+        let jsonBefore = readFileTextOr(jsonPath, "")
+        let dbBefore = readFileTextOr(dbPath, "§db§")   // 只探可读性，不比字节（sqlite 页内有序号）
+        @Assert(cmdIndex(ArrayList<String>(["update", "idx-demo"]), ctx) == 0)
+        match (indexMetaRead(dbPath)) {
+            case Some(m) => @Assert(m.updateCount == 0)   // 版本没动
+            case None => @Assert(false)
+        }
+        @Assert(readFileTextOr(jsonPath, "") == jsonBefore)   // index.json 逐字节未变
+
+        // ── update：源变化 → 重建 +1 ──
+        writeFileAtomic(base + "/repo/src/a.cj", """
+package demo
+
+public func alpha(s: String): String {
+    return s
+}
+
+public func beta(): String {
+    return alpha("x")
+}
+
+public func gamma(): String {
+    return beta()
+}
+""")
+        @Assert(cmdIndex(ArrayList<String>(["update", "idx-demo"]), ctx) == 0)
+        match (indexMetaRead(dbPath)) {
+            case Some(m) => @Assert(m.updateCount == 1)
+            case None => @Assert(false)
+        }
+        @Assert(readFileTextOr(jsonPath, "") != jsonBefore)
+
+        // ── update --force：源没变也重建 +1（显式要求）──
+        @Assert(cmdIndex(ArrayList<String>(["update", "idx-demo", "--force"]), ctx) == 0)
+        match (indexMetaRead(dbPath)) {
+            case Some(m) => @Assert(m.updateCount == 2)
+            case None => @Assert(false)
+        }
+
+        // ── overview：新鲜时不重建（④A 自愈只在过期时发生）──
+        @Assert(cmdIndex(ArrayList<String>(["overview", "idx-demo"]), ctx) == 0)
+        match (indexMetaRead(dbPath)) {
+            case Some(m) => @Assert(m.updateCount == 2)
+            case None => @Assert(false)
+        }
+        // overview 的 db 读路径（SQL 聚合）
+        match (indexOverviewRead(dbPath)) {
+            case Some(ov) =>
+                @Assert(ov.nodes >= 3)
+                @Assert(ov.edges >= 2)
+                @Assert(ov.files == 1)
+                @Assert(ov.byKind.size >= 1)
+            case None => @Assert(false)
+        }
+        // db 被删 → overview 自愈重建（版本延续 +1）
+        removePathIfExists(dbPath)
+        @Assert(cmdIndex(ArrayList<String>(["overview", "idx-demo"]), ctx) == 0)
+        match (indexMetaRead(dbPath)) {
+            case Some(m) => @Assert(m.updateCount == 3)
+            case None => @Assert(false)
+        }
+
+        // ── query：db 读路径的两态 ──
+        match (indexQuerySymbol(dbPath, "alpha")) {
+            case Some(q) =>
+                @Assert(Json.arrAt(q, "defs").size == 1)
+                @Assert(Json.arrAt(q, "callers").size >= 1)   // beta/gamma 调它
+                @Assert(Json.has(q, "callees"))               // 恒发（空也发）
+            case None => @Assert(false)
+        }
+        @Assert(indexQuerySymbol(dbPath, "__no_such_symbol__").isNone())
+        match (indexQueryFile(dbPath, "src/a.cj")) {
+            case Some(q) =>
+                @Assert(Json.arrAt(q, "symbols").size >= 3)
+                @Assert(Json.has(q, "calledBy"))
+                @Assert(Json.has(q, "calls"))
+            case None => @Assert(false)
+        }
+        @Assert(indexQueryFile(dbPath, "nope/never.cj").isNone())
+
+        // 项目工作区必须干净（不变量 1：产物不进项目工作区）
+        @Assert(!fileExists(p.path + "/index.json"))
+        @Assert(!fileExists(p.path + "/codegraph.db"))
+        @Assert(!fileExists(p.path + "/render"))
+    } finally {
+        exitTestHome()
+        removePathIfExists(base + "/repo")
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
+/// render index 两态：首绘 → 改产物后再次 render 仍复用（不重写）→
+/// 改 index.json 的 updateCount 触发重绘（产物被覆盖）；
+/// --confidence 而 confidence.json 缺席 → 纯结构渲染 + 图例注明。
+@Test
+func testRenderIndexReuseAndRedrawStates(): Unit {
+    let base = "/tmp/deepgit-ridx-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    try {
+        let p = dbCliFixtureProject(base, "ridx-demo")
+        let ctx = CliContext(ArrayList<String>(["render"]))
+        let store = deepgitPath(["store", p.id])
+        let jsonPath = store + "/index.json"
+        let htmlPath = store + "/render/index.html"
+
+        @Assert(cmdIndex(ArrayList<String>(["gen", "ridx-demo"]), ctx) == 0)
+        @Assert(renderIndexCmd(ArrayList<String>(["ridx-demo"]), ctx) == 0)
+        @Assert(fileExists(htmlPath))
+        let htmlV0 = readFileTextOr(htmlPath, "")
+        @Assert(htmlV0.contains("updateCount=0"))
+
+        // 复用态：把产物改脏，再 render——复用意味着脏标记还在（没有重写）
+        writeFileAtomic(htmlPath, htmlV0 + "<!-- DIRTY-MARKER -->")
+        @Assert(renderIndexCmd(ArrayList<String>(["ridx-demo"]), ctx) == 0)
+        @Assert(readFileTextOr(htmlPath, "").contains("DIRTY-MARKER"))
+
+        // 重绘态：改 index.json 的 updateCount（0 → 7）——复用判据是
+        // index.json 自己的版本号，变了就必须重绘，脏标记被覆盖
+        match (Json.parse(readFileTextOr(jsonPath, ""))) {
+            case Some(pl) =>
+                Json.set(pl, "updateCount", Json.of(7))
+                writeFileAtomic(jsonPath, Json.pretty(pl))
+            case None => @Assert(false)
+        }
+        @Assert(renderIndexCmd(ArrayList<String>(["ridx-demo"]), ctx) == 0)
+        let htmlV7 = readFileTextOr(htmlPath, "")
+        @Assert(!htmlV7.contains("DIRTY-MARKER"))
+        @Assert(htmlV7.contains("updateCount=7"))
+        // 重绘后再 render：复用（7 == 7）
+        writeFileAtomic(htmlPath, htmlV7 + "<!-- DIRTY-2 -->")
+        @Assert(renderIndexCmd(ArrayList<String>(["ridx-demo"]), ctx) == 0)
+        @Assert(readFileTextOr(htmlPath, "").contains("DIRTY-2"))
+
+        // --confidence 而 confidence.json 缺席：重绘 + 图例注明（不编数据）
+        @Assert(renderIndexCmd(ArrayList<String>(["ridx-demo", "--confidence", "--force"]), ctx) == 0)
+        let htmlConf = readFileTextOr(htmlPath, "")
+        @Assert(htmlConf.contains("confMissing"))
+        @Assert(htmlConf.contains("无置信度数据"))
+
+        // --out 导出副本（复用态也导出）
+        let outCopy = base + "/copy.html"
+        @Assert(renderIndexCmd(ArrayList<String>(["ridx-demo", "--out", outCopy]), ctx) == 0)
+        @Assert(readFileTextOr(outCopy, "").size > 0)
+    } finally {
+        exitTestHome()
+        removePathIfExists(base + "/repo")
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
+/// 顶层命名空间形状：gen/update/query 已落地（链路见 testArchPipeline… /
+/// testConfidenceGenQueryLifecycle），这里钉的是**用法面**——
+/// 空参/未知子命令/无意义取值 = usage（exit 2）。
+/// （骨架期的 NOT_IMPLEMENTED 断言已随实现显式推翻：第二阶段把
+/// arch/confidence/render arch 落了地，那句「下一阶段实现」不再成立。）
+@Test
+func testTopLevelSkeletonsReportNextPhase(): Unit {
+    let ctx = CliContext(ArrayList<String>(["arch"]))
+    func exitOf(f: () -> Int64): Int64 {
+        var code: Int64 = -1
+        try {
+            let _ = f()
+        } catch (e: DgError) {
+            code = e.exitCode
+        }
+        return code
+    }
+    // 命名空间形状：空参/未知子命令 = usage（exit 2）
+    @Assert(exitOf({ => cmdArch(ArrayList<String>(), ctx) }) == 2)
+    @Assert(exitOf({ => cmdArch(ArrayList<String>(["bogus"]), ctx) }) == 2)
+    @Assert(exitOf({ => cmdConfidence(ArrayList<String>(), ctx) }) == 2)
+    @Assert(exitOf({ => cmdRender(ArrayList<String>(), ctx) }) == 2)
+    @Assert(exitOf({ => cmdRender(ArrayList<String>(["bogus"]), ctx) }) == 2)
+    @Assert(exitOf({ => cmdIndex(ArrayList<String>(), ctx) }) == 2)
+    @Assert(exitOf({ => cmdIndex(ArrayList<String>(["bogus"]), ctx) }) == 2)
+    // index gen 的 --format 只认 json|tree（#197 同族：无意义取值报错不吞）
+    @Assert(exitOf({ => indexGenCmd(ArrayList<String>(["proj", "--format", "html"]), ctx) }) == 2)
+    // depth 下限沿用 graph tree 的同一判据
+    @Assert(exitOf({ => indexGenCmd(ArrayList<String>(["proj", "--depth", "0"]), ctx) }) == 2)
+    // arch gen 的 --format 只认 json|text
+    @Assert(exitOf({ => archGenCmd(ArrayList<String>(["proj", "--format", "html"]), ctx) }) == 2)
+    // confidence gen 的 --format 只认 text|json
+    @Assert(exitOf({ => confidenceGenCmd(ArrayList<String>(["proj", "--format", "llm"]), ctx) }) == 2)
+    // confidence query 的 --top 必须是正整数（0 / 负数 / 非整数都不吞）
+    @Assert(exitOf({ => confidenceQueryCmd(ArrayList<String>(["proj", "--top", "0"]), ctx) }) == 2)
+    @Assert(exitOf({ => confidenceQueryCmd(ArrayList<String>(["proj", "--top", "-3"]), ctx) }) == 2)
+    @Assert(exitOf({ => confidenceQueryCmd(ArrayList<String>(["proj", "--top", "abc"]), ctx) }) == 2)
+    @Assert(exitOf({ => confidenceQueryCmd(ArrayList<String>(["proj", "--weight", "xyz"]), ctx) }) == 2)
+}
+
+/// 旧 `graph *` 的迁移提示：行为不变，stderr 一行指路 moongit index。
+/// stderr 出口是可注入的（Log.setErrOut）——这正是它存在的理由。
+@Test
+func testGraphCommandPrintsMigrationNoteOnStderr(): Unit {
+    let base = "/tmp/deepgit-graphnote-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    let seen = ArrayList<String>()
+    try {
+        let _ = dbCliFixtureProject(base, "graphnote-demo")
+        Log.setErrOut({ s => seen.add(s) })
+        Log.setColor(false)
+        let ctx = CliContext(ArrayList<String>(["graph"]))
+        @Assert(cmdGraph(ArrayList<String>(["overview", "graphnote-demo"]), ctx) == 0)
+        let sb = StringBuilder()
+        for (s in seen) {
+            sb.append(s)
+            sb.append("\n")
+        }
+        let errText = sb.toString()
+        // 前提守卫：出口真的捕到了东西（捕不到 = 注入坏了，下面全空转绿）
+        @Assert(errText.size > 0)
+        @Assert(errText.contains("moongit index"))
+        Log.resetErrOut()
+    } finally {
+        Log.resetErrOut()
+        exitTestHome()
+        removePathIfExists(base + "/repo")
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
+/// 版本明话与探针变化摘要（纯函数构造器——stdout 在测试里捕获不到，
+/// 形状断言落在构造函数上，与 journal/update 的既有处理一致）。
+@Test
+func testIndexVersionLabelAndProbeChangeText(): Unit {
+    @Assert(indexVersionLabel(0).contains("首版"))
+    @Assert(indexVersionLabel(0).contains("第 0 版"))
+    @Assert(indexVersionLabel(3).contains("第 3 版"))
+    @Assert(!indexVersionLabel(3).contains("首版"))
+    let a = SourceProbe(1, 10, 100)
+    let b = SourceProbe(2, 20, 200)
+    let txt = indexProbeChangeText(Some(a), b)
+    @Assert(txt.contains("files=1") && txt.contains("files=2"))
+    @Assert(txt.contains("→"))
+    let txtNoOld = indexProbeChangeText(None<SourceProbe>, b)
+    @Assert(txtNoOld.contains("无旧记录"))
+    // 英文侧出口（双语纪律：同一构造器两个语言面都要成立）
+    setUiLanguage("en")
+    @Assert(indexVersionLabel(0).contains("first version"))
+    @Assert(indexVersionLabel(3).contains("version 3"))
+    @Assert(indexProbeChangeText(None<SourceProbe>, b).contains("no previous record"))
+    setUiLanguage("zh")
+}
+
+// ------------------------------ 图能力重设计第二阶段：arch 链路 / confidence 链路 ------------------------------
+
+/// arch 链路夹具：util 与 cli 两个模块**互有引用**——
+/// cli→util 是健康方向；util→cli 是分层违规，且两方向同在 ⇒ 同时构成环。
+func archCliFixtureProject(base: String, name: String): ProjectEntry {
+    let repo = base + "/repo"
+    ensureDir("${repo}/src/util")
+    ensureDir("${repo}/src/cli")
+    writeFileAtomic("${repo}/src/util/text.cj", """
+package demo.util
+
+public class Text {
+    public func trimAll(s: String): String {
+        return s
+    }
+
+    public func attach(r: Runner): Bool {
+        return r.go()
+    }
+}
+""")
+    writeFileAtomic("${repo}/src/cli/main.cj", """
+package demo.cli
+
+public class Runner {
+    public func go(): Bool { return true }
+}
+
+public func start(t: Text): Int64 {
+    return 1
+}
+""")
+    let (p, ok) = addProject(repo, name, ArrayList<String>(), "")
+    @Assert(ok)
+    return p
+}
+
+/// arch gen / update / query / render 全链路：
+/// gen 首版 = 0（meta 包装 + 布局坐标落盘）；update 新鲜跳过（逐字节未变）；
+/// --force 重建 +1；render arch 首绘内嵌复用标记 → 改脏复用（不重写）→
+/// 源变化重建 +1 后重绘；query 三视图（形状断言落在 core 构造器上）。
+@Test
+func testArchPipelineGenUpdateQueryRender(): Unit {
+    let base = "/tmp/deepgit-arch-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    try {
+        let p = archCliFixtureProject(base, "arch-demo")
+        let ctx = CliContext(ArrayList<String>(["arch"]))
+        let rctx = CliContext(ArrayList<String>(["render"]))
+        let store = deepgitPath(["store", p.id])
+        let jsonPath = store + "/arch.json"
+        let htmlPath = store + "/render/arch.html"
+
+        // ── gen：首版（第 0 版）──
+        @Assert(cmdArch(ArrayList<String>(["gen", "arch-demo"]), ctx) == 0)
+        @Assert(fileExists(jsonPath))
+        // 不变量 1：产物不进项目工作区
+        @Assert(!fileExists(p.path + "/arch.json"))
+        @Assert(!fileExists(p.path + "/render"))
+        match (Json.parse(readFileTextOr(jsonPath, ""))) {
+            case Some(pl) =>
+                // meta 包装（probe/updateCount/generatedAt/en 恒发）
+                @Assert(Json.intAt(pl, "updateCount", -1) == 0)
+                @Assert(!Json.strAt(pl, "generatedAt", "").isEmpty())
+                @Assert(Json.has(pl, "probe"))
+                @Assert(Json.has(pl, "en"))
+                // archJson 全量：布局坐标在 modules x/y/w/h 与 lanes（绘图直接消费）
+                @Assert(Json.has(pl, "lanes"))
+                @Assert(Json.has(pl, "drilldown"))
+                @Assert(Json.intAt(pl, "totalFiles", 0) == 2)
+                let mods = Json.arrAt(pl, "modules")
+                @Assert(Int64(mods.size) == 2)
+                for (m in mods) {
+                    @Assert(Json.has(m, "x") && Json.has(m, "y"))
+                    @Assert(Json.has(m, "w") && Json.has(m, "h"))
+                    // 治理四键恒发（0 也发）
+                    @Assert(Json.has(m, "fanIn") && Json.has(m, "fanOut"))
+                    @Assert(Json.has(m, "instability"))
+                }
+            case None => @Assert(false)
+        }
+
+        // ── update：新鲜 → 跳过（逐字节未动）──
+        let jsonBefore = readFileTextOr(jsonPath, "")
+        @Assert(cmdArch(ArrayList<String>(["update", "arch-demo"]), ctx) == 0)
+        @Assert(readFileTextOr(jsonPath, "") == jsonBefore)
+
+        // ── update --force：重建 +1 ──
+        @Assert(cmdArch(ArrayList<String>(["update", "arch-demo", "--force"]), ctx) == 0)
+        match (Json.parse(readFileTextOr(jsonPath, ""))) {
+            case Some(pl) => @Assert(Json.intAt(pl, "updateCount", -1) == 1)
+            case None => @Assert(false)
+        }
+
+        // ── render arch：首绘，内嵌复用判定标记 ──
+        @Assert(cmdRender(ArrayList<String>(["arch", "arch-demo"]), rctx) == 0)
+        @Assert(fileExists(htmlPath))
+        let htmlV1 = readFileTextOr(htmlPath, "")
+        @Assert(htmlV1.contains("updateCount=1"))
+        @Assert(htmlV1.contains("window.__ARCH__"))
+
+        // 复用态：产物改脏后再 render——复用意味着脏标记还在（没有重写）
+        writeFileAtomic(htmlPath, htmlV1 + "<!-- DIRTY-MARKER -->")
+        @Assert(cmdRender(ArrayList<String>(["arch", "arch-demo"]), rctx) == 0)
+        @Assert(readFileTextOr(htmlPath, "").contains("DIRTY-MARKER"))
+
+        // 源变化 → arch update 重建 +1 → render 重绘（脏标记被覆盖）
+        writeFileAtomic("${p.path}/src/cli/extra.cj", "package demo.cli\n\npublic func extra(): Int64 { return 2 }\n")
+        @Assert(cmdArch(ArrayList<String>(["update", "arch-demo"]), ctx) == 0)
+        match (Json.parse(readFileTextOr(jsonPath, ""))) {
+            case Some(pl) => @Assert(Json.intAt(pl, "updateCount", -1) == 2)
+            case None => @Assert(false)
+        }
+        @Assert(cmdRender(ArrayList<String>(["arch", "arch-demo"]), rctx) == 0)
+        let htmlV2 = readFileTextOr(htmlPath, "")
+        @Assert(!htmlV2.contains("DIRTY-MARKER"))
+        @Assert(htmlV2.contains("updateCount=2"))
+
+        // --out 导出副本
+        let outCopy = base + "/copy-arch.html"
+        @Assert(cmdRender(ArrayList<String>(["arch", "arch-demo", "--out", outCopy]), rctx) == 0)
+        @Assert(readFileTextOr(outCopy, "").size > 0)
+
+        // ── query 三视图（形状断言落在 core 构造器上——stdout 捕获不到）──
+        let payload = Json.parse(readFileTextOr(jsonPath, "")).getOrThrow()
+        let ov = archOverviewJson(p, payload, false)
+        @Assert(Json.intAt(ov, "updateCount", -1) == 2)
+        @Assert(Json.has(ov, "selfHealed"))          // 恒发（false 也发）
+        @Assert(Json.arrAt(ov, "modules").size == 2)
+        let viol = archViolationsJson(p, payload, false)
+        @Assert(Json.intAt(viol, "violationCount", -1) >= 1)   // util → cli 违规
+        @Assert(Json.strArrAt(viol, "cycleModules").size >= 2) // 双向引用成环
+        let mod = archModuleJson(p, payload, "util", false)
+        @Assert(mod.isSome())
+        let mo = mod.getOrThrow()
+        @Assert(Json.arrAt(mo, "dependsOn").size >= 1)
+        @Assert(Json.arrAt(mo, "dependedBy").size >= 1)
+        @Assert(archModuleJson(p, payload, "__no_such_module__", false).isNone())
+        // 命令面 exit code：三视图 0；查不到的模块 1（不编结果）
+        @Assert(cmdArch(ArrayList<String>(["query", "arch-demo"]), ctx) == 0)
+        @Assert(cmdArch(ArrayList<String>(["query", "arch-demo", "--violations"]), ctx) == 0)
+        @Assert(cmdArch(ArrayList<String>(["query", "arch-demo", "util"]), ctx) == 0)
+        @Assert(cmdArch(ArrayList<String>(["query", "arch-demo", "__no_such_module__"]), ctx) == 1)
+
+        // ── arch.json 被删 → query 自愈重建 ──
+        // arch.json 是版本号的**唯一**记忆（index 还有 db 与 json 两处互备），
+        // 删后从 0 起版——旧 render 的复用判定不受影响：generatedAt 参与比对，
+        // 「旧版本 0」与「新版本 0」不会被误当同一份产物。
+        removePathIfExists(jsonPath)
+        @Assert(cmdArch(ArrayList<String>(["query", "arch-demo"]), ctx) == 0)
+        match (Json.parse(readFileTextOr(jsonPath, ""))) {
+            case Some(pl) => @Assert(Json.intAt(pl, "updateCount", -1) == 0)
+            case None => @Assert(false)
+        }
+    } finally {
+        exitTestHome()
+        removePathIfExists(base + "/repo")
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
+/// confidence gen / query 链路：
+/// query 先行 → 快照缺席 exit 1（不自动触发 gen）；gen 首版带 index 前置自愈
+///（confidence.json + index.json 同落，--db 缺省不写）；query 只读（内容与
+/// store 文件集都不变）；过滤组合走 confidenceQueryJson 唯一构造；
+/// render index --confidence 的消费衔接（overlay 被换上）。
+@Test
+func testConfidenceGenQueryLifecycle(): Unit {
+    let base = "/tmp/deepgit-cf-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    try {
+        let p = dbCliFixtureProject(base, "cf-demo")
+        let ctx = CliContext(ArrayList<String>(["confidence"]))
+        let store = deepgitPath(["store", p.id])
+        let jsonPath = store + "/confidence.json"
+        let dbPath = store + "/confidence.db"
+        let indexPath = store + "/index.json"
+
+        // ── query 先行：快照缺席 → exit 1，且不产生任何文件（读不带写的副作用）──
+        var threw = false
+        var exitCode: Int64 = -1
+        try {
+            let _ = cmdConfidence(ArrayList<String>(["query", "cf-demo"]), ctx)
+        } catch (e: DgError) {
+            threw = true
+            exitCode = e.exitCode
+        }
+        @Assert(threw)
+        @Assert(exitCode == 1)
+        @Assert(!fileExists(jsonPath))
+        @Assert(!fileExists(indexPath))
+
+        // ── gen：快照落盘 + index 前置自愈产物同在；--db 缺省不写 ──
+        @Assert(cmdConfidence(ArrayList<String>(["gen", "cf-demo"]), ctx) == 0)
+        @Assert(fileExists(jsonPath))
+        @Assert(fileExists(indexPath))
+        @Assert(!fileExists(dbPath))
+        let before = readFileTextOr(jsonPath, "")
+        match (Json.parse(before)) {
+            case Some(snap) =>
+                @Assert(Json.intAt(snap, "indexUpdateCount", -1) == 0)
+                @Assert(!Json.strAt(snap, "generatedAt", "").isEmpty())
+                @Assert(Json.has(snap, "score"))
+                @Assert(Json.has(snap, "dimensions"))
+                @Assert(Json.has(snap, "files"))
+                @Assert(Json.has(snap, "cappedTotal") && Json.has(snap, "cappedKind"))
+                @Assert(Json.has(snap, "astNote"))
+                @Assert(Json.arrAt(snap, "findings").size >= 1)   // beta 是孤儿
+            case None => @Assert(false)
+        }
+
+        // ── query 只读语义：多次查询后 confidence.json 逐字节不变 ──
+        @Assert(cmdConfidence(ArrayList<String>(["query", "cf-demo"]), ctx) == 0)
+        @Assert(cmdConfidence(ArrayList<String>(["query", "cf-demo", "--kind", "orphan"]), ctx) == 0)
+        @Assert(cmdConfidence(ArrayList<String>(["query", "cf-demo", "--file", "src/a.cj", "--top", "1"]), ctx) == 0)
+        @Assert(readFileTextOr(jsonPath, "") == before)
+
+        // ── 过滤组合（唯一构造 confidenceQueryJson 的形状断言）──
+        let snap = Json.parse(before).getOrThrow()
+        let noFilter = confidenceQueryJson(snap, p, "", "", "", -1, -1)
+        @Assert(Json.has(noFilter, "score"))
+        @Assert(Json.has(noFilter, "dimensions"))
+        @Assert(Json.has(noFilter, "penaltyByFile"))
+        @Assert(Json.has(noFilter, "cappedTotal"))
+        @Assert(Json.intAt(noFilter, "findingCount", -1) >= 1)
+        @Assert(Json.has(noFilter, "indexUpdateCount"))
+        let byKind = confidenceQueryJson(snap, p, "", "", "orphan", -1, -1)
+        @Assert(Json.intAt(byKind, "matched", 0) >= 1)
+        for (f in Json.arrAt(byKind, "findings")) {
+            @Assert(Json.strAt(f, "kind", "") == "orphan")
+        }
+        @Assert(Json.intAt(confidenceQueryJson(snap, p, "", "", "", -1, 1), "shown", -1) == 1)
+        // 查不到的过滤 = 明说 0 条，不是编结果
+        let none = confidenceQueryJson(snap, p, "", "", "__no_such_kind__", -1, -1)
+        @Assert(Json.intAt(none, "matched", -1) == 0)
+        @Assert(Json.intAt(none, "shown", -1) == 0)
+
+        // ── --db 显式写 confidence.db ──
+        @Assert(cmdConfidence(ArrayList<String>(["gen", "cf-demo", "--db"]), ctx) == 0)
+        @Assert(fileExists(dbPath))
+
+        // ── render index --confidence 的消费衔接：confidence.json 被换上（overlay）──
+        let rctx = CliContext(ArrayList<String>(["render"]))
+        let core = renderIndexCore(p, true, true, "")
+        @Assert(Json.strAt(core, "confidence", "") == "overlay")
+        let htmlConf = readFileTextOr(Json.strAt(core, "path", ""), "")
+        // confidence.json 的快照键进页面 = 叠层真的被消费（不是 payload 内嵌的旧摘要）
+        @Assert(htmlConf.contains("indexUpdateCount"))
+
+        // gen 之后再 query 仍只读（gen 写、query 读，双向不越界）
+        let afterGen = readFileTextOr(jsonPath, "")
+        @Assert(cmdConfidence(ArrayList<String>(["query", "cf-demo", "--weight", "5"]), ctx) == 0)
+        @Assert(readFileTextOr(jsonPath, "") == afterGen)
+    } finally {
+        exitTestHome()
+        removePathIfExists(base + "/repo")
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
+/// MCP 新工具面回执：arch_gen / arch_query / index_gen / index_query /
+/// confidence_gen / confidence_query / render 走与 CLI 相同的内部函数，
+/// 回执只带事实与路径（HTML 落盘，不内塞全文）；旧 codegraph_* 别名仍可用。
+@Test
+func testMcpGraphToolFaceReceipts(): Unit {
+    let base = "/tmp/deepgit-mcpface-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    func withName(n: String): JsonValue {
+        let a = Json.obj()
+        Json.set(a, "name", Json.of(n))
+        return a
+    }
+    try {
+        let p = dbCliFixtureProject(base, "mcp-face")
+        let store = deepgitPath(["store", p.id])
+
+        // 工具清单：新工具面齐全；旧 codegraph_*（patch 除外）带「旧名别名」标注
+        let tools = Json.arrAt(mcpToolList(), "tools")
+        let names = HashSet<String>()
+        for (t in tools) {
+            names.add(Json.strAt(t, "name", ""))
+        }
+        for (n in ["arch_gen", "arch_update", "arch_query", "index_gen", "index_update",
+                   "index_overview", "index_query", "confidence_gen", "confidence_query", "render"]) {
+            @Assert(names.contains(n))
+        }
+        for (t in tools) {
+            let n = Json.strAt(t, "name", "")
+            if (n == "codegraph_overview" || n == "codegraph_tree" || n == "codegraph_symbol"
+                || n == "codegraph_impact" || n == "codegraph_arch" || n == "codegraph_confidence") {
+                @Assert(Json.strAt(t, "description", "").contains("旧名别名"))
+            }
+        }
+
+        // arch_gen：摘要回执 + arch.json 落盘；format=json 出全量（含 lanes，不含 HTML）
+        let genRes = mcpCallTool("arch_gen", withName("mcp-face"))
+        @Assert(!mcpIsError(genRes))
+        @Assert(mcpTextOf(genRes).contains("arch.json"))
+        @Assert(fileExists(store + "/arch.json"))
+        let genJsonArgs = withName("mcp-face")
+        Json.set(genJsonArgs, "format", Json.of("json"))
+        let genJsonRes = mcpCallTool("arch_gen", genJsonArgs)
+        @Assert(mcpTextOf(genJsonRes).contains("\"lanes\""))
+        @Assert(!mcpTextOf(genJsonRes).contains("<!DOCTYPE"))
+
+        // arch_query：总览 JSON 回执
+        let qRes = mcpCallTool("arch_query", withName("mcp-face"))
+        @Assert(!mcpIsError(qRes))
+        @Assert(mcpTextOf(qRes).contains("\"modules\""))
+        // 查不到的模块 → isError（不编结果）
+        let qMissArgs = withName("mcp-face")
+        Json.set(qMissArgs, "module", Json.of("__no_such_module__"))
+        @Assert(mcpIsError(mcpCallTool("arch_query", qMissArgs)))
+
+        // index_gen：统计回执（updateCount/nodes）
+        let igRes = mcpCallTool("index_gen", withName("mcp-face"))
+        @Assert(!mcpIsError(igRes))
+        @Assert(mcpTextOf(igRes).contains("\"updateCount\""))
+        @Assert(mcpTextOf(igRes).contains("\"nodes\""))
+        // index_query：符号查询（alpha 被 beta 调用）
+        let iqArgs = withName("mcp-face")
+        Json.set(iqArgs, "symbol", Json.of("alpha"))
+        let iqRes = mcpCallTool("index_query", iqArgs)
+        @Assert(!mcpIsError(iqRes))
+        @Assert(mcpTextOf(iqRes).contains("\"callers\""))
+
+        // confidence_gen：回执带快照路径与依据的索引版本
+        let cgRes = mcpCallTool("confidence_gen", withName("mcp-face"))
+        @Assert(!mcpIsError(cgRes))
+        @Assert(mcpTextOf(cgRes).contains("\"indexUpdateCount\""))
+        @Assert(fileExists(store + "/confidence.json"))
+        // confidence_query：总览（findingCount）与过滤（kind）
+        let cqRes = mcpCallTool("confidence_query", withName("mcp-face"))
+        @Assert(!mcpIsError(cqRes))
+        @Assert(mcpTextOf(cqRes).contains("\"findingCount\""))
+        let cqKindArgs = withName("mcp-face")
+        Json.set(cqKindArgs, "kind", Json.of("orphan"))
+        let cqKindRes = mcpCallTool("confidence_query", cqKindArgs)
+        @Assert(!mcpIsError(cqKindRes))
+        @Assert(mcpTextOf(cqKindRes).contains("orphan"))
+        // 快照缺席 → isError 且教回先 confidence_gen（不自动触发）
+        removePathIfExists(store + "/confidence.json")
+        let cqMissRes = mcpCallTool("confidence_query", withName("mcp-face"))
+        @Assert(mcpIsError(cqMissRes))
+        @Assert(mcpTextOf(cqMissRes).contains("confidence_gen"))
+
+        // render：回执只带路径与复用判定，HTML 落盘
+        let rArgs = withName("mcp-face")
+        Json.set(rArgs, "target", Json.of("arch"))
+        let rArchRes = mcpCallTool("render", rArgs)
+        @Assert(!mcpIsError(rArchRes))
+        @Assert(mcpTextOf(rArchRes).contains("\"reused\""))
+        @Assert(mcpTextOf(rArchRes).contains("\"path\""))
+        @Assert(fileExists(store + "/render/arch.html"))
+        @Assert(mcpTextOf(rArchRes).size < 4000)   // 回执不内塞 HTML 全文
+        let rIdxRes = mcpCallTool("render", withName("mcp-face"))
+        @Assert(!mcpIsError(rIdxRes))
+        @Assert(fileExists(store + "/render/index.html"))
+
+        // 旧名别名仍可用（行为不变），patch 两工具不受影响
+        @Assert(!mcpIsError(mcpCallTool("codegraph_overview", withName("mcp-face"))))
+    } finally {
+        exitTestHome()
+        removePathIfExists(base + "/repo")
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
 }

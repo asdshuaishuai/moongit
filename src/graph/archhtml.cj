@@ -31,6 +31,8 @@ func jsonSafeForEmbed(s: String): String {
 }
 
 /// 架构页面 UI 文案。仓颉元组没有命名字段 —— 用 struct，字段即文档。
+/// 场景出口（archscene.cj）与驱动 JS（renderJs）共用这一份——文案字面量
+/// 只许写在这一个 init 里，两处各抄一份必然漂移（半中半英就是这么来的）。
 public struct ArchUi {
     public let title: String
     public let sub: String
@@ -48,6 +50,20 @@ public struct ArchUi {
     public let closeHint: String
     public let moduleWord: String
     public let root: String
+    // ── 深度技术呈现新增（卡片徽标 / 顶栏体检 / 图例）──
+    public let modulesWord: String    // 层标签计数单位：「1 模块」/「1 modules」
+    public let inShort: String        // 卡片入出徽标的「入」
+    public let outShort: String       // 卡片入出徽标的「出」
+    public let instWord: String       // 不稳定度
+    public let healthWord: String     // 顶栏体检区标题
+    public let fanInWord: String      // 顶栏扇入
+    public let fanOutWord: String     // 顶栏扇出
+    public let violWord: String       // 违规（体检区清单标题）
+    public let noViolWord: String     // 无违规（绿字空态）
+    public let cycleWord: String      // 环
+    public let noCycleWord: String    // 无环（绿字空态）
+    public let legendText: String     // 图例一行
+    public let otherLayerNote: String // 存在未分层模块时图例追加的一句
 
     public init(en: Bool) {
         if (en) {
@@ -67,6 +83,19 @@ public struct ArchUi {
             closeHint = "Esc to clear"
             moduleWord = "external module"
             root = "Architecture"
+            modulesWord = "modules"
+            inShort = "in"
+            outShort = "out"
+            instWord = "Instability"
+            healthWord = "Health"
+            fanInWord = "Fan-in"
+            fanOutWord = "Fan-out"
+            violWord = "Violations"
+            noViolWord = "no violations"
+            cycleWord = "Cycles"
+            noCycleWord = "no cycles"
+            legendText = "top = interface layers, bottom = foundation; arrow down = healthy dependency; red upward = violation; orange = cycle; instability = out/(in+out)"
+            otherLayerNote = "unlayered modules sit on top (excluded from violation checks)"
         } else {
             title = "技术架构"
             sub = "moonGit 引擎（仓颉）确定性计算 · 零依赖单文件"
@@ -84,6 +113,19 @@ public struct ArchUi {
             closeHint = "Esc 取消选中"
             moduleWord = "外部模块"
             root = "架构总览"
+            modulesWord = "模块"
+            inShort = "入"
+            outShort = "出"
+            instWord = "不稳定度"
+            healthWord = "架构体检"
+            fanInWord = "扇入"
+            fanOutWord = "扇出"
+            violWord = "违规"
+            noViolWord = "无违规"
+            cycleWord = "环"
+            noCycleWord = "无环"
+            legendText = "上=接口层，下=基础层；箭头向下=健康依赖；红色上行=违规；橙=环；不稳定度=出/(入+出)"
+            otherLayerNote = "未分层模块在最上（不参与违规判定）"
         }
     }
 }
@@ -92,17 +134,71 @@ func archUiText(en: Bool): ArchUi {
     return ArchUi(en)
 }
 
+/// PAL 的 langs 子对象（JS 字面量片段）：从 langThemeColors 派生 ——
+/// 语言色值表只有 archscene.cj 一份构造点，本文件不再手抄色值。
+/// 键名不带引号（驱动 JS 的既有纪律）；形态为 `语言名:'色值'` 逗号序列。
+func langPaletteJs(dark: Bool): String {
+    let sb = StringBuilder()
+    var first = true
+    for ((lang, color) in langThemeColors(dark)) {
+        if (!first) { sb.append(", ") }
+        sb.append("${lang}:'${color}'")
+        first = false
+    }
+    return sb.toString()
+}
+
 /// 生成单文件交互架构图（Canvas 渲染）。
+///
+/// 【两段拆分】布局与事实（layoutArch + archJson）与模板渲染（renderArchHtml）
+/// 是两个独立阶段：`arch gen` 把 archJson 全量 + 元数据持久化成 arch.json，
+/// `render arch` 用**持久化的 JSON** 直接渲染——绘图不重算图谱。
+/// 本函数保持旧签名 = 两段的组合（临时 JSON、零持久化副作用），
+/// 旧 `graph arch --format html` 行为不变：只打印不落盘。
 public func archCanvasHtml(data: ArchData, en: Bool): String {
     layoutArch(data)
-    let json = jsonSafeForEmbed(Json.pretty(archJson(data, en)))
+    return renderArchHtml(Json.pretty(archJson(data, en)), en)
+}
+
+/// 模板渲染段：archJson 字符串 → 单文件 HTML。
+/// **纯函数**：同输入 ⇒ 逐字节一致（布局坐标已在 archJson 的 modules x/y/w/h
+/// 与 lanes 里，页面驱动只负责画——本函数不碰 ArchData，不重算任何事实）。
+///
+/// 传入的 JSON 带 updateCount/generatedAt 两键时（`arch gen` 的持久化产物
+/// arch.json），在 DOCTYPE 后内嵌复用判定标记——与 index 渲染的
+/// renderIndexEmbeddedUpdateCount / renderIndexEmbeddedGeneratedAt 是同一格式
+/// 的一对，读取器必须能回答「有没有标记」；`graph arch` 的临时 JSON 没有
+/// 这两键，标记缺席（兼容面产物形状不变）。
+public func renderArchHtml(archJsonStr: String, en: Bool): String {
+    // 模板需要 totalFiles / totalSymbols / totalLines / 各层模块数 / 治理计数，
+    // 全部从传入的 JSON 现读（同一份 JSON 既内嵌又被模板引用——单一来源）。
+    // 解析失败是引擎缺陷（archJson 刚构造出来），硬失败不渲染残页。
+    let root = match (Json.parse(archJsonStr)) {
+        case Some(j) => j
+        case None => throw DgError("ARCH_JSON_CORRUPT",
+            "arch.json is not valid JSON (engine bug) / archJson 内容不是合法 JSON——引擎缺陷")
+    }
+    let totalFiles = Json.intAt(root, "totalFiles", 0)
+    let totalSymbols = Json.intAt(root, "totalSymbols", 0)
+    let totalLines = Json.intAt(root, "totalLines", 0)
+    let warns = Json.getOr(root, "warnings")
+    let violationCount = Json.intAt(warns, "violations", 0)
+    let cycleEdgeCount = Json.intAt(warns, "cycleEdges", 0)
     let ui = archUiText(en)
+    // 持久化产物的自报家门（复用判定比对的就是这一行）
+    var metaComment = ""
+    if (Json.has(root, "updateCount")) {
+        metaComment = "<!-- moongit arch render · updateCount=" +
+            Int64(Json.intAt(root, "updateCount", 0)).toString() +
+            " · generatedAt=" + Json.strAt(root, "generatedAt", "") + " -->\n"
+    }
+    let json = jsonSafeForEmbed(archJsonStr)
     let sb = StringBuilder()
 
-    sb.append("<!DOCTYPE html>\n<html lang=\"${if (en) { "en" } else { "zh-CN" }}\" data-theme=\"dark\">\n<head>\n<meta charset=\"UTF-8\">\n")
+    sb.append("<!DOCTYPE html>\n${metaComment}<html lang=\"${if (en) { "en" } else { "zh-CN" }}\" data-theme=\"dark\">\n<head>\n<meta charset=\"UTF-8\">\n")
     sb.append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n")
     sb.append("<meta name=\"generator\" content=\"moonGit graph arch (Cangjie engine, deterministic layout)\">\n")
-    sb.append("<title>${ui.title} · ${data.totalFiles}f / ${data.totalSymbols}s</title>\n")
+    sb.append("<title>${ui.title} · ${totalFiles}f / ${totalSymbols}s</title>\n")
     sb.append("""
 <style>
 :root, body.dark { --bg:#0b1120; --grid:#16233c; --text:#e2e8f0; --muted:#8b9bb4;
@@ -129,6 +225,10 @@ body { background:var(--bg); color:var(--text); font:13px/1.5 -apple-system,'SF 
   border-radius:8px; padding:4px 10px; cursor:pointer; }
 .btn:hover, .chip:hover { border-color:var(--accent); }
 .warn { color:#f87171; font-weight:700; font-size:12px; }
+/* 截断警示条（与 .warn 同色系；JS 读 DATA.truncated 命中时插入） */
+#truncbar { position:fixed; top:12px; right:12px; color:#f87171; font-weight:700; font-size:12px;
+  background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:8px 12px;
+  backdrop-filter:blur(8px); white-space:nowrap; z-index:30; }
 #hint { position:fixed; bottom:12px; left:50%; transform:translateX(-50%);
   color:var(--muted); font-size:11px; background:var(--panel); border:1px solid var(--border);
   border-radius:999px; padding:4px 14px; backdrop-filter:blur(8px); }
@@ -149,27 +249,37 @@ body { background:var(--bg); color:var(--text); font:13px/1.5 -apple-system,'SF 
 .dep .w { color:var(--muted); }
 .langtag { display:inline-block; border:1px solid var(--border); border-radius:5px;
   padding:0 6px; margin:2px 2px 0 0; font-size:11px; color:var(--muted); }
+/* 架构体检区（#bar 内整行，flex-wrap 落到第二行） */
+#health { display:flex; flex-wrap:wrap; gap:4px 16px; align-items:baseline; width:100%;
+  border-top:1px solid var(--border); margin-top:3px; padding-top:6px; }
+#bar .hgroup { display:inline-flex; gap:5px; align-items:baseline; white-space:nowrap; }
+#bar .hlabel { color:var(--muted); font-size:11px; }
+#bar .hval { font-size:11px; }
+#bar .hbad { color:#f87171; font-size:11px; font-weight:600; }
+#bar .hok { color:var(--accent); font-size:11px; }
+/* 图例（画布左下一行，常驻） */
+#legend { position:fixed; bottom:12px; left:12px; color:var(--muted); font-size:11px;
+  background:var(--panel); border:1px solid var(--border); border-radius:999px;
+  padding:4px 12px; backdrop-filter:blur(8px); max-width:calc(100vw - 240px); }
 </style>
 </head>
 <body class="dark">
 <canvas id="cv"></canvas>
 """)
-    sb.append("<div id=\"bar\"><span class=\"title\">${ui.title}</span><span class=\"sub\">${ui.sub} · ${data.totalFiles} ${ui.filesWord} / ${data.totalSymbols} ${ui.symWord} / ${data.totalLines} ${ui.lineWord}</span>")
-    var li: Int64 = 0
-    while (li < LAYER_COUNT) {
-        var count: Int64 = 0
-        for (m in data.modules) { if (m.layer == li) { count += 1 } }
+    sb.append("<div id=\"bar\"><span class=\"title\">${ui.title}</span><span class=\"sub\">${ui.sub} · ${totalFiles} ${ui.filesWord} / ${totalSymbols} ${ui.symWord} / ${totalLines} ${ui.lineWord}</span>")
+    // 层 chips：从 JSON 的 layers 数组现读（archJson 的 layers 与 lanes 同源——
+    // 模板不再向 ArchData 要第二份计数）
+    for (l in Json.arrAt(root, "layers")) {
+        let count = Json.intAt(l, "modules", 0)
         if (count > 0) {
-            sb.append("<span class=\"chip\" data-layer=\"${li}\">${layerName(li, en)} ${count}</span>")
+            sb.append("<span class=\"chip\" data-layer=\"${Json.intAt(l, "index", 0)}\">${Json.strAt(l, "name", "")} ${count}</span>")
         }
-        li += 1
     }
-    // ⚠️ 仓颉没有 `?:` 三元 —— 用 if 表达式（`AGENTS.md` 编码约定）
-    let violWord = if (en) { "violations" } else { "违规" }
-    let cycWord = if (en) { "cycles" } else { "环" }
+    // ⚠️ 仓颉没有 `?:` 三元 —— 文案统一取 ArchUi（单一来源；体检区、图例、
+    // 驱动 JS 的违规/环字样都从这里出，不再各自 if(en) 手抄一份）
     var warnHtml = ""
-    if (data.violationCount > 0 || data.cycleEdgeCount > 0) {
-        warnHtml = "<span class=\"warn\">⚠ ${violWord} ${data.violationCount} · ${cycWord} ${data.cycleEdgeCount}</span>"
+    if (violationCount > 0 || cycleEdgeCount > 0) {
+        warnHtml = "<span class=\"warn\">⚠ ${ui.violWord} ${violationCount} · ${ui.cycleWord} ${cycleEdgeCount}</span>"
     }
     sb.append("<input id=\"q\" placeholder=\"${ui.search}\"><span class=\"warn\">" + warnHtml + "</span><button class=\"btn\" id=\"fit\">${ui.fit}</button><button class=\"btn\" id=\"th\">${ui.theme}</button></div>\n")
     sb.append("<div id=\"crumbs\"></div>\n")
@@ -206,10 +316,10 @@ func renderJs(en: Bool): String {
     sb.append("  var PAL = {\n")
     sb.append("    dark: { bg0:'#0d1526', bg1:'#080d1a', grid:'#1a2740', text:'#e8eef8', muted:'#8b9bb4', border:'#263650', arrow:'#64748b', accent:'#34d399',\n")
     sb.append("      cols:['#38bdf8','#a78bfa','#34d399','#fbbf24','#8ea3bd'], fills:['rgba(56,189,248,0.10)','rgba(167,139,250,0.10)','rgba(52,211,153,0.10)','rgba(251,191,36,0.08)','rgba(142,163,189,0.08)'],\n")
-    sb.append("      langs:{ swift:'#f05138', cangjie:'#f7801e', ts:'#3178c6', python:'#3572a5', go:'#00add8', rust:'#dea584', java:'#b07219', kotlin:'#a97bff', c:'#555555', module:'#94a3b8' } },\n")
+    sb.append("      langs:{ " + langPaletteJs(true) + " } },\n")
     sb.append("    light: { bg0:'#f7f9fd', bg1:'#eef2f8', grid:'#e2e8f2', text:'#0f172a', muted:'#64748b', border:'#d8e1ec', arrow:'#9aa8bd', accent:'#059669',\n")
     sb.append("      cols:['#0284c7','#7c3aed','#059669','#d97706','#64748b'], fills:['rgba(2,132,199,0.07)','rgba(124,58,237,0.07)','rgba(5,150,105,0.07)','rgba(217,119,6,0.07)','rgba(100,116,139,0.07)'],\n")
-    sb.append("      langs:{ swift:'#f05138', cangjie:'#de6d10', ts:'#3178c6', python:'#3572a5', go:'#00869b', rust:'#b7410e', java:'#b07219', kotlin:'#7c4dff', c:'#444444', module:'#64748b' } }\n")
+    sb.append("      langs:{ " + langPaletteJs(false) + " } }\n")
     sb.append("  };\n")
     sb.append("  function P() { return dark ? PAL.dark : PAL.light; }\n")
     sb.append("  function langColor(l) { var L = P().langs; return L[l] || L.module; }\n")
@@ -236,7 +346,7 @@ func renderJs(en: Bool): String {
     sb.append("  function resize() { var d = window.devicePixelRatio || 1; cv.width = innerWidth * d; cv.height = innerHeight * d; cv.style.width = innerWidth + 'px'; cv.style.height = innerHeight + 'px'; ctx.setTransform(d, 0, 0, d, 0, 0); }\n")
     sb.append("  function w2sx(x) { return x * view.k + view.x; }\n")
     sb.append("  function w2sy(y) { return y * view.k + view.y; }\n")
-    sb.append("  function bounds() { var d = cur(); var b = { x0: 1e9, y0: 1e9, x1: -1e9, y1: -1e9 }; d.nodes.forEach(function (m) { if (m.x < b.x0) b.x0 = m.x; if (m.y < b.y0) b.y0 = m.y; if (m.x + m.w > b.x1) b.x1 = m.x + m.w; if (m.y + m.h > b.y1) b.y1 = m.y + m.h; }); b.x0 -= 60; b.y0 -= 90; b.x1 += 60; b.y1 += 60; return b; }\n")
+    sb.append("  function bounds() { var d = cur(); var b = { x0: 1e9, y0: 1e9, x1: -1e9, y1: -1e9 }; d.nodes.forEach(function (m) { if (m.x < b.x0) b.x0 = m.x; if (m.y < b.y0) b.y0 = m.y; if (m.x + m.w > b.x1) b.x1 = m.x + m.w; if (m.y + m.h > b.y1) b.y1 = m.y + m.h; }); if (isArch() && DATA.lanes) { DATA.lanes.forEach(function (L) { if (L.x < b.x0) b.x0 = L.x; if (L.y < b.y0) b.y0 = L.y; if (L.x + L.w > b.x1) b.x1 = L.x + L.w; if (L.y + L.h > b.y1) b.y1 = L.y + L.h; }); } b.x0 -= 60; b.y0 -= 90; b.x1 += 60; b.y1 += 60; return b; }\n")
     sb.append("  function fit() { var b = bounds(); var kx = innerWidth / (b.x1 - b.x0); var ky = innerHeight / (b.y1 - b.y0); var target = Math.min(kx, ky, 1.35); if (target < 0.18) target = 0.18; view.k = target; view.x = (innerWidth - (b.x0 + b.x1) * view.k) / 2; view.y = (innerHeight - (b.y0 + b.y1) * view.k) / 2; }\n")
     sb.append("  function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }\n")
     sb.append("  function nodeColor(m) { return isArch() ? P().cols[m.layer] : (m.external ? P().langs.module : langColor(m.lang)); }\n")
@@ -264,35 +374,54 @@ func renderJs(en: Bool): String {
     sb.append("      var gy = view.y % step; while (gy < 0) gy += step; for (var y = gy; y < innerHeight; y += step) { ctx.moveTo(0, y); ctx.lineTo(innerWidth, y); }\n")
     sb.append("      ctx.stroke(); ctx.globalAlpha = 1; }\n")
     sb.append("    var d = cur();\n")
-    // 层框（仅架构级）
-    sb.append("    if (isArch()) { DATA.layers.forEach(function (L) {\n")
-    sb.append("      if (!layersOn[L.index]) return;\n")
-    sb.append("      var x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; var any = false;\n")
-    sb.append("      d.nodes.forEach(function (m) { if (m.layer !== L.index) return; any = true; if (m.x < x0) x0 = m.x; if (m.y < y0) y0 = m.y; if (m.x + m.w > x1) x1 = m.x + m.w; if (m.y + m.h > y1) y1 = m.y + m.h; });\n")
-    sb.append("      if (!any) return;\n")
-    sb.append("      var ap = ease((now - LEVEL_T - 80 - L.index * 110) / 450); if (ap <= 0) return;\n")
-    sb.append("      ctx.globalAlpha = ap * 0.9; ctx.setLineDash([7, 6]); ctx.strokeStyle = p.border; ctx.lineWidth = 1;\n")
-    sb.append("      roundRect(w2sx(x0 - 18), w2sy(y0 - 46), (x1 - x0 + 36) * view.k, (y1 - y0 + 64) * view.k, 14); ctx.stroke(); ctx.setLineDash([]);\n")
-    sb.append("      ctx.globalAlpha = ap; ctx.fillStyle = p.cols[L.index]; ctx.font = '700 12px -apple-system, sans-serif'; ctx.textAlign = 'left';\n")
-    sb.append("      ctx.fillText(L.name + '  L' + L.index, w2sx(x0 - 10), w2sy(y0 - 46) + 16); ctx.globalAlpha = 1; }); }\n")
+    // 分层泳道（仅架构级）：实色淡底（按层配色低透明度）+ 左端层标签。
+    // 几何来自 DATA.lanes（引擎算好的泳道矩形，archLaneRects 唯一来源）——
+    // 不从模块坐标反推，反推就是驱动里的第二份布局。
+    sb.append("    if (isArch()) { DATA.lanes.forEach(function (L) {\n")
+    sb.append("      if (!layersOn[L.layer]) return;\n")
+    sb.append("      var ap = ease((now - LEVEL_T - 80 - L.layer * 110) / 450); if (ap <= 0) return;\n")
+    sb.append("      var lx = w2sx(L.x), ly = w2sy(L.y), lw = L.w * view.k, lh = L.h * view.k;\n")
+    sb.append("      ctx.globalAlpha = ap * 0.9; ctx.fillStyle = p.fills[L.layer];\n")
+    sb.append("      roundRect(lx, ly, lw, lh, 14); ctx.fill();\n")
+    sb.append("      ctx.strokeStyle = p.border; ctx.lineWidth = 1; ctx.stroke();\n")
+    sb.append("      ctx.globalAlpha = ap; ctx.fillStyle = p.cols[L.layer];\n")
+    sb.append("      ctx.font = '700 12px -apple-system, sans-serif'; ctx.textAlign = 'left';\n")
+    sb.append("      ctx.fillText('L' + L.layer + ' ' + L.name, lx + 14, ly + lh / 2 - 6);\n")
+    sb.append("      ctx.fillStyle = p.muted; ctx.font = '11px -apple-system, sans-serif';\n")
+    sb.append("      ctx.fillText(L.modules + ' ' + MODW, lx + 14, ly + lh / 2 + 12);\n")
+    sb.append("      ctx.globalAlpha = 1; }); }\n")
     // 边
     sb.append("    d.edges.forEach(function (e) {\n")
     sb.append("      var a = byId[e.from] || findNode(e.from); var b = byId[e.to] || findNode(e.to); if (!a || !b) return;\n")
     sb.append("      if (isArch() && (!layersOn[a.layer] || !layersOn[b.layer])) return;\n")
     sb.append("      var ap = ease((now - LEVEL_T - 300 - ((a.layer || 0) + (b.layer || 0)) * 50) / 480); if (ap <= 0) return;\n")
-    sb.append("      var hot = sel && (sel === a.id || sel === b.id); var dim = (sel || hover) && !hot && !(hover === a.id || hover === b.id);\n")
+    // hover/选中高亮邻接边，其余压暗——邻接判据 sel 与 hover 同权
+    sb.append("      var adj = (sel === a.id || sel === b.id || hover === a.id || hover === b.id);\n")
+    sb.append("      var hot = (sel || hover) && adj; var dim = (sel || hover) && !adj;\n")
     sb.append("      var x1 = w2sx(a.x + a.w); var y1 = w2sy(a.y + a.h / 2); var x2 = w2sx(b.x); var y2 = w2sy(b.y + b.h / 2); var mx = (x1 + x2) / 2;\n")
     sb.append("      var grad = ctx.createLinearGradient(x1, y1, x2, y2); grad.addColorStop(0, nodeColor(a)); grad.addColorStop(1, nodeColor(b));\n")
     sb.append("      ctx.strokeStyle = grad; ctx.globalAlpha = dim ? 0.05 : (hot ? 0.9 : Math.min(0.13 + e.weight * 0.05, 0.5)) * ap;\n")
-    sb.append("      ctx.lineWidth = hot ? 2.4 : Math.min(1 + e.weight * 0.12, 2.8);\n")
-    sb.append("      if (e.viol) { ctx.strokeStyle = '#f87171'; ctx.setLineDash([7, 5]); ctx.lineWidth = 2.2; }\n")
-    sb.append("      else if (e.cyc) { ctx.strokeStyle = '#fb923c'; ctx.lineWidth = Math.max(ctx.lineWidth, 2.0); }\n")
-    sb.append("      var approx = (Math.abs(x2 - x1) + Math.abs(y2 - y1)) * 1.25 * ap;\n")
-    sb.append("      ctx.setLineDash([Math.max(approx, 1)]); ctx.lineDashOffset = Math.max(approx, 1) * (1 - ap);\n")
+    // 宽度 ∝ weight：min(3.5, 1 + weight*0.15)——与场景出口 archEdgeStroke 同式
+    sb.append("      var lw = Math.min(3.5, 1 + e.weight * 0.15);\n")
+    sb.append("      ctx.lineWidth = hot ? Math.max(lw, 2.6) : lw;\n")
+    sb.append("      if (e.viol) { ctx.strokeStyle = '#f87171'; ctx.setLineDash([7, 5]); ctx.lineWidth = Math.max(lw, 2.2); }\n")
+    sb.append("      else if (e.cyc) { ctx.strokeStyle = '#fb923c'; ctx.lineWidth = Math.max(lw, 2.0); }\n")
+    // 违规边保持红虚线（入场生长动画只给实线边——原实现生长 dash 会把
+    // [7,5] 覆盖掉，动画结束后违规边悄悄变成实线，红色虚线名存实亡）
+    sb.append("      if (e.viol) { ctx.lineDashOffset = 0; }\n")
+    sb.append("      else { var approx = (Math.abs(x2 - x1) + Math.abs(y2 - y1)) * 1.25 * ap; ctx.setLineDash([Math.max(approx, 1)]); ctx.lineDashOffset = Math.max(approx, 1) * (1 - ap); }\n")
     sb.append("      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.bezierCurveTo(mx, y1, mx, y2, x2, y2); ctx.stroke(); ctx.setLineDash([]);\n")
     sb.append("      var ang = Math.atan2(y2 - (y1 + y2) / 2, x2 - mx);\n")
     sb.append("      ctx.globalAlpha = (dim ? 0.05 : (hot ? 0.95 : 0.6)) * ap; ctx.fillStyle = p.arrow;\n")
-    sb.append("      ctx.beginPath(); ctx.moveTo(x2, y2); ctx.lineTo(x2 - 9 * Math.cos(ang - 0.42), y2 - 9 * Math.sin(ang - 0.42)); ctx.lineTo(x2 - 9 * Math.cos(ang + 0.42), y2 - 9 * Math.sin(ang + 0.42)); ctx.closePath(); ctx.fill(); ctx.globalAlpha = 1; });\n")
+    sb.append("      ctx.beginPath(); ctx.moveTo(x2, y2); ctx.lineTo(x2 - 9 * Math.cos(ang - 0.42), y2 - 9 * Math.sin(ang - 0.42)); ctx.lineTo(x2 - 9 * Math.cos(ang + 0.42), y2 - 9 * Math.sin(ang + 0.42)); ctx.closePath(); ctx.fill();\n")
+    // 边中点标签：weight ≥ 30 常驻「×N」小字，hover/选中时全部边都显示；
+    // 违规边中点上方常驻「违规」红字小标
+    sb.append("      if (!dim) { ctx.font = '9px -apple-system, sans-serif'; ctx.textAlign = 'center';\n")
+    sb.append("        ctx.globalAlpha = (hot ? 0.95 : 0.78) * ap;\n")
+    sb.append("        if (e.viol) { ctx.fillStyle = '#f87171'; ctx.fillText(VIOLW, mx, (y1 + y2) / 2 - 6); }\n")
+    sb.append("        if (e.weight >= 30 || hot) { ctx.fillStyle = p.muted; ctx.fillText('×' + e.weight, mx, (y1 + y2) / 2 + 13); }\n")
+    sb.append("        ctx.textAlign = 'left'; }\n")
+    sb.append("      ctx.globalAlpha = 1; });\n")
     // 粒子
     sb.append("    PARTS.forEach(function (pt) {\n")
     sb.append("      var a = findNode(pt.e.from); var b = findNode(pt.e.to); if (!a || !b) return;\n")
@@ -322,22 +451,41 @@ func renderJs(en: Bool): String {
     sb.append("      ctx.fillStyle = c; ctx.globalAlpha = m._a * (dim ? 0.28 : 0.95); ctx.fillRect(x, y + 9, 3.2, h - 18);\n")
     sb.append("      ctx.globalAlpha = m._a * (dim ? 0.28 : 1);\n")
     sb.append("      ctx.fillStyle = p.text; ctx.font = (isSel || isHot ? '700 ' : '600 ') + Math.max(11, Math.min(14, 14 * view.k)) + 'px -apple-system, sans-serif'; ctx.textAlign = 'left';\n")
-    sb.append("      var label = isArch() ? m.id : (m.external ? '@ ' + m.label : m.label);\n")
-    sb.append("      ctx.fillText(label, x + 13, y + 23, w - 22);\n")
-    sb.append("      ctx.fillStyle = p.muted; ctx.font = '11px -apple-system, sans-serif';\n")
+    // 架构级卡片三行：模块名 / F文件·S符号·L行 / 入出徽标+不稳定度条；
+    // 下钻级标签追加「·行数」（点进子图一眼看到每个文件的体量）
+    sb.append("      var label = isArch() ? m.id : (m.external ? '@ ' + m.label : m.label + ' · ' + m.lines);\n")
+    sb.append("      ctx.fillText(label, x + 12, y + 22, w - 22);\n")
+    sb.append("      ctx.fillStyle = p.muted; ctx.font = '10px -apple-system, sans-serif';\n")
     sb.append("      var sub;\n")
     sb.append("      if (isArch()) sub = m.files + ' ' + FILES + ' · ' + m.symbols + ' ' + SYMS + ' · ' + m.lines + ' ' + LINES;\n")
     sb.append("      else if (m.external) sub = MODULEW;\n")
     sb.append("      else sub = m.lang + ' · ' + m.symbols + ' ' + SYMS + ' · ' + m.lines + ' ' + LINES;\n")
-    sb.append("      ctx.fillText(sub, x + 13, y + h - 12, w - 22);\n")
+    sb.append("      ctx.fillText(sub, x + 12, y + (isArch() ? 39 : h - 12), w - 22);\n")
+    // 入 N / 出 M 徽标 + 不稳定度小条（60px，按 instability% 填充；三档色：
+    // >66 红 / 33..66 黄 / <33 绿——与场景出口的 token 阈值同式，只此一处语义）
+    sb.append("      if (isArch()) {\n")
+    sb.append("        ctx.fillText(INW + ' ' + (m.fanIn || 0) + ' / ' + OUTW + ' ' + (m.fanOut || 0), x + 12, y + 59);\n")
+    sb.append("        var inst = m.instability || 0;\n")
+    sb.append("        var bw = 60; var bx = x + 96; var by = y + 52;\n")
+    sb.append("        var savedA = ctx.globalAlpha;\n")
+    sb.append("        ctx.globalAlpha = savedA * 0.35; ctx.fillStyle = p.arrow; ctx.fillRect(bx, by, bw, 5);\n")
+    sb.append("        ctx.globalAlpha = savedA;\n")
+    sb.append("        var ic = inst > 66 ? '#f87171' : (inst >= 33 ? '#fbbf24' : '#34d399');\n")
+    sb.append("        ctx.fillStyle = ic; ctx.fillRect(bx, by, bw * inst / 100, 5);\n")
+    sb.append("        ctx.font = '9px -apple-system, sans-serif'; ctx.fillText(inst + '%', bx + bw + 6, by + 7);\n")
+    sb.append("      }\n")
     // 语言色点（文件级）
     sb.append("      if (!isArch() && !m.external) { ctx.fillStyle = langColor(m.lang); ctx.beginPath(); ctx.arc(x + w - 14, y + 15, 3.4, 0, 6.2832); ctx.fill(); }\n")
     // 可下钻提示（架构级：有下钻子图的模块右上角小箭头）
     sb.append("      if (isArch() && DATA.drilldown[m.id]) { ctx.fillStyle = p.muted; ctx.font = '10px -apple-system, sans-serif'; ctx.textAlign = 'right'; ctx.fillText('+', x + w - 10, y + 18); ctx.textAlign = 'left'; }\n")
     sb.append("      ctx.globalAlpha = 1; });\n")
     // ── 小地图 ──
+    // 模块数 ≤ 8 时整个架构一屏即读，色块小地图只有迷惑性（无数标签的彩色条）——
+    // 大仓库（>8 模块）平移/缩放定位才需要它
     sb.append("    var MW = 176, MH = 118, MP = 10;\n")
+    sb.append("    var showMini = DATA.modules.length > 8;\n")
     sb.append("    var mx0 = innerWidth - MW - 14, my0 = innerHeight - MH - 14;\n")
+    sb.append("    if (showMini) {\n")
     sb.append("    ctx.globalAlpha = 0.85; ctx.fillStyle = dark ? 'rgba(10,16,30,0.85)' : 'rgba(255,255,255,0.9)';\n")
     sb.append("    roundRect(mx0, my0, MW, MH, 10); ctx.fill(); ctx.strokeStyle = p.border; ctx.lineWidth = 1; ctx.stroke(); ctx.globalAlpha = 1;\n")
     sb.append("    var b = bounds(); var pad = 8;\n")
@@ -349,6 +497,7 @@ func renderJs(en: Bool): String {
     sb.append("    var vx0 = (0 - view.x) / view.k; var vy0 = (0 - view.y) / view.k;\n")
     sb.append("    var vx1 = (innerWidth - view.x) / view.k; var vy1 = (innerHeight - view.y) / view.k;\n")
     sb.append("    ctx.strokeRect(mmx(Math.max(vx0, b.x0)), mmy(Math.max(vy0, b.y0)), (Math.min(vx1, b.x1) - Math.max(vx0, b.x0)) * sc, (Math.min(vy1, b.y1) - Math.max(vy0, b.y0)) * sc);\n")
+    sb.append("    }\n")
     sb.append("    cv._mm = { x0: mx0, y0: my0, w: MW, h: MH, b: b, sc: sc, pad: pad };\n")
     sb.append("  }\n")
     sb.append("  function findNode(id) { var d = cur(); for (var i = 0; i < d.nodes.length; i++) { if (d.nodes[i].id === id) return d.nodes[i]; } return byId[id] || null; }\n")
@@ -377,6 +526,9 @@ func renderJs(en: Bool): String {
     sb.append("    else { h += '<div class=\"meta\">' + escapeHtml(m.lang) + '</div>'; }\n")
     sb.append("    var stats = isArch() ? (m.files + ' ' + FILES + ' · ' + m.symbols + ' ' + SYMS + ' · ' + m.lines + ' ' + LINES) : (m.symbols + ' ' + SYMS + ' · ' + m.lines + ' ' + LINES);\n")
     sb.append("    h += '<div>' + stats + '</div>';\n")
+    // 治理信号一行（架构级）：入/出与不稳定度——数据在 archJson 里恒发，
+    // 面板不显示就等于没说（不变量 17：披露必须有人渲染）
+    sb.append("    if (isArch()) { h += '<div>' + INW + ' ' + (m.fanIn || 0) + ' / ' + OUTW + ' ' + (m.fanOut || 0) + ' · ' + INSTW + ' ' + (m.instability || 0) + '%</div>'; }\n")
     sb.append("    if (m.langs) { h += '<div>'; m.langs.forEach(function (l) { h += '<span class=\"langtag\">' + escapeHtml(l) + '</span>'; }); h += '</div>'; }\n")
     sb.append("    h += '<h3>' + OUT + '</h3>';\n")
     sb.append("    if (outs.length === 0) h += '<div class=\"meta\">' + NONE + '</div>';\n")
@@ -422,7 +574,44 @@ func renderJs(en: Bool): String {
     // ⚠️ 必须取 `t.moduleWord` / `t.root`（ArchUi 两种语言都有），不能硬编码中文 ——
     // 否则英文模式（cli 按 config.language 传 en=true）下面板与面包屑会出现中文。
     sb.append("  var LAYERW = " + jsStr(t.layerWord) + ", ESC = " + jsStr(t.closeHint) + ", MODULEW = " + jsStr(t.moduleWord) + ", ROOTW = " + jsStr(t.root) + ";\n")
+    // 深度技术呈现文案（单一来源 ArchUi）：卡片徽标 / 顶栏体检 / 图例
+    sb.append("  var INW = " + jsStr(t.inShort) + ", OUTW = " + jsStr(t.outShort) + ", MODW = " + jsStr(t.modulesWord) + ", INSTW = " + jsStr(t.instWord) + ";\n")
+    sb.append("  var HEALTHW = " + jsStr(t.healthWord) + ", FANINW = " + jsStr(t.fanInWord) + ", FANOUTW = " + jsStr(t.fanOutWord) + ";\n")
+    sb.append("  var VIOLW = " + jsStr(t.violWord) + ", NOVIOLW = " + jsStr(t.noViolWord) + ", CYCW = " + jsStr(t.cycleWord) + ", NOCYCW = " + jsStr(t.noCycleWord) + ";\n")
+    sb.append("  var LEGENDW = " + jsStr(t.legendText) + ", OTHERW = " + jsStr(t.otherLayerNote) + ";\n")
     sb.append("  var en = " + (if (en) { "true" } else { "false" }) + ";\n")
+    // ── 架构体检区（#bar 内整行）：总计 / 扇入 Top3 / 扇出 Top3 / 违规清单 / 环清单 ──
+    // 全部从 DATA 现算——这份页面的数据就是 archJson，体检区不许另要第二份数据。
+    // Top3 排序 tie-break 用模块 id：同值时顺序确定（与引擎侧确定性同一纪律）。
+    sb.append("  function topFan(key) { return DATA.modules.slice().sort(function (x, y) { var d = (y[key] || 0) - (x[key] || 0); if (d !== 0) return d; return x.id < y.id ? -1 : 1; }).slice(0, 3); }\n")
+    sb.append("  function buildHealth() {\n")
+    sb.append("    var h = '<span class=\"hgroup\"><span class=\"hlabel\">' + HEALTHW + '</span><span class=\"hval\">' + DATA.modules.length + ' ' + MODW + ' · ' + DATA.totalFiles + ' ' + FILES + ' · ' + DATA.totalSymbols + ' ' + SYMS + ' · ' + DATA.totalLines + ' ' + LINES + '</span></span>';\n")
+    sb.append("    h += '<span class=\"hgroup\"><span class=\"hlabel\">' + FANINW + ' Top3</span><span class=\"hval\">' + topFan('fanIn').map(function (m) { return escapeHtml(m.id) + ' ' + (m.fanIn || 0); }).join(' · ') + '</span></span>';\n")
+    sb.append("    h += '<span class=\"hgroup\"><span class=\"hlabel\">' + FANOUTW + ' Top3</span><span class=\"hval\">' + topFan('fanOut').map(function (m) { return escapeHtml(m.id) + ' ' + (m.fanOut || 0); }).join(' · ') + '</span></span>';\n")
+    sb.append("    var vp = (DATA.warnings && DATA.warnings.violationPairs) || [];\n")
+    sb.append("    if (vp.length === 0) h += '<span class=\"hgroup\"><span class=\"hlabel\">' + VIOLW + '</span><span class=\"hok\">' + NOVIOLW + '</span></span>';\n")
+    sb.append("    else h += '<span class=\"hgroup\"><span class=\"hlabel\">' + VIOLW + '</span><span class=\"hbad\">' + vp.map(function (pr) { return escapeHtml(pr.from) + ' → ' + escapeHtml(pr.to); }).join(' · ') + '</span></span>';\n")
+    sb.append("    var cm = (DATA.warnings && DATA.warnings.cycleModules) || [];\n")
+    sb.append("    if (cm.length === 0) h += '<span class=\"hgroup\"><span class=\"hlabel\">' + CYCW + '</span><span class=\"hok\">' + NOCYCW + '</span></span>';\n")
+    sb.append("    else h += '<span class=\"hgroup\"><span class=\"hlabel\">' + CYCW + '</span><span class=\"hbad\">' + cm.map(function (n) { return escapeHtml(n); }).join(' · ') + '</span></span>';\n")
+    sb.append("    var box = document.createElement('div'); box.id = 'health'; box.innerHTML = h;\n")
+    sb.append("    document.getElementById('bar').appendChild(box);\n")
+    sb.append("  }\n")
+    // ── 图例（画布左下一行）；存在未分层模块时追加一句坐标说明（数据驱动的诚实）──
+    sb.append("  function buildLegend() {\n")
+    sb.append("    var txt = LEGENDW; var other = false;\n")
+    sb.append("    DATA.modules.forEach(function (m) { if (m.layer === 4) other = true; });\n")
+    sb.append("    if (other) txt += ' · ' + OTHERW;\n")
+    sb.append("    var lg = document.createElement('div'); lg.id = 'legend'; lg.textContent = txt;\n")
+    sb.append("    document.body.appendChild(lg);\n")
+    sb.append("  }\n")
+    // 截断披露：archJson 恒发 truncated，但驱动原先从不读它 —— 键在数据里、
+    // 页面不读 = 数据说了没人听见。命中时页面顶部渲染警示行（文案随语言）。
+    // ⚠️ 仓颉没有 `?:` 三元 —— if 表达式先物化成局部量再拼接（AGENTS 编码约定）
+    let truncWord = if (en) { "Warning: file cap reached — partial scan, not the full repository" } else { "⚠ 文件数达上限——部分扫描，不是全量" }
+    sb.append("  var TRUNCW = " + jsStr(truncWord) + ";\n")
+    sb.append("  if (DATA.truncated) { var tb = document.createElement('div'); tb.id = 'truncbar'; tb.textContent = TRUNCW; document.body.appendChild(tb); }\n")
+    sb.append("  buildHealth(); buildLegend();\n")
     sb.append("  resize(); fit(); buildParts(); renderCrumbs();\n")
     sb.append("  try {\n")
     sb.append("    var hm = (location.hash || '').match(/^#module=(.+)$/);\n")

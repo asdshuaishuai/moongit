@@ -88,6 +88,17 @@ func projectContextSection(s: JsonValue, budget: Int64): String {
     if (notes.size > 0) {
         sb.append("- 脉搏：${joinStrings(notes, " · ")}\n")
     }
+    // 契约C（untrackedError，status.cj 恒发）：ls-files --others 采集失败时
+    // untrackedCount=0，脉搏行于是**一个字都不提**未跟踪 ——
+    // 「工作面干净」是读出来的结论，读不到时沉默就是谎报（不变量 17：
+    // 数据里有 ≠ 模型看得到）。
+    let untrackedErr = Json.strAt(s, "untrackedError", "")
+    if (!untrackedErr.isEmpty()) {
+        let untrackedNote = pickText(
+            "untracked file count unreadable: " + oneLineClamped(untrackedErr, 90) + " (not \"no untracked files\")",
+            "未跟踪文件数读不到：" + oneLineClamped(untrackedErr, 90) + "（不是「没有未跟踪文件」）")
+        sb.append("- ⚠ ${untrackedNote}\n")
+    }
     // 提交构成
     let cts = Json.arrAt(s, "commitTypes")
     if (cts.size > 0) {
@@ -317,7 +328,19 @@ public func buildAgentContext(
             sb.append(projectContextSection(s, budget / 2))
             let journal = Json.arrAt(s, "journal")
             if (journal.size > 0) {
-                sb.append("\n### ${name2} · 进度日志（最近 ${journal.size} 条）\n\n")
+                // 截断披露（不变量 40/17）：status 恒发 journalTruncated /
+                // journalLimit / journalUnparsableLines，这里原来一个都不消费 ——
+                // 8 条整的项目与 100 条被砍到 8 条的项目输出逐字相同，
+                // 模型会把窗口当全量、低估活动量。
+                // 总条数在 status 条目里**不可得**（readJournalWindow 只回
+                // exhausted 不回总数），按「不可得总数时至少披露已截断」处理，
+                // 对齐本函数 commitTypesTruncated 的两套文案先例。
+                let truncNote = if (Json.boolAt(s, "journalTruncated", false)) {
+                    "，已截断——共不止这些，非全部"
+                } else {
+                    ""
+                }
+                sb.append("\n### ${name2} · 进度日志（最近 ${journal.size} 条${truncNote}）\n\n")
                 for (e in journal) {
                     sb.append("- [${Json.strAt(e, "at", "")}] ${Json.strAt(e, "mode", "")} · ${Json.strAt(e, "branch", "")}：${Json.strAt(e, "summary", "")}\n")
                 }
@@ -574,14 +597,26 @@ public func agentToolsManifest(): JsonValue {
     addTool("git_commit", "提交项目的全部未提交改动。params: name, message", "name,message")
     addTool("git_pull_push", "对项目执行 git pull（--ff-only）或 push。params: name, op(pull|push)", "name,op")
     addTool("milestone_done", "把里程碑标记为达成。params: project, name", "project,name")
-    addTool("codegraph_overview", "代码图谱概览（文件/符号/引用边统计）。params: name", "name")
-    addTool("codegraph_tree", "索引关系树 / 全量图 JSON（文件+import边+引用边）。params: name", "name")
-    addTool("codegraph_symbol", "符号定位：定义处 + 词法引用。params: name, symbol", "name,symbol")
-    addTool("codegraph_impact", "影响面：改这个符号会波及哪些文件与符号（词法文件级粒度）。params: name, symbol", "name,symbol")
-    addTool("codegraph_arch", "技术架构图：模块分层依赖（Canvas 交互 HTML / mermaid / dot / json）。params: name, format", "name,format")
+    // ── 图能力新工具面（arch / index / confidence / render）──
+    addTool("arch_gen", "架构构建：模块聚合 + 分层判定 + 泳道布局，持久化 arch.json，返回模块/违规摘要（format=json 出全量布局数据）。params: name, format(text|json)", "name,format")
+    addTool("arch_update", "架构增量更新：源探针一致则跳过（已最新），过期/缺失则重算重建（版本 +1）。params: name, force", "name,force")
+    addTool("arch_query", "架构查询：不带 module 出总览（模块 fanIn/fanOut/instability + 违规/环计数）；给 module 出单模块详情（入/出依赖逐条 + 权重）；violations=true 出违规对全清单 + 环上模块。params: name, module, violations", "name,module,violations")
+    addTool("index_gen", "符号级索引生成：写 codegraph.db + index.json，返回统计（文件/符号/边/版本）。params: name, depth, format(json|tree)", "name,depth,format")
+    addTool("index_update", "索引增量更新：源探针一致则跳过，过期/缺失则重建（版本 +1）。params: name, force", "name,force")
+    addTool("index_overview", "索引总览：db 的 SQL 聚合统计（符号/调用边/文件/按种类分桶）。params: name", "name")
+    addTool("index_query", "索引查询：symbol 模式 = 定义处 + 调用方 + 被调；file 模式 = 符号清单 + 调入/调出文件。params: name, symbol, file", "name,symbol,file")
+    addTool("confidence_gen", "置信度生成：前置自愈索引（过期先重建并披露）→ 结构性疑点确定性度量 → 持久化 confidence.json。params: name, format(text|json|llm), no_ast, db", "name,format,no_ast,db")
+    addTool("confidence_query", "置信度快照查询：只读持久化 confidence.json 绝不重算（缺席报错，提示先 confidence_gen）；过滤 file/symbol/kind/weight/top；回执恒带快照元信息。params: name, file, symbol, kind, weight, top", "name,file,symbol,kind,weight,top")
+    addTool("render", "渲染交付物：持久化 payload → 单文件交互 HTML（落盘，回执带路径与复用/新绘判定，不带 HTML 全文）。params: name, target(arch|index), confidence, force", "name,target,confidence,force")
+    // ── 改名期兼容：旧 codegraph_*（patch 两工具除外）保留为别名，将移除 ──
+    addTool("codegraph_overview", "代码图谱概览（文件/符号/引用边统计）（旧名别名，将移除——新面用 index_overview / index_gen）。params: name", "name")
+    addTool("codegraph_tree", "索引关系树 / 全量图 JSON（文件+import边+引用边）（旧名别名，将移除——新面用 index_gen / index_query）。params: name", "name")
+    addTool("codegraph_symbol", "符号定位：定义处 + 词法引用（旧名别名，将移除——新面用 index_query）。params: name, symbol", "name,symbol")
+    addTool("codegraph_impact", "影响面：改这个符号会波及哪些文件与符号（词法文件级粒度）（旧名别名，将移除）。params: name, symbol", "name,symbol")
+    addTool("codegraph_arch", "技术架构图：模块分层依赖（Canvas 交互 HTML / mermaid / dot / json）（旧名别名，将移除——新面用 arch_gen / render）。params: name, format", "name,format")
     addTool("codegraph_patch_confidence", "补丁级置信度 Layer 1：S1..S10 信号 + uncertain 待办清单（配合 skill 做 Layer 2 复核）。params: name, patch_path", "name,patch_path")
     addTool("codegraph_patch_merge", "补丁级置信度 Layer 3：合并 algorithm+agent 输出。params: algorithm_json, agent_json", "algorithm_json,agent_json")
-    addTool("codegraph_confidence", "代码置信度报告：结构性疑点（孤儿/占位/吞错/魔法数/重复体）。被动能力，仅显式调用时分析。params: name, format(json|text|llm)", "name,format")
+    addTool("codegraph_confidence", "代码置信度报告：结构性疑点（孤儿/占位/吞错/魔法数/重复体）。被动能力，仅显式调用时分析（旧名别名，将移除——新面用 confidence_gen / confidence_query）。params: name, format(json|text|llm)", "name,format")
 
     let o = Json.obj()
     Json.set(o, "tools", JArr(arr))
@@ -1170,4 +1205,115 @@ private func emptyJournalSection(text: String): Bool {
         i += 1
     }
     return false
+}
+
+/// project scope 的「进度日志（最近 N 条）」必须消费 status 恒发的
+/// journalTruncated（不变量 40/17：读了 N 条 ≠ 一共 N 条）。
+///
+/// 原来 12 条被砍到 8 条的项目与恰好 8 条整的项目输出**逐字相同**，
+/// 模型会把窗口当全量、低估项目活动量。
+/// 走真实 buildAgentContext（statuses 由它自己经 allProjectStatuses 采集，
+/// light=false ⇒ journalLimit=8）；journal 条目用 kernel 公开的 appendJournal
+/// 写入（与 status.cj 的 journalTruncated 测试同一先例）。
+@Test
+func testProjectScopeJournalTruncationIsDisclosed(): Unit {
+    let base = "/tmp/deepgit-ctxjtr-${nowMillis()}"
+    let testHome = "${base}-home"
+    let repoMany = "${base}/many"
+    let repoExact = "${base}/exact"
+    // 建仓库并写 n 条 journal（appendJournal 必须在 enterTestHome 之后调用，
+    // 它按 projectId 落到 DEEPGIT_HOME 下的 store）
+    func seed(repo: String, pid: String, n: Int64): ProjectEntry {
+        ensureDir(repo)
+        gitRun(repo, ["init", "-q", "-b", "main"], false)
+        writeFileAtomic("${repo}/a.txt", "x")
+        gitRun(repo, ["add", "."], false)
+        gitRun(repo, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"], false)
+        var i: Int64 = 0
+        while (i < n) {
+            let e = Json.obj()
+            Json.set(e, "branch", Json.of("main"))
+            Json.set(e, "at", Json.of("2026-05-01T10:00:00+08:00"))
+            Json.set(e, "mode", Json.of("shallow"))
+            Json.set(e, "summary", Json.of("第 ${i} 次记录"))
+            appendJournal(pid, e, pid)
+            i += 1
+        }
+        return ProjectEntry(pid, pid, repo, "git", "", nowIso(), ArrayList<String>(), false)
+    }
+    try {
+        enterTestHome(testHome)
+        let many = seed(repoMany, "p_jtr_many", 12)
+        let exact = seed(repoExact, "p_jtr_exact", 8)
+
+        // 前提自证（不变量 18）：12 条的确实被砍到 8 + truncated=true，
+        // 8 条整的恰好不截断 —— 没有这对前提，下面的断言可能在空转
+        @Assert(Json.boolAt(projectStatus(many, Config.defaults(), 8), "journalTruncated", false))
+        @Assert(!Json.boolAt(projectStatus(exact, Config.defaults(), 8), "journalTruncated", true))
+
+        let ctxMany = buildAgentContext(ArrayList<ProjectEntry>([many]), Config.defaults(),
+                                        "project", "p_jtr_many", 20000)
+        @Assert(ctxMany.text.contains("进度日志（最近 8 条，已截断"))
+        @Assert(ctxMany.text.contains("非全部"))
+
+        let ctxExact = buildAgentContext(ArrayList<ProjectEntry>([exact]), Config.defaults(),
+                                         "project", "p_jtr_exact", 20000)
+        // 整 8 条：标题不带披露（「已截断」只在真的截断时出现，否则披露就是噪音）
+        @Assert(ctxExact.text.contains("进度日志（最近 8 条）"))
+        @Assert(!ctxExact.text.contains("已截断"))
+    } finally {
+        removePathIfExists(repoMany)
+        removePathIfExists(repoExact)
+        removePathIfExists(deepgitPath(["store", "p_jtr_many"]))
+        removePathIfExists(deepgitPath(["store", "p_jtr_exact"]))
+        // 复位必须排在所有 deepgitPath(...) 之后：提前复位会让上面的清理打到真实 store
+        exitTestHome()
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
+/// 契约C 消费侧：untrackedError 非空时，projectContextSection（agent 上下文的
+/// 真实小节构造器，buildAgentContext 两条 scope 都走它）必须把「读不到」说出来
+/// —— 否则 untrackedCount=0 会被模型读成「工作面干净」（不变量 17：
+/// 数据里有 ≠ 模型看得到）。
+///
+/// ⚠️ 为什么不走端到端 buildAgentContext：能让 `git ls-files --others` 失败的
+/// 所有确定性手段（坏 index、exclude 变目录、权限收回）都会**先**让
+/// `git status --porcelain` 失败 ⇒ collectFacts 抛 REPO_UNREADABLE ⇒
+/// status 条目整个变成错误桩 ——「untrackedError 非空且 status 成功」这个状态
+/// 在磁盘上构造不出来。伪造点选在 projectStatus 的**下游**（该键恒发）、
+/// projectContextSection 的上游，即三个消费出口共用的最近一层数据。
+@Test
+func testProjectSectionDisclosesUntrackedReadFailure(): Unit {
+    let s = Json.obj()
+    Json.set(s, "name", Json.of("demo"))
+    Json.set(s, "path", Json.of("/tmp/demo"))
+    Json.set(s, "kind", Json.of("git"))
+    Json.set(s, "headline", Json.of("暂无新变化"))
+    Json.set(s, "userDirtyCount", Json.of(0))
+    Json.set(s, "untrackedCount", Json.of(0))
+    Json.set(s, "stashCount", Json.of(0))
+    Json.set(s, "worktreeCount", Json.of(1))
+    Json.set(s, "untrackedError", Json.of("git ls-files --others 失败：fatal: index file corrupt"))
+    let out = projectContextSection(s, 4000)
+    @Assert(out.contains("未跟踪文件数读不到"))
+    @Assert(out.contains("不是「没有未跟踪文件」"))
+    // 原因本身必须带上，只说「读不到」等于让模型猜
+    @Assert(out.contains("fatal: index file corrupt"))
+    // 对照：untrackedError 为空（健康态）时不得出现这句噪音
+    Json.set(s, "untrackedError", Json.of(""))
+    let clean = projectContextSection(s, 4000)
+    @Assert(!clean.contains("未跟踪文件数读不到"))
+    // en 分支（T()/pickText 双语的另一半）：uiLang 是进程级全局，
+    // 切过去必须还原，否则污染后续用例（cjpm test --parallel 1 下安全）
+    try {
+        setUiLanguage("en")
+        Json.set(s, "untrackedError", Json.of("boom"))
+        let en = projectContextSection(s, 4000)
+        @Assert(en.contains("untracked file count unreadable"))
+        @Assert(en.contains("not \"no untracked files\""))
+    } finally {
+        setUiLanguage("zh")
+    }
 }

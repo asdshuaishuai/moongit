@@ -23,6 +23,20 @@ import moongit.util.*
 
 public let LAYER_COUNT: Int64 = 5
 
+// MARK: - 泳道布局常量（引擎单一来源）
+//
+// 分层泳道布局的全部几何只允许写在这一处：layoutArch 摆卡片、archLaneRects
+// 出泳道矩形（archJson 的 lanes / scene 的层框）都引用同一组常量——
+// 任何一边改尺寸另两边不跟，画面就会「卡片出泳道」或「泳道框错位」，
+// 且这种错位编译期发现不了（几何只在渲染时才可见）。
+public let ARCH_CARD_W: Float64 = 220.0        // 模块卡片宽（固定，确定性）
+public let ARCH_CARD_H: Float64 = 72.0         // 模块卡片高（名/统计/入出+不稳定条 三行）
+public let ARCH_SLOT_W: Float64 = 266.0        // 卡片 + 水平间隙
+public let ARCH_LANE_LABEL_W: Float64 = 150.0  // 泳道左端层标签区
+public let ARCH_LANE_PAD_V: Float64 = 30.0     // 泳道上下留白（卡片上下各 30）
+public let ARCH_LANE_GAP: Float64 = 16.0       // 相邻泳道间距
+public let ARCH_MARGIN: Float64 = 36.0         // 画布外边距
+
 public func layerName(layer: Int64, en: Bool): String {
     if (en) {
         match (layer) {
@@ -74,6 +88,15 @@ public class ArchModule {
     public var symbols: Int64 = 0
     public var lines: Int64 = 0
     public var langs: ArrayList<String> = ArrayList<String>()
+    // 扇入/扇出/不稳定度（buildArch 在边聚合完成后计算，唯一口径 = 模块级
+    // ArchEdge 的 weight 求和；JSON 出口与渲染共用，不许各算各的）：
+    //   fanIn  = 指向本模块的边 weight 之和（被依赖 = 越核心）
+    //   fanOut = 本模块出发的边 weight 之和（依赖别人 = 变化源头）
+    //   instability = 0..100，round(100 * fanOut / (fanIn+fanOut))——
+    //   越低越被依赖（稳定），越高越是「只出不进」的变化源头
+    public var fanIn: Int64 = 0
+    public var fanOut: Int64 = 0
+    public var instability: Int64 = 0
     // 布局（引擎算好，HTML 只负责画）
     public var x: Float64 = 0.0
     public var y: Float64 = 0.0
@@ -189,6 +212,17 @@ public func moduleOfPath(relPath: String): String {
     return "(root)"
 }
 
+/// drilldown 边端点 → 所属模块：`@module:<名>` 虚拟节点取 `<名>`，
+/// 文件路径走 moduleOfPath（与 buildDrilldown 聚边同一映射）。
+/// archJson 的 drilldown 边靠它把文件级端点收敛回模块对，再查模块级治理信号。
+func drillEdgeModule(id: String): String {
+    let prefix = "@module:"
+    if (id.startsWith(prefix) && id.size > prefix.size) {
+        return id[prefix.size..id.size]
+    }
+    return moduleOfPath(id)
+}
+
 /// 分层违规判定。**纯函数**。
 ///
 /// M12：原来这里是裸的 `la < lb`，而未命中启发式词表的模块拿层 **4**
@@ -247,7 +281,12 @@ public func buildArch(graph: CodeGraph): ArchData {
         }
     }
     for ((from, to) in graph.importEdges) { bump(from, to, 1) }
-    for ((from, to, w) in graph.refEdges) { bump(from, to, w) }
+    // 架构聚合用 archRefEdges（架构口径），不是 refEdges（引用口径）——
+    // 引用口径对架构聚合是满屏假违规：引擎自身 9/9 模块对「全违规」，实测
+    // 成因全是同名噪音（doc 注释提及他包符号、strx.cj 每包一份的合法重名、
+    // 泛型占位符 T 撞翻译函数 T、局部变量撞成员方法），没有一条是真依赖。
+    // 两份边集的判据差异见 model.cj 的 archRefEdges 字段注释。
+    for ((from, to, w) in graph.archRefEdges) { bump(from, to, w) }
 
     // 先装配模块列表（治理信号需要每模块的层）
     var totalFiles: Int64 = 0
@@ -341,6 +380,25 @@ public func buildArch(graph: CodeGraph): ArchData {
         edges.add(ArchEdge(a, b, w, isViol, isCycle))
     }
 
+    // ── 扇入 / 扇出 / 不稳定度（边聚合完成后计算，口径 = 模块级 ArchEdge）──
+    // ArchModule 是 class（引用语义），直接累加即可。不稳定度用**纯整数**
+    // 四舍五入：(200*fanOut + total) / (2*total) —— round(100*f/t) 的整数形式，
+    // 不引入浮点（同值同结果，跨平台确定性）。
+    for (e in edges) {
+        match (mods.get(e.fromId)) {
+            case Some(m) => m.fanOut += e.weight
+            case None => ()
+        }
+        match (mods.get(e.toId)) {
+            case Some(m) => m.fanIn += e.weight
+            case None => ()
+        }
+    }
+    for (m in list) {
+        let total = m.fanIn + m.fanOut
+        m.instability = if (total == 0) { 0 } else { (200 * m.fanOut + total) / (2 * total) }
+    }
+
     let drill = buildDrilldown(graph, list)
     return ArchData(list, edges, totalFiles, totalSymbols, totalLines, graph.truncated, drill,
                     violationCount, cycleEdgeCount, violationPairs, cycleModules)
@@ -350,7 +408,9 @@ public func buildArch(graph: CodeGraph): ArchData {
 
 /// 为每个模块构建文件级子图：
 ///   节点 = 模块内文件 + 有依赖往来的外部模块（虚拟节点）
-///   边   = 文件级 import/reference（跨模块的指向虚拟节点）
+///   边   = 文件级 import + 架构口径 reference（archRefEdges，跨模块的指向
+///          虚拟节点）——与 buildArch 的模块聚合同源，子图不会画出模块级
+///          图上不存在的依赖
 /// 布局：内部文件按目录聚类网格排列，外部虚拟节点靠右一列——确定性，可对账。
 func buildDrilldown(graph: CodeGraph, modules: ArrayList<ArchModule>): ArrayList<DrillGraph> {
     // ⚠️ 性能审查：moduleOfPath 内部要 split 路径；原实现对
@@ -380,9 +440,10 @@ func buildDrilldown(graph: CodeGraph, modules: ArrayList<ArchModule>): ArrayList
             nodes.add(n)
             byId[f.relPath] = n
         }
-        // 外部往来模块 → 虚拟节点
+        // 外部往来模块 → 虚拟节点（架构口径 archRefEdges，与 buildArch 聚合
+        // 同源——引用口径的同名噪音会把毫不相干的模块拖进子图）
         let extMods = ArrayList<String>()
-        for ((from, to, _) in graph.refEdges) {
+        for ((from, to, _) in graph.archRefEdges) {
             let fa = modAt(from)
             let fb = modAt(to)
             if (fa == m.id && fb != m.id && !extMods.contains(fb)) { extMods.add(fb) }
@@ -400,9 +461,11 @@ func buildDrilldown(graph: CodeGraph, modules: ArrayList<ArchModule>): ArrayList
             nodes.add(n)
             byId[n.id] = n
         }
-        // 边：文件级，两端都在子图节点集里（跨模块的落在外部虚拟节点上）
+        // 边：文件级，两端都在子图节点集里（跨模块的落在外部虚拟节点上）；
+        // 与 extMods 同用架构口径（archRefEdges）——子图内的边必须与模块级
+        // 聚合的边同源，否则下钻子图会画出模块级图上不存在的依赖
         let edges = ArrayList<(String, String, Int64)>()
-        for ((from, to, w) in graph.refEdges) {
+        for ((from, to, w) in graph.archRefEdges) {
             let fa = modAt(from)
             let fb = modAt(to)
             if (fa != m.id && fb != m.id) { continue }
@@ -509,81 +572,97 @@ func byIdLike(list: ArrayList<DrillNode>, id: String): Option<DrillNode> {
     return None
 }
 
-// MARK: - 布局（确定性：层为列，列内按模块名排）
+// MARK: - 布局（分层泳道：层为水平泳道，L4/L3 在最上、L0 在最下）
+//
+// 【方向语义】画布 y 向下 ⇒ 行号 = LAYER_COUNT-1-layer：接口层(L3) 在最上、
+// 基础层(L0) 在最下，**依赖健康方向 = 箭头向下**；违规边（低层依赖高层）
+// 逆流向上，一眼可见。层 4（未分层，不参与违规判定）位于最顶端、与坐标系
+// 区隔——它的「最高」是「坐标系之外」，不是「比接口层更高」。
+// 【确定性】泳道宽 = LABEL_W + 全图最大槽数 × SLOT_W（各层同宽，对齐）；
+// 层内模块按 id 升序均匀排布；同一层所有卡片 y 相同。零随机、零浮点歧义。
 
 public func layoutArch(data: ArchData): Unit {
-    let nodeH: Float64 = 64.0
-    let nodeWMin: Float64 = 132.0
-    let colGap: Float64 = 110.0
-    let rowGap: Float64 = 40.0
-    let margin: Float64 = 64.0
-    // 先按层收集并量好尺寸（确定性：列内按模块名排）
-    var colMods = HashMap<Int64, ArrayList<ArchModule>>()
-    var colW = HashMap<Int64, Float64>()
-    var colH = HashMap<Int64, Float64>()
-    var col = 0
-    while (col < LAYER_COUNT) {
+    // 先按层收集（id 升序——上游已排，这里显式再排，布局不依赖上游纪律）
+    var laneMods = HashMap<Int64, ArrayList<ArchModule>>()
+    var maxSlots: Int64 = 1
+    var layer: Int64 = 0
+    while (layer < LAYER_COUNT) {
         let list = ArrayList<ArchModule>()
         for (m in data.modules) {
-            if (m.layer == col) { list.add(m) }
+            if (m.layer == layer) { list.add(m) }
         }
         insertionSortBy(list, { a, b => a.id < b.id })
-        var maxW: Float64 = nodeWMin
-        var h: Float64 = 0.0
-        for (m in list) {
-            let est = 44.0 + Float64(m.id.toArray().size) * 8.4
-            m.w = if (est < nodeWMin) { nodeWMin } else { if (est > 264.0) { 264.0 } else { est } }
-            m.h = nodeH
-            if (m.w > maxW) { maxW = m.w }
-            h += nodeH + rowGap
-        }
-        if (list.size > 0) { h -= rowGap }
-        colMods[col] = list
-        colW[col] = maxW
-        colH[col] = h
-        col += 1
+        if (Int64(list.size) > maxSlots) { maxSlots = Int64(list.size) }
+        laneMods[layer] = list
+        layer += 1
     }
-    // 全图统一内容高度 ⇒ 每列垂直居中；x 单遍顺序累加（列定位只此一处，不再二次平移）
-    var maxH: Float64 = 0.0
-    col = 0
-    while (col < LAYER_COUNT) {
-        match (colH.get(col)) {
-            case Some(h) => if (h > maxH) { maxH = h }
-            case None => ()
-        }
-        col += 1
-    }
-    var xCursor = margin
-    col = 0
-    while (col < LAYER_COUNT) {
+    let laneH = ARCH_CARD_H + ARCH_LANE_PAD_V * 2.0
+    let innerW = Float64(maxSlots) * ARCH_SLOT_W
+    layer = 0
+    while (layer < LAYER_COUNT) {
         var list: ArrayList<ArchModule>
-        match (colMods.get(col)) {
+        match (laneMods.get(layer)) {
             case Some(l) => list = l
             case None => list = ArrayList<ArchModule>()
         }
-        if (list.size == 0) {
-            col += 1
-            continue
+        if (list.size > 0) {
+            let row = LAYER_COUNT - 1 - layer
+            let cardY = ARCH_MARGIN + Float64(row) * (laneH + ARCH_LANE_GAP) + ARCH_LANE_PAD_V
+            // 均匀排布：槽距 = 泳道内宽 / 本层模块数，卡片在槽内居中
+            let sp = innerW / Float64(list.size)
+            var i: Int64 = 0
+            for (m in list) {
+                m.w = ARCH_CARD_W
+                m.h = ARCH_CARD_H
+                m.x = ARCH_MARGIN + ARCH_LANE_LABEL_W + Float64(i) * sp + (sp - ARCH_CARD_W) / 2.0
+                m.y = cardY
+                i += 1
+            }
         }
-        var ch: Float64 = 0.0
-        match (colH.get(col)) {
-            case Some(h) => ch = h
-            case None => ()
-        }
-        var y = margin + (maxH - ch) / 2.0
-        for (m in list) {
-            m.x = xCursor
-            m.y = y
-            y += nodeH + rowGap
-        }
-        var cw: Float64 = nodeWMin
-        match (colW.get(col)) {
-            case Some(w) => cw = w
-            case None => ()
-        }
-        xCursor += cw + colGap
-        col += 1
+        layer += 1
     }
+}
+
+/// 泳道矩形清单（archJson 的 `lanes` 与 scene 层框的**唯一来源**）。
+/// 只依赖布局常量与各层模块数（与 layoutArch 完全同式），不要求先跑
+/// layoutArch。顺序 = 绘制序：layer 4→0 自上而下，确定性。
+public func archLaneRects(data: ArchData, en: Bool): ArrayList<JsonValue> {
+    var maxSlots: Int64 = 1
+    var countByLayer = HashMap<Int64, Int64>()
+    var layer: Int64 = 0
+    while (layer < LAYER_COUNT) {
+        var count: Int64 = 0
+        for (m in data.modules) { if (m.layer == layer) { count += 1 } }
+        if (count > maxSlots) { maxSlots = count }
+        countByLayer[layer] = count
+        layer += 1
+    }
+    let laneH = ARCH_CARD_H + ARCH_LANE_PAD_V * 2.0
+    let laneW = ARCH_LANE_LABEL_W + Float64(maxSlots) * ARCH_SLOT_W
+    let out = ArrayList<JsonValue>()
+    var row: Int64 = 0
+    layer = LAYER_COUNT - 1
+    while (layer >= 0) {
+        var count: Int64 = 0
+        match (countByLayer.get(layer)) {
+            case Some(c) => count = c
+            case None => ()
+        }
+        if (count > 0) {
+            let o = Json.obj()
+            Json.set(o, "layer", Json.of(layer))
+            Json.set(o, "name", Json.of(layerName(layer, en)))
+            Json.set(o, "x", Json.of(ARCH_MARGIN))
+            Json.set(o, "y", Json.of(ARCH_MARGIN + Float64(row) * (laneH + ARCH_LANE_GAP)))
+            Json.set(o, "w", Json.of(laneW))
+            Json.set(o, "h", Json.of(laneH))
+            Json.set(o, "modules", Json.of(count))
+            out.add(o)
+        }
+        row += 1
+        layer -= 1
+    }
+    return out
 }
 
 
@@ -611,6 +690,13 @@ public func archJson(data: ArchData, en: Bool): JsonValue {
         Json.set(o, "symbols", Json.of(m.symbols))
         Json.set(o, "lines", Json.of(m.lines))
         Json.set(o, "langs", Json.strArray(m.langs.toArray()))
+        // 治理四键**恒发**（0 也发）：扇入/扇出/不稳定度/层名。缺键会被消费方
+        // 读成「旧版本没有这个字段」（恒发纪律同 violation/cycle / truncated），
+        // 而「入 N / 出 M」徽标与不稳定度条正是本图区别于普通流转图的实质信息。
+        Json.set(o, "fanIn", Json.of(m.fanIn))
+        Json.set(o, "fanOut", Json.of(m.fanOut))
+        Json.set(o, "instability", Json.of(m.instability))
+        Json.set(o, "layerName", Json.of(layerName(m.layer, en)))
         Json.set(o, "x", Json.of(m.x))
         Json.set(o, "y", Json.of(m.y))
         Json.set(o, "w", Json.of(m.w))
@@ -623,8 +709,11 @@ public func archJson(data: ArchData, en: Bool): JsonValue {
         Json.set(o, "from", Json.of(e.fromId))
         Json.set(o, "to", Json.of(e.toId))
         Json.set(o, "weight", Json.of(e.weight))
-        if (e.violation) { Json.set(o, "violation", Json.of(true)) }
-        if (e.cycle) { Json.set(o, "cycle", Json.of(true)) }
+        // 治理两键**恒发**（false 也发）：原先只在 true 时写键，键集随数据漂移 ——
+        // 消费方只能靠「有没有这个键」反推违规（无文档耦合），且缺键会被读成
+        // 旧版本没有该字段（恒发纪律同 depth / depthOmitted）。
+        Json.set(o, "violation", Json.of(e.violation))
+        Json.set(o, "cycle", Json.of(e.cycle))
         es.add(o)
     }
     let warns = Json.obj()
@@ -639,6 +728,14 @@ public func archJson(data: ArchData, en: Bool): JsonValue {
     }
     Json.set(warns, "violationPairs", JArr(vps))
     Json.set(warns, "cycleModules", Json.strArray(data.cycleModules.toArray()))
+    // 治理信号的唯一真相是模块级 ArchEdge；drilldown 的文件级边按「两端所属
+    // 模块对」查这张表取同一信号（同模块内部边没有模块级对应 → 恒 false）。
+    // 同一份 JSON 里两种边必须同形状（violation/cycle 都有）——否则消费方
+    // 得写两套解码分支，缺键那一套会把「没信号」读成「没有」。
+    let govOf = HashMap<String, (Bool, Bool)>()
+    for (e in data.edges) {
+        govOf["${e.fromId}|${e.toId}"] = (e.violation, e.cycle)
+    }
     let dd = Json.obj()
     for (dg in data.drilldown) {
         let sub = Json.obj()
@@ -664,6 +761,17 @@ public func archJson(data: ArchData, en: Bool): JsonValue {
             Json.set(eo, "from", Json.of(a))
             Json.set(eo, "to", Json.of(b))
             Json.set(eo, "weight", Json.of(w))
+            // 与模块级边同两键、同恒发纪律：按端点所属模块对查治理信号。
+            // 文件级边自己算不出违规/环（那是模块级判定），取的是它所跨的
+            // 模块对的信号 —— 同一份 JSON 两种边一个语义。
+            var ev = false
+            var ec = false
+            match (govOf.get("${drillEdgeModule(a)}|${drillEdgeModule(b)}")) {
+                case Some((bv, bc)) => ev = bv; ec = bc
+                case None => ()
+            }
+            Json.set(eo, "violation", Json.of(ev))
+            Json.set(eo, "cycle", Json.of(ec))
             es2.add(eo)
         }
         Json.set(sub, "edges", JArr(es2))
@@ -673,6 +781,9 @@ public func archJson(data: ArchData, en: Bool): JsonValue {
     Json.set(o, "modules", JArr(ms))
     Json.set(o, "edges", JArr(es))
     Json.set(o, "layers", JArr(layerList))
+    // 泳道矩形（恒发；空仓库给空数组）：分层泳道的几何唯一来源，
+    // 驱动按它画淡底泳道与左端层标签，不许从模块坐标反推（那是第二份布局）。
+    Json.set(o, "lanes", JArr(archLaneRects(data, en)))
     Json.set(o, "warnings", warns)
     Json.set(o, "drilldown", dd)
     Json.set(o, "totalFiles", Json.of(data.totalFiles))

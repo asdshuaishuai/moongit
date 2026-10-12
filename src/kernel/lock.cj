@@ -81,7 +81,9 @@ public enum HolderState {
     | HolderAlive
     /// holder.json 里有 pid 且进程已退出
     | HolderDead
-    /// 判不出来：holder.json 缺失/不是合法 JSON/pid 非法/kill -0 超时
+    /// 判不出来：holder.json 缺失/不是合法 JSON/pid 非法。
+    /// （kill -0 探测本身拿不到答案的情况 —— 执行失败/超时 —— 现行折进 HolderAlive，
+    /// 见 killProbeAlive 的判定，不是这一档。）
     | HolderUnknown
 }
 
@@ -186,14 +188,37 @@ private func holderState(lockDir: String): HolderState {
     }
 }
 
+/// kill -0 探测结果的纯判定：**是否按「进程还活着」处理**。**不碰进程。**
+///
+/// ⚠️ K1（审查）：原实现是 `timedOut ? true : exitCode == 0`，
+/// 于是 **exec 执行失败**（容器里没有 /bin/kill 等，execCapture 返回
+/// exitCode=-1、timedOut=false）被算成 `exitCode == 0` 为假 ⇒ 「进程已死」
+/// ⇒ HolderDead ⇒ 立即接管，**绕过 staleMs 兜底**。
+/// 这与 holderState 文档里「kill -0 执行失败……一律当作还活着」的约定相反：
+/// 判错方向必须是「多等」，不是「在活进程头上抢锁」（不变量 34）。
+///
+/// 判据（四个格子全部显式列出）：
+///   - exitCode == 0  → 活（探测成功且进程存在）
+///   - exitCode > 0   → 死（kill 报了 ESRCH 之类的失败：探测本身成功，进程不在）
+///   - exitCode < 0   → 按「活」处理（**执行失败**：连探测都没跑成，不是「进程不在」）
+///   - timedOut       → 按「活」处理（判错方向必须是「多等」）
+public func killProbeAlive(exitCode: Int64, timedOut: Bool): Bool {
+    if (timedOut) {
+        return true
+    }
+    if (exitCode == 0) {
+        return true
+    }
+    if (exitCode > 0) {
+        return false
+    }
+    return true
+}
+
 /// 进程是否存在。signal 0 只做权限/存在性检查，不真的发信号。
 private func processExists(pid: Int64): Bool {
     let r = execCapture("/bin/kill", ["-0", "${pid}"], None, 3000)
-    // 超时按「还活着」处理：判错方向必须是「多等」，不是「误抢」
-    if (r.timedOut) {
-        return true
-    }
-    return r.exitCode == 0
+    return killProbeAlive(r.exitCode, r.timedOut)
 }
 
 /// 原子创建目录。已存在时返回 false（不抛异常）。
@@ -655,4 +680,26 @@ func testLiveLockIsNotStolenEvenWhenStaleThresholdIsZero(): Unit {
         @Assert(fileExists("${lockDir}/holder.json"))   // 也没被覆盖
         removePathIfExists(dir)
     }
+}
+
+/// K1 回归：kill -0 探测的四个格子 —— 执行失败不许被算成「进程已死」。
+///
+/// 原实现 `timedOut ? true : exitCode == 0` 把 exec 失败（execCapture 对
+/// spawn 失败返回 exitCode=-1、timedOut=false，见 util/exec.cj）判成死，
+/// 于是 HolderDead 立即接管、绕过 staleMs 兜底 ——
+/// 与 holderState 文档「kill -0 执行失败……一律当作还活着」相反。
+/// 判错方向必须是「多等」，不是「在活进程头上抢锁」（不变量 34）。
+@Test
+func testKillProbeAliveCoversAllFourCells(): Unit {
+    // exitCode = -1（执行失败：容器里没有 /bin/kill 等）→ 按「活」处理
+    @Assert(killProbeAlive(-1, false))
+    // exitCode = 0（探测成功，进程存在）→ 活
+    @Assert(killProbeAlive(0, false))
+    // exitCode > 0（探测本身跑成了，kill 报 ESRCH：进程不在）→ 死
+    // 这是既有行为必须保住的那一格：死持锁者立即接管全靠它
+    @Assert(!killProbeAlive(1, false))
+    @Assert(!killProbeAlive(127, false))
+    // 超时 → 按「活」处理：判错方向必须是「多等」
+    @Assert(killProbeAlive(0, true))
+    @Assert(killProbeAlive(-1, true))
 }

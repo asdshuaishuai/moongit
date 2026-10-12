@@ -21,7 +21,8 @@ import moongit.util.*
 ///
 /// 早期版本判定单位是**文件**（整个文件无人引用才报）—— 文件里混有活符号与
 /// 死符号时漏报（只用到该文件里某一个活符号，整文件就被判为「被引用」）。
-func detectOrphans(graph: CodeGraph, findings: ArrayList<Finding>): Unit {
+func detectOrphans(graph: CodeGraph, findings: ArrayList<Finding>,
+                   cap: CapDropCounter): Unit {
     let perFile = HashMap<String, Int64>()
     for (f in graph.files) {
         if (f.symbols.size == 0) { continue }
@@ -36,7 +37,11 @@ func detectOrphans(graph: CodeGraph, findings: ArrayList<Finding>): Unit {
                 case Some(v) => v
                 case None => 0
             }
-            if (c >= CONF_MAX_PER_KIND_PER_FILE) { continue }
+            if (c >= CONF_MAX_PER_KIND_PER_FILE) {
+                // 丢弃发生点：CapDropCounter 递增（cappedKind 真值，见 confidence.cj）
+                cap.kindDrops += 1
+                continue
+            }
             perFile[f.relPath] = c + 1
             findings.add(Finding(Orphan, f.relPath, s.line, s.name,
                 "${symKindId(s.kind)} ${s.name}：定义后全仓无任何非声明处引用——"
@@ -71,7 +76,8 @@ func isEntryLike(base: String): Bool {
 
 /// 可疑命名：AI 生成代码的高频命名习惯。
 /// 判据全部基于**可核验的字符串事实**（精确名或前缀），不做语义猜测。
-func detectSuspiciousNames(graph: CodeGraph, findings: ArrayList<Finding>): Unit {
+func detectSuspiciousNames(graph: CodeGraph, findings: ArrayList<Finding>,
+                           cap: CapDropCounter): Unit {
     // 精确可疑名（小写比较）
     let exact = HashSet<String>()
     for (n in ["tmp", "temp", "foo", "bar", "baz", "dummy", "placeholder",
@@ -109,7 +115,10 @@ func detectSuspiciousNames(graph: CodeGraph, findings: ArrayList<Finding>): Unit
                 case Some(v) => v
                 case None => 0
             }
-            if (fc >= CONF_MAX_PER_KIND_PER_FILE) { continue }
+            if (fc >= CONF_MAX_PER_KIND_PER_FILE) {
+                cap.kindDrops += 1   // 丢弃发生点（cappedKind 真值）
+                continue
+            }
             perFile[f.relPath] = fc + 1
             findings.add(Finding(SuspiciousName, f.relPath, s.line, s.name,
                 "${symKindId(s.kind)} ${s.name}：${why}"))
@@ -233,7 +242,8 @@ func sortAstNodes(nodes: ArrayList<AstNode>): Unit {
     })
 }
 
-func detectFromAst(nodes: ArrayList<AstNode>, findings: ArrayList<Finding>): Unit {
+func detectFromAst(nodes: ArrayList<AstNode>, findings: ArrayList<Finding>,
+                   cap: CapDropCounter): Unit {
     sortAstNodes(nodes)
     let perFileKind = HashMap<String, Int64>()   // "file|kind" → count
     for (n in nodes) {
@@ -246,34 +256,34 @@ func detectFromAst(nodes: ArrayList<AstNode>, findings: ArrayList<Finding>): Uni
         // 空体/占位实现
         match (stubReason(n)) {
             case Some(why) =>
-                bumpFinding(findings, perFileKind, StubBody, n.file, n.startLine,
+                bumpFinding(findings, perFileKind, cap, StubBody, n.file, n.startLine,
                     nodeName(n), "结构节点（${lines} 行）：${why}")
             case None => ()
         }
         // 超长函数
         if (n.nodeRule == "fn" && lines > CONF_LONG_FUNCTION_LINES) {
-            bumpFinding(findings, perFileKind, LongFunction, n.file, n.startLine,
+            bumpFinding(findings, perFileKind, cap, LongFunction, n.file, n.startLine,
                 nodeName(n), "${lines} 行（阈值 ${CONF_LONG_FUNCTION_LINES}）——拆分候选")
         }
         // 深嵌套
         let depth = maxBraceDepth(n.text)
         if (depth > CONF_DEEP_NESTING) {
-            bumpFinding(findings, perFileKind, DeepNesting, n.file, n.startLine,
+            bumpFinding(findings, perFileKind, cap, DeepNesting, n.file, n.startLine,
                 nodeName(n), "花括号嵌套 ${depth} 层（阈值 ${CONF_DEEP_NESTING}）")
         }
         // 魔法数字（函数体里）
         if (n.nodeRule == "fn") {
             let magic = countMagicNumbers(n.text)
-            if (magic >= 3) {
-                bumpFinding(findings, perFileKind, MagicNumber, n.file, n.startLine,
-                    nodeName(n), "函数体内 ${magic} 处裸数字字面量（≥3 时才报）——建议提取常量")
+            if (magic >= CONF_MAGIC_NUMBERS) {
+                bumpFinding(findings, perFileKind, cap, MagicNumber, n.file, n.startLine,
+                    nodeName(n), "函数体内 ${magic} 处裸数字字面量（≥${CONF_MAGIC_NUMBERS} 时才报）——建议提取常量")
             }
         }
         // 吞错误：catch 块仅只有注释或空
         if (n.nodeRule == "catch") {
             match (swallowedReason(n.text)) {
                 case Some(why) =>
-                    bumpFinding(findings, perFileKind, SwallowedError, n.file, n.startLine,
+                    bumpFinding(findings, perFileKind, cap, SwallowedError, n.file, n.startLine,
                         nodeName(n), why)
                 case None => ()
             }
@@ -282,14 +292,19 @@ func detectFromAst(nodes: ArrayList<AstNode>, findings: ArrayList<Finding>): Uni
 }
 
 /// 限流 + 加一条 finding。**唯一的 findings.add 路径**（保证限流无法绕过）。
+/// 超限丢弃时递增 cap（cappedKind 的真值来源——只在丢弃判定行计数）。
 func bumpFinding(findings: ArrayList<Finding>, perFileKind: HashMap<String, Int64>,
+                 cap: CapDropCounter,
                  kind: FlawKind, file: String, line: Int64, symbol: String, evidence: String): Unit {
     let key = "${file}|${flawId(kind)}"
     let c = match (perFileKind.get(key)) {
         case Some(v) => v
         case None => 0
     }
-    if (c >= CONF_MAX_PER_KIND_PER_FILE) { return }
+    if (c >= CONF_MAX_PER_KIND_PER_FILE) {
+        cap.kindDrops += 1   // 丢弃发生点
+        return
+    }
     perFileKind[key] = c + 1
     findings.add(Finding(kind, file, line, symbol, evidence))
 }
@@ -319,10 +334,12 @@ func bodyText(text: String): String {
     var last: Int64 = -1
     var i: Int64 = 0
     while (i < n) {
-        if (text[i] == 123) {
-            if (first < 0) { first = i }
-            last = i
-        }
+        // first = 首个 '{'；last = **末个 '}'**（与上行的规则文字一致）。
+        // ⚠️ last 不许跟着找 '{'：单行体 `struct P { int x; }` 只有一个 '{'，
+        // 按末 '{' 切会 first == last 落进缩进体分支、体取成空串 ——
+        // 字段被误报「空类型」（G5 回归 testFieldTypeOnlyStructIsNotEmpty）。
+        if (text[i] == 123 && first < 0) { first = i }
+        if (text[i] == 125) { last = i }
         i += 1
     }
     if (first >= 0 && last > first) {
@@ -528,7 +545,7 @@ func detectDuplicateBodies(nodes: ArrayList<AstNode>, findings: ArrayList<Findin
 ///
 /// `astUsed=true` 时只补跑 AST **覆盖不到**的语言（否则同一处会被两条路各报一次）。
 func detectLexicalFunctionSignals(graph: CodeGraph, findings: ArrayList<Finding>,
-                                  astUsed: Bool): Unit {
+                                  astUsed: Bool, cap: CapDropCounter): Unit {
     let perFileKind = HashMap<String, Int64>()
     for (f in graph.files) {
         // 按语法上可能有花括号体的语言做
@@ -611,20 +628,20 @@ func detectLexicalFunctionSignals(graph: CodeGraph, findings: ArrayList<Finding>
                         match (pendingStub) {
                             case Some((name, ln)) =>
                                 if (!bodyHadContent) {
-                                    bumpFinding(findings, perFileKind, StubBody, f.relPath, ln,
+                                    bumpFinding(findings, perFileKind, cap, StubBody, f.relPath, ln,
                                         name, "函数体（词法判定）内无可执行内容——占位实现候选")
                                 } else {
                                     if (bodyLines > CONF_LONG_FUNCTION_LINES) {
-                                        bumpFinding(findings, perFileKind, LongFunction, f.relPath, ln,
+                                        bumpFinding(findings, perFileKind, cap, LongFunction, f.relPath, ln,
                                             name, "约 ${bodyLines} 行（词法近似；阈值 ${CONF_LONG_FUNCTION_LINES}）")
                                     }
                                     if (maxRel > CONF_DEEP_NESTING) {
-                                        bumpFinding(findings, perFileKind, DeepNesting, f.relPath, ln,
+                                        bumpFinding(findings, perFileKind, cap, DeepNesting, f.relPath, ln,
                                             name, "花括号嵌套 ${maxRel} 层（词法近似；阈值 ${CONF_DEEP_NESTING}）")
                                     }
-                                    if (bodyMagic >= 3) {
-                                        bumpFinding(findings, perFileKind, MagicNumber, f.relPath, ln,
-                                            name, "函数体内 ${bodyMagic} 处裸数字字面量（词法近似；≥3 时才报）——建议提取常量")
+                                    if (bodyMagic >= CONF_MAGIC_NUMBERS) {
+                                        bumpFinding(findings, perFileKind, cap, MagicNumber, f.relPath, ln,
+                                            name, "函数体内 ${bodyMagic} 处裸数字字面量（词法近似；≥${CONF_MAGIC_NUMBERS} 时才报）——建议提取常量")
                                     }
                                 }
                             case None => ()
@@ -714,6 +731,9 @@ func buildBuiltinNames(): HashSet<String> {
         "Symbol", "Error", "TypeError", "Date", "Map",
         "vec", "Some", "None", "Ok", "Err",
         "System", "out", "valueOf",
+        // sizeof 是 C/C++ 的编译期运算符不是函数，但形态与调用一致
+        //（`malloc(sizeof(int))` 曾被指控为幻觉 API —— G2）
+        "sizeof",
         "malloc", "free", "memcpy", "strlen", "memset", "exit",
         "ArrayList", "HashMap", "HashSet", "StringBuilder", "Path", "FileInfo",
         "Directory", "Char", "UInt8", "Int64", "Float64", "Float32", "Rune",
@@ -760,7 +780,8 @@ func isBuiltinName(name: String): Bool {
 
 /// 幻觉调用：自由函数调用 `name(`，名字全仓无定义、非内建、非接收者调用。
 /// AI 生成代码的标志性病症——编造不存在的 API。数据来自 buildGraph 第二遍。
-func detectUnresolvedCalls(graph: CodeGraph, findings: ArrayList<Finding>): Unit {
+func detectUnresolvedCalls(graph: CodeGraph, findings: ArrayList<Finding>,
+                           cap: CapDropCounter): Unit {
     let perFile = HashMap<String, Int64>()
     for ((file, name, line) in graph.unresolvedCalls) {
         // 清单/配置文件豁免：Package.swift 的 Package()/macOS() 是 SwiftPM DSL，
@@ -777,7 +798,10 @@ func detectUnresolvedCalls(graph: CodeGraph, findings: ArrayList<Finding>): Unit
             case Some(v) => v
             case None => 0
         }
-        if (c >= CONF_MAX_PER_KIND_PER_FILE) { continue }
+        if (c >= CONF_MAX_PER_KIND_PER_FILE) {
+            cap.kindDrops += 1   // 丢弃发生点（cappedKind 真值）
+            continue
+        }
         perFile[key] = c + 1
         findings.add(Finding(UnresolvedCall, file, line, name,
             "调用 ${name}(…)：全仓没有该名字的定义，也不是语言内建——"
@@ -786,7 +810,8 @@ func detectUnresolvedCalls(graph: CodeGraph, findings: ArrayList<Finding>): Unit
 }
 
 /// 未使用 import：import 解析到了目标文件，但目标文件的任何符号都没在本文件出现。
-func detectUnusedImports(graph: CodeGraph, findings: ArrayList<Finding>): Unit {
+func detectUnusedImports(graph: CodeGraph, findings: ArrayList<Finding>,
+                         cap: CapDropCounter): Unit {
     let perFile = HashMap<String, Int64>()
     for ((file, mod, line) in graph.unusedImports) {
         let key = file
@@ -794,7 +819,10 @@ func detectUnusedImports(graph: CodeGraph, findings: ArrayList<Finding>): Unit {
             case Some(v) => v
             case None => 0
         }
-        if (c >= CONF_MAX_PER_KIND_PER_FILE) { continue }
+        if (c >= CONF_MAX_PER_KIND_PER_FILE) {
+            cap.kindDrops += 1   // 丢弃发生点（cappedKind 真值）
+            continue
+        }
         perFile[key] = c + 1
         findings.add(Finding(UnusedImport, file, line, mod,
             "import ${mod} 后从未使用其任何符号——死引用（AI 常顺手带上标准导入块）"))
@@ -842,7 +870,7 @@ func detectCommentedCode(graph: CodeGraph, findings: ArrayList<Finding>): Unit {
                         firstExcerpt = oneLineClamped(body, 60)
                     }
                 }
-                if (codeLines >= 3) {
+                if (codeLines >= CONF_COMMENTED_CODE_LINES) {
                     findings.add(Finding(CommentedCode, f.relPath, firstLine, "",
                         "${codeLines} 行注释掉的代码（首行：${firstExcerpt}）——确认后应删除而非注释"))
                 }
@@ -855,7 +883,8 @@ func detectCommentedCode(graph: CodeGraph, findings: ArrayList<Finding>): Unit {
 
 /// 未使用变量：函数体内 `let/var/val x =` 声明后，同名标识符在该函数体内
 /// 再未出现（声明行除外）。AST 函数边界内的词法统计——精确到函数作用域。
-func detectUnusedVariables(nodes: ArrayList<AstNode>, findings: ArrayList<Finding>): Unit {
+func detectUnusedVariables(nodes: ArrayList<AstNode>, findings: ArrayList<Finding>,
+                           cap: CapDropCounter): Unit {
     let perFile = HashMap<String, Int64>()
     for (n in nodes) {
         if (n.nodeRule != "fn") { continue }
@@ -895,7 +924,10 @@ func detectUnusedVariables(nodes: ArrayList<AstNode>, findings: ArrayList<Findin
                     case Some(v) => v
                     case None => 0
                 }
-                if (c >= CONF_MAX_PER_KIND_PER_FILE) { continue }
+                if (c >= CONF_MAX_PER_KIND_PER_FILE) {
+                    cap.kindDrops += 1   // 丢弃发生点（cappedKind 真值）
+                    continue
+                }
                 perFile[key] = c + 1
                 findings.add(Finding(UnusedVariable, n.file, lineNo, name,
                     "变量 ${name} 声明后在本函数体内未再出现——死变量（AI 常留的中间产物）"))
@@ -940,10 +972,22 @@ func detectTypeSignals(nodes: ArrayList<AstNode>, findings: ArrayList<Finding>):
         if (n.nodeRule != "type") { continue }
         let lines = n.endLine - n.startLine + 1
         let body = bodyText(n.text)
-        // 方法数：体内 func/def/function 关键词计数
+        // ⚠️ G5：成员计数必须纳入**字段行**——原实现只用 mayDeclare（声明
+        // 关键词）数成员，字段对它不可见，于是只有字段没有方法的类型
+        // （`type Rect struct { w, h float64 }`）被指控「没有任何成员——
+        // 占位类型或被掏空」。口径：大括号体内非空、剥注释后仍有内容的行
+        // 都算成员（字段行 + 方法声明行）；零成员才报 empty-type——
+        // 文案「没有任何成员」只有在真的一个成员都没有时才许说。
+        // methods 仍按声明关键词行计数（上帝类的口径是方法数，不是字段数）。
         var methods: Int64 = 0
+        var members: Int64 = 0
+        var strState: Int64 = 0
         for (line in body.lazySplit("\n")) {
-            if (mayDeclare(line)) { methods += 1 }
+            let (t, nextState) = stripCode(line, strState)
+            strState = nextState
+            if (blankLine(t)) { continue }
+            if (mayDeclare(t)) { methods += 1 }
+            members += 1
         }
         let name = typeNameOf(n)
         // ⚠️ M3：前置声明不是空类型。它是一种**故意不暴露成员**的声明，
@@ -951,7 +995,7 @@ func detectTypeSignals(nodes: ArrayList<AstNode>, findings: ArrayList<Finding>):
         if (isForwardDeclaration(n.text)) {
             continue
         }
-        if (methods == 0 && lines <= 3) {
+        if (members == 0 && lines <= 3) {
             findings.add(Finding(EmptyType, n.file, n.startLine, name,
                 "类型 ${name} 没有任何成员（${lines} 行）——占位类型或被掏空"))
         } else if (lines > CONF_GOD_CLASS_LINES || methods > CONF_GOD_CLASS_METHODS) {
@@ -981,9 +1025,14 @@ func detectPointerRisks(graph: CodeGraph, findings: ArrayList<Finding>): Unit {
                 var frees: Int64 = 0
                 var stackReturnLine: Int64 = 0
                 var lineNo: Int64 = 0
+                // ⚠️ G3：注释状态跨行携带（同 detectConcurrencyRisks ① 的先例）——
+                // 原实现每行独立以状态 0 调 stripCode，多行块注释里的 malloc(
+                // 被计入「疑似内存泄漏」。
+                var strState: Int64 = 0
                 for (line in text.lazySplit("\n")) {
                     lineNo += 1
-                    let (t, _) = stripCode(line, 0)
+                    let (t, nextState) = stripCode(line, strState)
+                    strState = nextState
                     if (t.contains("malloc(") || t.contains("calloc(") || t.contains("realloc(")) {
                         allocs += 1
                     }
@@ -1010,7 +1059,8 @@ func detectPointerRisks(graph: CodeGraph, findings: ArrayList<Finding>): Unit {
 ///   ② 锁不平衡：同函数内 lock/acquire 无对应 unlock/release
 ///   ③ 持锁调用：lock 到 unlock 区间内调用**非本函数定义**的函数（死锁经典形态）
 /// AST 可用时按函数节点判；降级时按文件词法近似（①仍准确——顶层判定不依赖函数边界）。
-func detectConcurrencyRisks(graph: CodeGraph, nodes: ArrayList<AstNode>, astUsed: Bool, findings: ArrayList<Finding>): Unit {
+func detectConcurrencyRisks(graph: CodeGraph, nodes: ArrayList<AstNode>, astUsed: Bool,
+                            findings: ArrayList<Finding>, cap: CapDropCounter): Unit {
     // ① 全局可变（语言关键词：Swift/Cangjie var、Rust static mut、Kotlin var）
     for (f in graph.files) {
         let content = readFileText("${graph.root}/${f.relPath}")
@@ -1041,6 +1091,11 @@ func detectConcurrencyRisks(graph: CodeGraph, nodes: ArrayList<AstNode>, astUsed
                                 perFile[f.relPath] = c + 1
                                 findings.add(Finding(GlobalMutable, f.relPath, lineNo, "",
                                     "顶层可变全局（${oneLineClamped(trimmed, 50)}）——多线程共享状态的起点，需同步或改不可变"))
+                            } else {
+                                // 丢弃发生点（GlobalMutable 的每文件上限是历史口径 3，
+                                // 与 CONF_MAX_PER_KIND_PER_FILE 不同值，但同属
+                                // 「因限流被丢弃」——cappedKind 的判据）
+                                cap.kindDrops += 1
                             }
                         }
                     }
@@ -1073,7 +1128,7 @@ func detectConcurrencyRisks(graph: CodeGraph, nodes: ArrayList<AstNode>, astUsed
                 if (containsLockRelease(line)) {
                     unlockLine = lineNo
                     // 持锁区间（lockLine..unlockLine）内调用外部函数
-                    checkLockCalls(n, lockLine, unlockLine, findings, perFile)
+                    checkLockCalls(n, lockLine, unlockLine, findings, perFile, cap)
                     locked = false
                 }
             }
@@ -1088,6 +1143,8 @@ func detectConcurrencyRisks(graph: CodeGraph, nodes: ArrayList<AstNode>, astUsed
                 perFile[n.file] = c + 1
                 findings.add(Finding(LockImbalance, n.file, lockLine, nodeName(n),
                     "函数 ${nodeName(n)} 在 L${lockLine} 获取锁后到函数结束没有释放——锁泄漏或依赖外部释放"))
+            } else {
+                cap.kindDrops += 1   // 丢弃发生点（cappedKind 真值）
             }
         }
     }
@@ -1116,13 +1173,19 @@ func containsLockRelease(line: String): Bool {
 
 /// 持锁区间内的外部调用：调用名既非语言内建、也非本函数内定义、也非锁 API 本身。
 func checkLockCalls(n: AstNode, lockLine: Int64, unlockLine: Int64,
-                    findings: ArrayList<Finding>, perFile: HashMap<String, Int64>): Unit {
+                    findings: ArrayList<Finding>, perFile: HashMap<String, Int64>,
+                    cap: CapDropCounter): Unit {
     // ⚠️ 仓颉 lambda 不允许写捕获环境——手写扫描，不用闭包。
     var idx: Int64 = 0
+    // ⚠️ G3：注释状态跨行携带，且**每行先推进状态再做区间过滤**——
+    // 若先 continue 再 stripCode，被跳过的行会丢状态，持锁区间里
+    // 跨行块注释的后半段就漏剥了（注释里的调用被报死锁）。
+    var strState: Int64 = 0
     for (line in n.text.lazySplit("\n")) {
         idx += 1
+        let (t, nextState) = stripCode(line, strState)
+        strState = nextState
         if (idx < lockLine - n.startLine + 1 || idx > unlockLine - n.startLine + 1) { continue }
-        let (t, _) = stripCode(line, 0)
         let b = t.toArray()
         let ln = Int64(b.size)
         var i: Int64 = 0
@@ -1148,6 +1211,8 @@ func checkLockCalls(n: AstNode, lockLine: Int64, unlockLine: Int64,
                             perFile[n.file] = c + 1
                             findings.add(Finding(LockUnknownCall, n.file, n.startLine + idx - 1, name,
                                 "持锁区间内调用 ${name}(…)（L${lockLine} 获取锁）——若被调方再取同一把锁即死锁"))
+                        } else {
+                            cap.kindDrops += 1   // 丢弃发生点（cappedKind 真值）
                         }
                     }
                 }
@@ -1172,8 +1237,15 @@ func checkLockCalls(n: AstNode, lockLine: Int64, unlockLine: Int64,
 /// 阈值 >10 = 缺陷统计预测器（McCabe 1976，2023 IEEE 96% 准确率确认）。
 func cyclomaticComplexity(bodyLines: ArrayList<String>): Int64 {
     var cc: Int64 = 1  // 基础路径
+    // ⚠️ G4：匹配前先剥注释与字符串（跨行携带状态，复用 stripCode）——
+    // 原实现对原始函数体行计数，注释与字符串里的英文散文
+    // （"if the value…"、"a || b"）被算成决策点，纯注释函数被判
+    // 「圈复杂度 13」。字符串字面量里的分支词同样不是决策点。
+    var strState: Int64 = 0
     for (line in bodyLines) {
-        let t = line.trimAscii()
+        let (stripped, nextState) = stripCode(line, strState)
+        strState = nextState
+        let t = stripped.trimAscii()
         // "if " 已覆盖 "else if " 中的 if，单列会同一分支计两次。
         // 续搜用 from 偏移而非字符串切片：indexOfStr 返回 -1 时
         // `t[idx + kw.size..]` 会在短行上越界（实测 Invalid range 26..23）。
@@ -1288,7 +1360,8 @@ func normalizedBodyHash(bodyLines: ArrayList<String>): String {
 
 /// 语义层检测主入口：圈复杂度/参数滥用/不可达代码/混合职责/近重复。
 /// 遍历每个文件的每个函数，提取函数体源码行，逐项检查。
-func detectSemanticIssues(graph: CodeGraph, findings: ArrayList<Finding>): Unit {
+func detectSemanticIssues(graph: CodeGraph, findings: ArrayList<Finding>,
+                          cap: CapDropCounter): Unit {
     let perFile = HashMap<String, Int64>()
     // 归一化哈希 → 首个相同哈希的函数 id（近重复检测）
     let bodyHash = HashMap<String, String>()
@@ -1319,31 +1392,31 @@ func detectSemanticIssues(graph: CodeGraph, findings: ArrayList<Finding>): Unit 
             // 单函数粒度兜底：一个函数的异常只跳过它自己，
             // 不再把整层语义检测清空（此前 Invalid range 一抛全仓丢失）。
             try {
-                // ① 圈复杂度 >10 → HighComplexity
+                // ① 圈复杂度 >阈值 → HighComplexity
                 let cc = cyclomaticComplexity(body)
-                if (cc > 10) {
-                    bumpFinding(findings, perFile, HighComplexity, fe.relPath, s.line, s.name,
-                        "圈复杂度 ${cc}（阈值 10）——决策路径爆炸，难测试/易藏 bug")
+                if (cc > CONF_COMPLEXITY) {
+                    bumpFinding(findings, perFile, cap, HighComplexity, fe.relPath, s.line, s.name,
+                        "圈复杂度 ${cc}（阈值 ${CONF_COMPLEXITY}）——决策路径爆炸，难测试/易藏 bug")
                 }
-                // ② 参数数 >5 或 Bool 标志参 → ParameterAbuse
+                // ② 参数数超阈值或 Bool 标志参 → ParameterAbuse
                 let (pCount, hasBool) = analyzeParams(sigLine)
-                if (pCount > 5) {
-                    bumpFinding(findings, perFile, ParameterAbuse, fe.relPath, s.line, s.name,
-                        "${pCount} 个参数（阈值 5）——God 签名，API 设计缺失")
+                if (pCount > CONF_PARAMS) {
+                    bumpFinding(findings, perFile, cap, ParameterAbuse, fe.relPath, s.line, s.name,
+                        "${pCount} 个参数（阈值 ${CONF_PARAMS}）——God 签名，API 设计缺失")
                 } else if (hasBool && pCount >= 2) {
-                    bumpFinding(findings, perFile, ParameterAbuse, fe.relPath, s.line, s.name,
+                    bumpFinding(findings, perFile, cap, ParameterAbuse, fe.relPath, s.line, s.name,
                         "Bool 标志参控制分支——违反 SRP，应拆分为两个函数")
                 }
                 // ③ 不可达代码 → DeadBranch
                 match (hasDeadBranch(body, bodyStart)) {
                     case Some(ln) =>
-                        bumpFinding(findings, perFile, DeadBranch, fe.relPath, ln, s.name,
+                        bumpFinding(findings, perFile, cap, DeadBranch, fe.relPath, ln, s.name,
                             "return/throw 后同层级仍有语句——不可达代码残余")
                     case None => ()
                 }
                 // ④ 混合职责 → MixedResponsibility
                 if (hasMixedResponsibility(body)) {
-                    bumpFinding(findings, perFile, MixedResponsibility, fe.relPath, s.line, s.name,
+                    bumpFinding(findings, perFile, cap, MixedResponsibility, fe.relPath, s.line, s.name,
                         "同函数内混合文件 I/O 与计算逻辑——不可组合/不可测试")
                 }
                 // ⑤ 近重复 → NearDuplicate（归一化哈希比较）
@@ -1351,7 +1424,7 @@ func detectSemanticIssues(graph: CodeGraph, findings: ArrayList<Finding>): Unit 
                 match (bodyHash.get(hash)) {
                     case Some(firstId) =>
                         if (firstId != id) {
-                            bumpFinding(findings, perFile, NearDuplicate, fe.relPath, s.line, s.name,
+                            bumpFinding(findings, perFile, cap, NearDuplicate, fe.relPath, s.line, s.name,
                                 "函数体与 ${firstId} 归一化后完全一致——应提取共享逻辑")
                         }
                     case None => bodyHash[hash] = id

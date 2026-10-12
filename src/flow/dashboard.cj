@@ -100,6 +100,41 @@ public func langTopFilter(files: ArrayList<String>): ArrayList<String> {
     return out
 }
 
+/// 契约C 汇总侧的**唯一判定**（纯函数）：statuses 里有多少项目的未跟踪数
+/// 读不到、原因样本、以及把读得到的项目加总后的未跟踪文件数。
+///
+/// 判据与 status.cj 恒发的 `untrackedError` 键同一口径：**非空 = 读不到**。
+/// 读不到的项目不把 0 累进总数 —— 与 groupSummary 对 repoBranchCount=-1
+/// 的处理同一条纪律：故障不冒充数据（#187 languagesFailed 判例）。
+///
+/// ⚠️ 抽成纯函数是因为「untrackedError 非空且 status 成功」**在磁盘上构造
+/// 不出来**：能让 `git ls-files --others` 失败的确定性手段（坏 index、
+/// exclude 变目录、权限收回）都会先让 `git status --porcelain` 失败 ⇒
+/// collectFacts 抛 REPO_UNREADABLE ⇒ status 条目整个变错误桩。
+/// 非空路径只能对 statuses 直接断言；接线由 lint 钉住（见
+/// testBuildDashboardWiresUntrackedFailureAggregates）。
+public func untrackedFailureAggregates(
+    statuses: ArrayList<JsonValue>,
+): (Int64, ArrayList<String>, Int64) {
+    var failed: Int64 = 0
+    let samples = ArrayList<String>()
+    var total: Int64 = 0
+    for (s in statuses) {
+        // 采集失败的项目不参与（错误桩的 untrackedCount=-1，加进去会把总数拉低）
+        if (Json.has(s, "error")) {
+            continue
+        }
+        let uerr = Json.strAt(s, "untrackedError", "")
+        if (!uerr.isEmpty()) {
+            failed += 1
+            samples.add(oneLineClamped(uerr, 120))
+        } else {
+            total += Json.intAt(s, "untrackedCount", 0)
+        }
+    }
+    return (failed, samples, total)
+}
+
 public func buildDashboard(projects: ArrayList<ProjectEntry>, config: Config): JsonValue {
     let o = Json.obj()
     let statuses = allProjectStatuses(projects, config, true)
@@ -108,11 +143,15 @@ public func buildDashboard(projects: ArrayList<ProjectEntry>, config: Config): J
     var dirtyProjects: Int64 = 0
     var branchTotal: Int64 = 0
     var mergeCandidates: Int64 = 0
-    var untrackedTotal: Int64 = 0
     var stashTotal: Int64 = 0
     var commits7d: Int64 = 0
     var commits30d: Int64 = 0
     var allFailed: Int64 = 0
+
+    // 契约C（untrackedError）汇总侧：读不到未跟踪数的项目单列（恒发，
+    // #187 languagesFailed 判例）。聚合走 untrackedFailureAggregates 这个
+    // 唯一判定 —— 接线由 testBuildDashboardWiresUntrackedFailureAggregates 钉住。
+    let (untrackedFailed, untrackedErrorSamples, untrackedTotal) = untrackedFailureAggregates(statuses)
 
     let langCounts = ArrayList<(String, Int64)>()
     let hotProjects = ArrayList<JsonValue>()  // 近 7 天有提交的项目
@@ -194,7 +233,6 @@ public func buildDashboard(projects: ArrayList<ProjectEntry>, config: Config): J
         if (Json.intAt(s, "userDirtyCount", 0) > 0) {
             dirtyProjects += 1
         }
-        untrackedTotal += Json.intAt(s, "untrackedCount", 0)
         stashTotal += Json.intAt(s, "stashCount", 0)
         let branches = Json.arrAt(s, "branches")
         branchTotal += branches.size
@@ -260,6 +298,16 @@ public func buildDashboard(projects: ArrayList<ProjectEntry>, config: Config): J
     Json.set(work, "branches", Json.of(branchTotal))
     Json.set(work, "mergeCandidates", Json.of(mergeCandidates))
     Json.set(work, "untrackedFiles", Json.of(untrackedTotal))
+    // 契约C（untrackedError）汇总侧，恒发（对齐 languagesFailed / #187 的判例）：
+    // 失败与「真的没有」必须分得开 —— 采集失败时 untrackedCount=0，
+    // 不加这两个键，work.untrackedFiles 的 0 就会被读成「项目群没有未跟踪文件」，
+    // 而那是无知不是结论（不变量 17：数据里有 ≠ 用户看得到）。
+    Json.set(work, "untrackedFailed", Json.of(untrackedFailed))
+    let uerrArr = ArrayList<JsonValue>()
+    for (e in untrackedErrorSamples) {
+        uerrArr.add(Json.of(e))
+    }
+    Json.set(work, "untrackedFailedReasons", JArr(uerrArr))
     Json.set(work, "stashes", Json.of(stashTotal))
     Json.set(o, "work", work)
 
@@ -451,7 +499,9 @@ public func buildMilestoneOverview(projects: ArrayList<ProjectEntry>, config: Co
     // 损坏时是 0，而它**不是**「没有里程碑」的证据
     Json.set(counts, "readCount", Json.of(allMilestones.size))
     // readCount 的去向必须能对账，否则「计入数 < 读到数」的差额是隐形黑洞：
-    //     readCount = open + done + dropped + unknown + excludedDisabled + orphaned
+    //     readCount = open + done + dropped + unknown + other + excludedDisabled + orphaned
+    // （other 是认不出的 status 的单列桶，#182 加上时同步进这条等式 ——
+    //   同文件的测试 sum 已含 other，注释漏了它就与实现矛盾。）
     // 两个计数器恒发，即使为 0 —— 上面那条等式才是消费方能自证的前提。
     Json.set(counts, "excludedDisabled", Json.of(excludedDisabled))
     Json.set(counts, "orphaned", Json.of(orphanCount))
@@ -967,6 +1017,7 @@ func testUnrecognizedMilestoneStatusIsCountedNotDropped(): Unit {
         let sum = Json.intAt(counts, "open", 0) + Json.intAt(counts, "done", 0)
             + Json.intAt(counts, "dropped", 0) + Json.intAt(counts, "unknown", 0)
             + Json.intAt(counts, "excludedDisabled", 0) + Json.intAt(counts, "other", 0)
+            + Json.intAt(counts, "orphaned", 0)
         @Assert(sum == Json.intAt(counts, "readCount", -1))
         // 文本披露由 cli 包的 testDashboardMilestoneLineDisclosesOtherStatus 覆盖
         // （dashboardMilestoneLine 在 moongit.cli，这里跨包访问不到）
@@ -1231,4 +1282,111 @@ func testDashboardDoesNotClaimTopCutWhenComplete(): Unit {
     @Assert(Json.has(d, "languagesTopCut"))
     @Assert(!Json.boolAt(d, "languagesTopCut", true))
     removePathIfExists(base)
+}
+
+// ------------------------------ 契约C：untrackedError 的汇总侧消费 ------------------------------
+
+/// 剥注释后的源码（测试用）。复用 util 的 stripCjCommentEx ——
+/// 剥法只允许有一份，自己再写第二份必踩「字符串里的 //」与
+/// 「字节拼接成数字串」两个坑（AGENTS.md 不变量 45 的血泪）。
+private func dashCodeOnly(src: String): String {
+    let sb = StringBuilder()
+    var st = CjStripState.Normal
+    for (line in src.split("\n")) {
+        let (stripped, next) = stripCjCommentEx(line, st)
+        st = next
+        sb.append(stripped)
+        sb.append("\n")
+    }
+    return sb.toString()
+}
+
+/// 聚合判定的纯函数路径：读不到的项目单列、不把 0 冒充数据。
+///
+/// 「untrackedError 非空且 status 成功」在磁盘上构造不出来（见
+/// untrackedFailureAggregates 的注释），所以非空路径对 statuses 直接断言 ——
+/// statuses 按 projectStatus 的真实形状手搓（该键恒发，空串 = 正常）。
+@Test
+func testUntrackedFailureAggregatesSeparatesUnreadableFromZero(): Unit {
+    let okS = Json.obj()
+    Json.set(okS, "name", Json.of("ok"))
+    Json.set(okS, "untrackedCount", Json.of(3))
+    Json.set(okS, "untrackedError", Json.of(""))
+    let badS = Json.obj()
+    Json.set(badS, "name", Json.of("bad"))
+    Json.set(badS, "untrackedCount", Json.of(0))
+    Json.set(badS, "untrackedError", Json.of("git ls-files --others 失败：fatal: index file corrupt"))
+    // 错误桩形状：整个 status 采集失败（untrackedCount=-1），不参与统计
+    let errS = Json.obj()
+    Json.set(errS, "name", Json.of("err"))
+    Json.set(errS, "error", Json.of("路径不存在或卷未挂载"))
+    Json.set(errS, "untrackedCount", Json.of(-1))
+    Json.set(errS, "untrackedError", Json.of(""))
+
+    let (failed, samples, total) = untrackedFailureAggregates(
+        ArrayList<JsonValue>([okS, badS, errS]))
+    @Assert(failed == 1)
+    @Assert(samples.size == 1)
+    @Assert(samples[0].contains("ls-files"))
+    // 只累加读得到的：失败项与错误桩都不把 0 / -1 冒充进总数
+    @Assert(total == 3)
+    // 全健康：failed=0、samples 空 —— 披露键恒发但值如实为空
+    let (f0, s0, t0) = untrackedFailureAggregates(ArrayList<JsonValue>([okS]))
+    @Assert(f0 == 0)
+    @Assert(s0.isEmpty())
+    @Assert(t0 == 3)
+}
+
+/// 恒发 + 接线的端到端一半：健康项目群走真实 buildDashboard，
+/// work.untrackedFailed / untrackedFailedReasons 两个键必须在且如实为 0 / 空
+/// （恒发，不靠「有失败才发」—— 那正是键集随数据漂的来源）。
+@Test
+func testDashboardAlwaysEmitsUntrackedFailureFields(): Unit {
+    let base = "/tmp/dg_dash_utok-${nowMillis()}"
+    let repo = "${base}/repo"
+    try {
+        ensureDir(repo)
+        gitRun(repo, ["init", "-q", "-b", "main"], false)
+        writeFileAtomic("${repo}/a.py", "x")
+        // 留一个未提交文件：前提自证「健康路径下未跟踪数是真实值（1），不是 0」，
+        // 否则下面的 untrackedFiles==1 可能只是占位 0 碰巧相等
+        writeFileAtomic("${repo}/loose.txt", "y")
+        gitRun(repo, ["add", "a.py"], false)
+        gitRun(repo, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "i"], false)
+        let reg = Registry()
+        reg.projects.add(ProjectEntry("p_utok", "utok", repo, "git", "", nowIso(), ArrayList<String>(), false))
+        let d = buildDashboard(reg.projects, Config.defaults())
+        let work = Json.getOr(d, "work")
+        @Assert(Json.intAt(work, "untrackedFiles", -1) == 1)
+        @Assert(Json.has(work, "untrackedFailed"))
+        @Assert(Json.intAt(work, "untrackedFailed", -1) == 0)
+        @Assert(Json.has(work, "untrackedFailedReasons"))
+        @Assert(Json.arrAt(work, "untrackedFailedReasons").size == 0)
+    } finally {
+        removePathIfExists(repo)
+        removePathIfExists(base)
+    }
+}
+
+/// 接线 lint（不变量 28）：判定抽成纯函数后，buildDashboard 必须真的走它 ——
+/// 否则纯函数测试再绿，测的也是没人调用的代码，而恒发测试分不清
+/// 「真实聚合出 0」与「硬编码 0」。剥注释后匹配（AGENTS.md 不变量 30）。
+@Test
+func testBuildDashboardWiresUntrackedFailureAggregates(): Unit {
+    let srcOpt = readFileTextChecked("src/flow/dashboard.cj")
+    @Assert(srcOpt.isSome())   // 前提：真的读到了源码，不是空跑
+    match (srcOpt) {
+        case Some(raw) =>
+            let code = dashCodeOnly(raw)
+            // 前提：剥注释器没退化成恒等函数 —— 注释里的字面量必须已消失。
+            // 金丝雀用拼接构造：断言自己的字符串字面量会保留在剥离结果里，
+            // 写成整串字面量就成了「检查咬到自己」（不变量 30 的变体）。
+            let canary = "剥法只允" + "许有一份"
+            @Assert(!code.contains(canary))
+            // 定义在
+            @Assert(code.contains("func untrackedFailureAggregates"))
+            // 调用点在（buildDashboard 内拿 statuses 喂它，不是只有定义没人用）
+            @Assert(code.contains("untrackedFailureAggregates(statuses)"))
+        case None => ()
+    }
 }

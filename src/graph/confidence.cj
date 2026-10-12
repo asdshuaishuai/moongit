@@ -77,11 +77,6 @@ public func flawId(k: FlawKind): String {
         case DeadBranch => "dead-branch"
         case MixedResponsibility => "mixed-responsibility"
         case NearDuplicate => "near-duplicate"
-        case HighComplexity => "high-complexity"
-        case ParameterAbuse => "parameter-abuse"
-        case DeadBranch => "dead-branch"
-        case MixedResponsibility => "mixed-responsibility"
-        case NearDuplicate => "near-duplicate"
     }
 }
 
@@ -261,6 +256,17 @@ public let CONF_MAX_FINDINGS: Int64 = 400
 /// 上帝类：类型节点行数或方法数超过即报
 public let CONF_GOD_CLASS_LINES: Int64 = 400
 public let CONF_GOD_CLASS_METHODS: Int64 = 30
+/// 魔法数字：函数体内裸数字字面量达到该数才报。AST 路径与词法路径
+/// **共用这一个常量**（判据与证据文案都从它派生）——各写一份必然漂移，
+/// 症状是同一函数在两条路径下一条报一条不报（G7）
+public let CONF_MAGIC_NUMBERS: Int64 = 3
+/// 注释掉的代码：一个文件里「长得像代码」的注释行达到该数才报
+/// （单独一两行是正常注释，成片才是被禁用的代码残留）
+public let CONF_COMMENTED_CODE_LINES: Int64 = 3
+/// 圈复杂度阈值（McCabe 1976；超过即报）——决策路径爆炸的统计预测器
+public let CONF_COMPLEXITY: Int64 = 10
+/// 参数个数阈值：超过即报 God 签名（API 设计缺失的信号）
+public let CONF_PARAMS: Int64 = 5
 
 /// 一条疑点：类别 + 位置 + 证据。证据必须自足（人不开编辑器就能判断）。
 public struct Finding {
@@ -311,13 +317,21 @@ public class ConfidenceReport {
     /// 按维度的 (罚分, 条数, 0..100 维度分)——评审要求的「评分细节」：
     /// 总分之外每个维度单独可读，LLM 复核按此分节。
     public let dimensions: ArrayList<(ConfDimension, Int64, Int64, Int64)>
+    /// 有 finding 因「每文件每类上限」（CONF_MAX_PER_KIND_PER_FILE 及各检测器的
+    /// 同族限流）被丢弃。真值来自**丢弃发生的判定点**（CapDropCounter），
+    /// 不是拿截断后的结果集反推——「恰好 6 条」与「第 7 条被丢弃」在结果集里
+    /// 同形，反推会把恰好达限误报成「超出已汇总」。
+    public let cappedKind: Bool
+    /// 有 finding 因总量上限（CONF_MAX_FINDINGS）被丢弃（同上：判定点置位）。
+    public let cappedTotal: Bool
 
     public init(root: String, score: Int64, findings: ArrayList<Finding>,
                 astUsed: Bool, astNote: String,
                 filesAnalyzed: Int64,
                 byKind: ArrayList<(FlawKind, Int64)>,
                 files: ArrayList<(String, Int64)>,
-                dimensions: ArrayList<(ConfDimension, Int64, Int64, Int64)>) {
+                dimensions: ArrayList<(ConfDimension, Int64, Int64, Int64)>,
+                cappedKind!: Bool = false, cappedTotal!: Bool = false) {
         this.root = root
         this.score = score
         this.findings = findings
@@ -327,7 +341,18 @@ public class ConfidenceReport {
         this.byKind = byKind
         this.files = files
         this.dimensions = dimensions
+        this.cappedKind = cappedKind
+        this.cappedTotal = cappedTotal
     }
+}
+
+/// 每文件每类限流的**丢弃计数器**——ConfidenceReport.cappedKind 的唯一真值来源。
+/// analyzeConfidence 创建一份传给所有带限流的检测器；检测器只在
+/// 「这一条因超限被丢弃」的判定行递增，绝不拿截断后的 findings 反推。
+/// （跨函数累积可变状态的既有通道先例：build.cj 的 ReferVar。）
+public class CapDropCounter {
+    public var kindDrops: Int64
+    public init() { kindDrops = 0 }
 }
 
 // MARK: - 主流程
@@ -392,30 +417,33 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
     }
 
     // ── ① 孤儿符号：定义了，全仓无引用（图数据直接支撑）──
-    detectOrphans(graph, findings)
+    // kindCap：每文件每类限流的丢弃计数（cappedKind 真值来源），传入所有
+    // 带限流的检测器——只在丢弃发生的判定行递增（见 CapDropCounter 注释）。
+    let kindCap = CapDropCounter()
+    detectOrphans(graph, findings, kindCap)
     // ── ② 命名可疑 ──
-    detectSuspiciousNames(graph, findings)
+    detectSuspiciousNames(graph, findings, kindCap)
     // ── ③ TODO 残留（按文件计数）──
     detectTodos(graph, findings)
     // ── ④ 函数粒度信号：AST 节点 + 词法近似 ──
     // AST 覆盖得到时用 AST；词法路径**始终**补跑 AST 覆盖不到的语言
     // （如纯仓颉仓库 / 混合仓库里的仓颉文件），否则这些语言只剩「超长函数」。
     if (astUsed) {
-        detectFromAst(astNodes, findings)
+        detectFromAst(astNodes, findings, kindCap)
     }
-    detectLexicalFunctionSignals(graph, findings, astUsed)
+    detectLexicalFunctionSignals(graph, findings, astUsed, kindCap)
     // ── ⑤ 重复函数体（同体哈希，需 AST 的准确边界）──
     if (astUsed) {
         detectDuplicateBodies(astNodes, findings)
     }
     // ── ⑥ 幻觉调用 / ⑦ 未使用 import / ⑧ 注释掉的代码 ──
     // 图数据直接支撑：unresolvedCalls / unusedImports 在 buildGraph 两遍扫描时产出
-    detectUnresolvedCalls(graph, findings)
-    detectUnusedImports(graph, findings)
+    detectUnresolvedCalls(graph, findings, kindCap)
+    detectUnusedImports(graph, findings, kindCap)
     detectCommentedCode(graph, findings)
     // ── ⑨ 变量级（未使用变量，需 AST 函数边界）──
     if (astUsed) {
-        detectUnusedVariables(astNodes, findings)
+        detectUnusedVariables(astNodes, findings, kindCap)
     }
     // ── ⑩ 类型级（空类型 / 上帝类，需 AST type 节点）──
     if (astUsed) {
@@ -424,25 +452,29 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
     // ── 语义层检测（圈复杂度/参数滥用/不可达代码/混合职责/近重复）──
     // ⚠️ 不放在 if (astUsed) 内——纯仓颉仓 astUsed=false，但这些检测全走词法
     try {
-        detectSemanticIssues(graph, findings)
+        detectSemanticIssues(graph, findings, kindCap)
     } catch (e: Exception) {
         Log.warn("语义层检测异常（已跳过）: ${e.message}")
     }
     // ── ⑪ 指针风险（C/C++：malloc/free 配对、返回栈地址）──
     detectPointerRisks(graph, findings)
     // ── ⑫ 并发链路/细节（全局可变、锁不平衡、持锁调用）──
-    detectConcurrencyRisks(graph, astNodes, astUsed, findings)
+    detectConcurrencyRisks(graph, astNodes, astUsed, findings, kindCap)
 
     // 排序：全序（见 sortFindings），确定性 + 重要的在前
     sortFindings(findings)
     // 总量截断（披露进 astNote，不静默）
     var truncatedNote = ""
+    // ⚠️ cappedTotal 在**丢弃发生的位置**置位——不是拿 findings.size >= 上限反推：
+    // 恰好 400 条产出时并不发生截断，反推会把「刚好达限」误报成「已截断」。
+    var cappedTotal = false
     if (Int64(findings.size) > CONF_MAX_FINDINGS) {
         let extra = Int64(findings.size) - CONF_MAX_FINDINGS
         while (Int64(findings.size) > CONF_MAX_FINDINGS) {
             findings.remove(at: findings.size - 1)
         }
         truncatedNote = "；另有 ${extra} 条低权重疑点未列出（按权重截断）"
+        cappedTotal = true
     }
 
     // 每类计数
@@ -538,7 +570,8 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
     let score = confidenceScore(penalty, nFiles)
 
     return ConfidenceReport(graph.root, score, findings, astUsed,
-                            astNote + truncatedNote, nFiles, byKind, files, dims)
+                            astNote + truncatedNote, nFiles, byKind, files, dims,
+                            cappedKind: kindCap.kindDrops > 0, cappedTotal: cappedTotal)
 }
 
 /// findings 的**全序**排序（`AGENTS.md` 契约：同一仓库两次运行逐字节一致）。

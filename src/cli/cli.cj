@@ -208,6 +208,10 @@ public func main2(argv: ArrayList<String>): Int64 {
         case "skill" => return cmdSkill(rest, ctx)
         case "report" => return cmdReport(rest, ctx)
         case "graph" => return cmdGraph(rest, ctx)
+        case "confidence" => return cmdConfidence(rest, ctx)
+        case "arch" => return cmdArch(rest, ctx)
+        case "index" => return cmdIndex(rest, ctx)
+        case "render" => return cmdRender(rest, ctx)
         case _ =>
             Log.error(T("Unknown command: ${command}", "未知命令：${command}"))
             printHelp()
@@ -226,15 +230,21 @@ let HOOK_KINDS: Array<String> = ["post-commit", "post-merge"]
 // 当成项目名（表现为「未找到项目：<flag 的值>」；若该值恰好是某项目名的子串，
 // 还会被 findProjectIn 的子串兜底静默解析成另一个项目），且缺值不会被拦下。
 let VALUE_FLAGS: Array<String> = [
-    "--name", "--depth", "--docs", "--scope", "--branch", "--port",
+    "--name", "--depth", "--docs", "--scope", "--branch",
     "--source", "--tag", "--date", "--desc", "--out", "--message", "--budget",
-    "--dir", "--limit", "--note", "--host", "--format", "--patch",
+    "--dir", "--limit", "--note", "--format", "--patch", "--file",
+    // confidence query 的过滤维度（图能力重设计第二阶段）
+    "--symbol", "--kind", "--weight", "--top",
 ]
 
 /// 全部 CLI flag 白名单：全局 + 带值 + 布尔。
 ///
 /// ⚠️ 维护要求：新增任何 flag 必须同时加进这里，否则用户一用就报「未知 flag」。
 /// 布尔 flag 分散在各命令里（hasFlag 调用点），这里按「值一次也不改」的约定手工枚举。
+/// 反向同理：**没有消费点的 flag 必须从名单删掉**（本轮审查已删 --host/--port/--open ——
+/// HTTP 层遗留，全仓零 flagValue/hasFlag 调用点，值被静默吞掉；
+/// 留在名单里等于宣称一个引擎不会兑现的参数，与 #194「死配置」同一族）。
+/// 守门：__lintHelpMustNotAdvertiseUnknownFlags（help 宣传的 flag 必须都在名单里）。
 ///
 /// 已知取舍：这是**全局**白名单，不是 per-command 的。所以 `report --purge` 会被接受
 /// （--purge 对 remove 有效），只是被忽略 —— 它抓的是拼写错误（--limti / --dryrun /
@@ -244,13 +254,18 @@ let KNOWN_FLAGS: Array<String> = [
     // 全局（parseFlags）
     "--json", "-q", "--quiet", "-v", "--verbose", "--help", "-h",
     // 带值（与 VALUE_FLAGS 一致）
-    "--name", "--depth", "--docs", "--scope", "--branch", "--port",
+    "--name", "--depth", "--docs", "--scope", "--branch",
     "--source", "--tag", "--date", "--desc", "--out", "--message", "--budget",
-    "--dir", "--limit", "--note", "--host", "--format", "--patch",
+    "--dir", "--limit", "--note", "--format", "--patch", "--file",
     // 布尔
-    "--dry-run", "--git-only", "--open", "--purge",
+    "--dry-run", "--git-only", "--purge",
     // confidence 专用（被动能力开关）
     "--no-ast", "--llm", "--skill", "--merge",
+    // index / render（图能力重设计第一阶段）
+    "--force", "--confidence", "--stats",
+    // arch / confidence（图能力重设计第二阶段）
+    "--violations", "--db",
+    "--symbol", "--kind", "--weight", "--top",
 ]
 
 /// token 是否长得像 flag。负数（-5）不是 flag。
@@ -638,6 +653,16 @@ func cmdMilestone(rest: ArrayList<String>, ctx: CliContext): Int64 {
 // 三个出口（milestone list / dashboard / MCP list_milestones）共用它。
 // 别在这里再写一份：dashboard 之前就因为手抄第三份栽过两次。
 
+/// status 是否是引擎认不出的值（非 open/done/dropped/unknown）。
+///
+/// 手写 milestones.json / 旧版本数据 / 未来新增枚举都会落到这里。
+/// 判定口径与 flow/report.cj milestoneCellNote 里那份**逐字相同**
+///（那边是私有的，cli 不许 import flow 的私有函数，只能各持一份 ——
+/// 两侧都有测试钉住「认不出的 status 渲染成无法核验」，漂移会红）。
+func unrecognizedMilestoneStatus(status: String): Bool {
+    return status != "open" && status != "done" && status != "dropped" && status != "unknown"
+}
+
 func milestoneLine(it: JsonValue, lang: String): String {
     let name = Json.strAt(it, "name", "")
     let proj = Json.strAt(it, "projectName", "")
@@ -654,7 +679,16 @@ func milestoneLine(it: JsonValue, lang: String): String {
         case "dropped" => tl(lang, "✗ dropped", "✗ 已放弃")
         // 仓库读不出来 ≠ 没达成。这两种混同会让「系统坏了」被读成「进度没了」。
         case "unknown" => tl(lang, "? unverifiable (repo unreadable)", "? 无法核验（仓库读不出来）")
-        case _ => if (overdue) { tl(lang, "⚠ overdue", "⚠ 已逾期") } else { tl(lang, "in progress", "进行中") }
+        // 只有 open 才谈进行中/逾期 —— 对齐 report 出口（milestoneCellStatus）的三态。
+        case "open" => if (overdue) { tl(lang, "⚠ overdue", "⚠ 已逾期") } else { tl(lang, "in progress", "进行中") }
+        // ⚠️ 认不出的 status 绝不能兜成「进行中」（本轮审查）：
+        // report 出口（flow/report.cj milestoneCellStatus）上一轮已改为三态，
+        // CLI 若继续 `case _ => 进行中`，同一份数据两个出口两种口径 ——
+        // milestone list 说「进行中」、report 说「? 无法核验」。
+        // 认不出的 status 哪怕标了 overdue 也不能渲染成「已逾期」：
+        // 逾期判定依赖 status=="open"（milestones.cj），这里的 status 连认都认不出，
+        // 天数与 overdue 都不可信 —— 与上面 unknown 无视 overdue 是同一条理由。
+        case _ => tl(lang, "? unverifiable", "? 无法核验")
     }
     var when = ""
     if (!date.isEmpty()) {
@@ -687,6 +721,17 @@ func milestoneLine(it: JsonValue, lang: String): String {
     }
     if (tagReached) {
         parts.add(tagPart)
+    }
+    // 认不出的 status：格子说「无法核验」还不够，**值本身**要写出来
+    //（对齐 report.cj milestoneCellNote 的「未知状态：X」口径 —— 那边是
+    // 私有函数跨包调不到，文案只能各持一份，两边都有测试钉住）。
+    // 只说「有问题」不说「为什么」，读者无从去 milestones.json 核对数据。
+    if (unrecognizedMilestoneStatus(status)) {
+        parts.add(if (status.isEmpty()) {
+            tl(lang, "unverifiable: status is empty", "无法核验：状态为空")
+        } else {
+            tl(lang, "unverifiable: unknown status ${status}", "无法核验：未知状态 ${status}")
+        })
     }
     let sb = StringBuilder()
     var i: Int64 = 0
@@ -948,8 +993,42 @@ func cmdContext(rest: ArrayList<String>, ctx: CliContext): Int64 {
 ///
 /// 子命令：overview（默认）/ tree / symbol <名> / impact <名> / arch。
 /// arch 支持 --format html（Canvas 交互架构图，默认）/ mermaid / dot / json。
+/// graph tree 的 `--depth` 解析 + 下限校验（纯函数，非法值抛 usage）。
+///
+/// #197：`--depth 0/-1` 原来静默通过，而 scan 对同一 flag 早就报错 ——
+/// 同一 flag 两种判据；小于 1 的深度等于整棵树一个子目录都不展开，只会渲染空壳。
+/// L1：解析不能用裸 `Int64.parse` —— 传 `abc` 抛的异常会被顶层兜成
+/// 「内部错误（graph tree）」而不是用法报错；同文件 cmdScan 是正确示范。
+func parseGraphTreeDepth(args: ArrayList<String>): Int64 {
+    var depth: Int64 = 6
+    match (flagValue(args, "--depth")) {
+        case Some(v) =>
+            try {
+                depth = Int64.parse(v.trimAscii())
+            } catch (e: Exception) {
+                throw DgError.usage(T(
+                    "--depth expects an integer (got \"${v}\")",
+                    "--depth 需要整数（收到 \"${v}\"）"))
+            }
+        case None => ()
+    }
+    if (depth < 1) {
+        throw DgError.usage(T(
+            "--depth must be at least 1 (got ${depth}): below 1 expands no subdirectory at all",
+            "--depth 至少为 1（收到 ${depth}）：小于 1 等于一个子目录都不展开"))
+    }
+    return depth
+}
+
 func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
-    let subs = ["overview", "tree", "symbol", "impact", "arch", "confidence", "functions", "patchconf"]
+    // 顶层命名空间迁移（图能力重设计第一阶段）：graph * 整体保留兼容、
+    // 行为不变，只在 stderr 给一行指路提示。stdout 契约零改动——
+    // --json 消费方（deepDolphin / 脚本）不受影响；提示走 Log.info
+    //（叙述层，--quiet 可关）而不是 warn：迁移不是数据或环境出了问题。
+    Log.info(T(
+        "note: this command will move to `moongit index ...` (kept as a compatible alias; behavior unchanged)",
+        "提示：命令将迁移：moongit index …（graph 命令保留兼容，行为不变）"))
+    let subs = ["overview", "tree", "symbol", "impact", "arch", "confidence", "functions", "patchconf", "db"]
     var sub = "overview"
     let args = ArrayList<String>()
     if (rest.size > 0 && subs.contains(rest[0])) {
@@ -1017,6 +1096,11 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
     // 返回 (项目, 符号名)；符号名只在 symbol/impact 下非 None。
     func resolveGraphProject(): (ProjectEntry, Option<String>) {
         if ((sub == "symbol" || sub == "impact") && refs.size >= 1) {
+            // ⚠️ #196 同族（本轮审查补齐）：symbol/impact 消费的位置参数至多 2 个
+            //（项目 + 符号名），第 3 个起原来被静默蒸发、rc=0 ——
+            // `graph symbol alpha foo extra` 里 extra 到底是拼错的项目还是拼错的
+            // 符号，用户无从知道，而引擎一副一切正常。元数固定 ⇒ 报 usage 而不是吞。
+            rejectExtraPositionals("graph ${sub}", refs, 2)
             if (refs.size >= 2) {
                 return (requireProject(refs[0]), Some(refs[1]))
             }
@@ -1038,6 +1122,13 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
         return (targets[0], None)
     }
     let (p, symbolArg) = resolveGraphProject()
+    // ⚠️ 用法校验必须先于 buildGraph（本轮审查）：整图构建是这条命令在大仓库上
+    // 最贵的开销，「--depth 0」这种一眼能判死的参数不该先付一遍构建代价再报错。
+    // 只有 tree 消费 --depth，别的子命令不因 tree 的参数被拦。
+    var treeDepth: Int64 = 6
+    if (sub == "tree") {
+        treeDepth = parseGraphTreeDepth(args)
+    }
     let graph = buildGraph(p.path)
 
     match (sub) {
@@ -1048,22 +1139,10 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
                 printOut(overviewText(graph))
             }
         case "tree" =>
-            var depth: Int64 = 6
-            match (flagValue(args, "--depth")) {
-                case Some(v) =>
-                    // L1：原来裸 Int64.parse —— 传 `abc` 抛的异常被顶层兜成
-                    // 「内部错误（graph tree）」而不是用法报错。用户打错一个
-                    // 参数，读到的却是「引擎内部错误」。同文件 cmdScan 对同一
-                    // 参数是正确示范（try/catch → usage）。
-                    try {
-                        depth = Int64.parse(v.trimAscii())
-                    } catch (e: Exception) {
-                        throw DgError.usage(T(
-                            "--depth expects an integer (got \"${v}\")",
-                            "--depth 需要整数（收到 \"${v}\"）"))
-                    }
-                case None => ()
-            }
+            // --depth 的解析与下限校验已在 buildGraph **之前**完成（见上方 treeDepth，
+            // 由 parseGraphTreeDepth 统一实现）—— 挪走不是为了好看：大仓库上
+            // 用法错误必须早于整图构建这笔最贵的开销。
+            let depth = treeDepth
             // --format：html（默认，引擎层交付物——单文件交互代码图谱）/
             // text（索引树文本）/ json（与 --json 等价）。规范分发同 arch。
             var fmtOpt = GraphExportFormat.Html
@@ -1195,6 +1274,45 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
             } else {
                 printOut(confidenceText(report))
             }
+        case "db" =>
+            // 符号级索引图库（单文件 SQLite）：nodes/edges 全部来自
+            // functionGraphData 的返回值——它已是符号级节点与调用边的唯一
+            // 构造点（含 tier 确信度分层），这里只搬运，不做第二份词法扫描。
+            // ast-grep 只影响 findings 标注不影响图结构；默认开 AST 与
+            // graph functions / graph tree 一致，--no-ast 可显式跳过。
+            var dbUseAst = true
+            if (hasFlag(args, "--no-ast")) { dbUseAst = false }
+            let conf = analyzeConfidence(graph, dbUseAst)
+            let payload = functionGraphData(graph, conf, en)
+            // 缺省输出进进度库（不变量 1：产物不进项目工作区）；
+            // --out 允许 agent/脚本指定任意路径。
+            let outPath = match (flagValue(args, "--out")) {
+                case Some(v) => v
+                case None =>
+                    let sp = StorePaths(p.id)
+                    ensureDir(sp.dir)
+                    sp.dir + "/codegraph.db"
+            }
+            if (!graphDbWrite(outPath, graph, payload)) {
+                throw DgError("GRAPH_DB_FAILED", T(
+                    "Failed to write graph database: ${outPath} (see stderr for the sqlite error)",
+                    "写出符号级图库失败：${outPath}（sqlite 原因见 stderr）"))
+            }
+            // 行数从 payload/graph 直接派生——与写入的表行数同一来源，
+            // 不再开库数一遍（那会是第二份口径）
+            let nNodes = payloadArrSize(payload, "functions")
+            let nEdges = payloadArrSize(payload, "functionEdges")
+            let nFiles = Int64(graph.files.size)
+            if (ctx.json) {
+                printOut(Json.pretty(graphDbResultJson(outPath, nNodes, nEdges, nFiles)))
+            } else {
+                printOut(T(
+                    "Written: ${outPath} (nodes ${nNodes} · edges ${nEdges} · files ${nFiles})",
+                    "已写出：${outPath}（nodes ${nNodes} · edges ${nEdges} · files ${nFiles}）"))
+                printOut(T(
+                    "  check: sqlite3 ${outPath} \"SELECT c.name FROM edges e JOIN nodes c ON e.src=c.id JOIN nodes f ON e.dst=f.id WHERE f.name='SYMBOL'\"  # who calls SYMBOL",
+                    "  检查示例：sqlite3 ${outPath} \"SELECT c.name FROM edges e JOIN nodes c ON e.src=c.id JOIN nodes f ON e.dst=f.id WHERE f.name='符号名'\"  # 谁调用了该符号"))
+            }
         case "arch" =>
             let arch = buildArch(graph)
             layoutArch(arch)
@@ -1249,12 +1367,1803 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
     return 0
 }
 
+/// `graph db --json` 数组字段的行数（payload 缺键按 0——写入器对缺键
+/// 的处理是写空表，两边同一兜底口径）。
+func payloadArrSize(payload: JsonValue, key: String): Int64 {
+    let a = match (Json.get(payload, key)) {
+        case Some(JArr(items)) => items
+        case _ => ArrayList<JsonValue>()
+    }
+    return Int64(a.size)
+}
+
+/// `graph db --json` 的出口形状（构造与打印分离：命令的 stdout 测试
+/// 捕获不到，形状断言只能落在构造函数上——与 journal/update 的既有
+/// 处理一致）。键集恒定：path/nodes/edges/files。
+func graphDbResultJson(path: String, nodes: Int64, edges: Int64, files: Int64): JsonValue {
+    let o = Json.obj()
+    Json.set(o, "path", Json.of(path))
+    Json.set(o, "nodes", Json.of(nodes))
+    Json.set(o, "edges", Json.of(edges))
+    Json.set(o, "files", Json.of(files))
+    return o
+}
+
+/// `confidence db --json` 的出口形状（同上）。键集恒定：
+/// path/findings/dimensions/files/score。
+func confidenceDbResultJson(path: String, findings: Int64, dimensions: Int64,
+                            files: Int64, score: Int64): JsonValue {
+    let o = Json.obj()
+    Json.set(o, "path", Json.of(path))
+    Json.set(o, "findings", Json.of(findings))
+    Json.set(o, "dimensions", Json.of(dimensions))
+    Json.set(o, "files", Json.of(files))
+    Json.set(o, "score", Json.of(score))
+    return o
+}
+
+/// `moongit confidence <db|gen|query> ...`：置信度命令家族。
+/// db = 单文件 SQLite（独立出口）；gen = 置信度持久化主产物 confidence.json
+/// （前置 index 自愈——置信度检测必须有符号级索引为前提）；
+/// query = 只读 confidence.json 快照（绝不重算）。
+func cmdConfidence(rest: ArrayList<String>, ctx: CliContext): Int64 {
+    let subs = ["db", "gen", "query"]
+    if (rest.size == 0 || !subs.contains(rest[0])) {
+        throw DgError.usage(T(
+            "Usage: moongit confidence <db|gen|query> ...  (db <project> [--out F] / gen <project> [--format text|json] [--no-ast] [--db] [--out F] / query <project> [--file F] [--symbol S] [--kind K] [--weight N] [--top N])",
+            "用法：moongit confidence <db|gen|query> …（db <项目> [--out 文件] / gen <项目> [--format text|json] [--no-ast] [--db] [--out 文件] / query <项目> [--file 路径] [--symbol 符号] [--kind 类别] [--weight 权重] [--top 条数]）"))
+    }
+    let args = ArrayList<String>()
+    var i: Int64 = 1
+    while (i < rest.size) {
+        args.add(rest[i])
+        i += 1
+    }
+    if (rest[0] == "gen") {
+        return confidenceGenCmd(args, ctx)
+    }
+    if (rest[0] == "query") {
+        return confidenceQueryCmd(args, ctx)
+    }
+    // 与 `graph confidence` 同一能力开关（--no-ast 在 KNOWN_FLAGS 白名单里）
+    var useAst = true
+    if (hasFlag(args, "--no-ast")) { useAst = false }
+    let refs = positionalsOnly(args, VALUE_FLAGS)
+    let targets = resolveTargets(refs, false)
+    if (targets.size != 1) {
+        throw DgError.usage(T(
+            "Usage: moongit confidence db <project> [--out F]; exactly one project required (got ${targets.size})",
+            "用法：moongit confidence db <项目> [--out 文件]；恰好一个项目（收到 ${targets.size} 个）"))
+    }
+    let p = targets[0]
+    let graph = buildGraph(p.path)
+    let report = analyzeConfidence(graph, useAst)
+    // 缺省输出进进度库（不变量 1），--out 允许显式指定
+    let outPath = match (flagValue(args, "--out")) {
+        case Some(v) => v
+        case None =>
+            let sp = StorePaths(p.id)
+            ensureDir(sp.dir)
+            sp.dir + "/confidence.db"
+    }
+    if (!confidenceDbWrite(outPath, report)) {
+        throw DgError("CONFIDENCE_DB_FAILED", T(
+            "Failed to write confidence database: ${outPath} (see stderr for the sqlite error)",
+            "写出置信度库失败：${outPath}（sqlite 原因见 stderr）"))
+    }
+    let nFindings = Int64(report.findings.size)
+    let nDims = Int64(report.dimensions.size)
+    let nFiles = Int64(report.files.size)
+    if (ctx.json) {
+        printOut(Json.pretty(confidenceDbResultJson(outPath, nFindings, nDims, nFiles, report.score)))
+    } else {
+        printOut(T(
+            "Written: ${outPath} (findings ${nFindings} · dimensions ${nDims} · files ${nFiles} · score ${report.score})",
+            "已写出：${outPath}（findings ${nFindings} · dimensions ${nDims} · files ${nFiles} · score ${report.score}）"))
+        printOut(T(
+            "  check: sqlite3 ${outPath} \"SELECT kind, file, line, evidence FROM findings ORDER BY weight DESC LIMIT 5\"",
+            "  检查示例：sqlite3 ${outPath} \"SELECT kind, file, line, evidence FROM findings ORDER BY weight DESC LIMIT 5\""))
+    }
+    return 0
+}
+
+// ------------------------------ 顶层图能力命名空间（arch / index / confidence / render） ------------------------------
+//
+// 【目标形态（已定稿）】moongit arch gen|update|query · index gen|overview|update|query ·
+// confidence gen|query · render arch|index。第一阶段落地 index 全链路 +
+// render index；第二阶段落地 arch 链路（arch.json 持久化 + render arch）与
+// confidence 链路（gen 以 index 为前置自愈 + query 只读快照）。
+// 旧 `graph *` 保留兼容（见 cmdGraph 顶部的迁移提示）。
+// 绘图（render）是主动调用才生成；index 是 confidence 的前置（gen 自愈接上）。
+// confidence 没有 update（gen 即完全重算）、没有 count（不参与渲染对齐）——
+// 它的快照新旧由 generatedAt + 依据的 indexUpdateCount 披露，不另造版本轴。
+
+/// index 系列产物的路径。全部在项目 store 目录——不变量 1：产物不进项目工作区。
+func indexDbPathOf(p: ProjectEntry): String {
+    let sp = StorePaths(p.id)
+    ensureDir(sp.dir)
+    return sp.dir + "/codegraph.db"
+}
+
+func indexJsonPathOf(p: ProjectEntry): String {
+    let sp = StorePaths(p.id)
+    ensureDir(sp.dir)
+    return sp.dir + "/index.json"
+}
+
+func indexRenderPathOf(p: ProjectEntry): String {
+    let sp = StorePaths(p.id)
+    ensureDir(sp.dir)
+    return sp.dir + "/render/index.html"
+}
+
+func indexConfidencePathOf(p: ProjectEntry): String {
+    let sp = StorePaths(p.id)
+    ensureDir(sp.dir)
+    return sp.dir + "/confidence.json"
+}
+
+/// 版本明话：0 = 首版；N = 第 N 版。gen / update / render 三个出口共用
+///（「首版」与「第 0 版」是同一个事实的两半说法，只说其一读者要对账）。
+func indexVersionLabel(n: Int64): String {
+    if (n <= 0) {
+        return T("first version (v0)", "首版（第 0 版）")
+    }
+    return T("version ${n}", "第 ${n} 版")
+}
+
+/// index 重建的唯一路径：gen / update 过期 / overview·query·render 自愈共用。
+/// 计算（含探针，一次扫描）→ 写 codegraph.db（store_meta 全套）+ index.json。
+/// 返回 (新版本号, 探针)。prevCount < 0（库里无记录）→ 从 0 起版；
+/// 否则旧值 +1——版本号单调递增，render 的复用判定靠它区分「index 变了没有」。
+func indexRebuild(p: ProjectEntry, depth: Int64, prevCount: Int64): (Int64, SourceProbe) {
+    let config = loadConfig()
+    let en = isEnglish(config.language)
+    let (graph, probe) = buildGraphProbed(p.path)
+    let conf = analyzeConfidence(graph, true)
+    let count = if (prevCount >= 0) { prevCount + 1 } else { 0 }
+    let generatedAt = nowIso()
+    let payload = indexPayloadForStore(graph, depth, conf, probe, count, generatedAt, en)
+    let metaRows = ArrayList<(String, JsonValue)>()
+    metaRows.add(("source_probe", probe.toJson()))
+    metaRows.add(("update_count", Json.of(count)))
+    metaRows.add(("generated_at", Json.of(generatedAt)))
+    metaRows.add(("depth", Json.of(depth)))
+    let dbPath = indexDbPathOf(p)
+    if (!graphDbWriteWithMeta(dbPath, graph, Json.getOr(payload, "functionGraph"), metaRows)) {
+        throw DgError("INDEX_DB_FAILED", T(
+            "Failed to write the index database: ${dbPath} (see stderr for the sqlite error)",
+            "写出索引库失败：${dbPath}（sqlite 原因见 stderr）"))
+    }
+    writeFileAtomic(indexJsonPathOf(p), Json.pretty(payload))
+    return (count, probe)
+}
+
+/// 读出「当前版本号」：库里有记录用记录；库缺席/无记录时回读 index.json
+/// 的 updateCount——它同是引擎写的版本事实，db 被删不该把版本号清零
+///（清零后的 0 会与旧 render 的 0 假匹配，陈旧产物被当新产物复用）。
+/// 两处都没有 → -1（重建时从 0 起版）。
+func indexCurrentCount(p: ProjectEntry): Int64 {
+    match (indexMetaRead(indexDbPathOf(p))) {
+        case Some(m) =>
+            if (m.updateCount >= 0) {
+                return m.updateCount
+            }
+        case None => ()
+    }
+    match (readFileText(indexJsonPathOf(p))) {
+        case Some(text) =>
+            match (Json.parse(text)) {
+                case Some(pl) =>
+                    match (Json.asInt(Json.getOr(pl, "updateCount"))) {
+                        case Some(n) => return if (n >= 0) { n } else { -1 }
+                        case None => return -1
+                    }
+                case None => return -1
+            }
+        case None => return -1
+    }
+}
+
+/// 读出「生成时的 depth」：db 无记录回读 index.json 的 depth 键，再没有 → 默认 6。
+/// 重建沿用生成时的口径——update 不带 --depth，静默换口径等于偷偷改样本。
+func indexCurrentDepth(p: ProjectEntry): Int64 {
+    match (indexMetaRead(indexDbPathOf(p))) {
+        case Some(m) =>
+            if (m.depth > 0) {
+                return m.depth
+            }
+        case None => ()
+    }
+    match (readFileText(indexJsonPathOf(p))) {
+        case Some(text) =>
+            match (Json.parse(text)) {
+                case Some(pl) =>
+                    match (Json.asInt(Json.getOr(pl, "depth"))) {
+                        case Some(n) => return if (n > 0) { n } else { 6 }
+                        case None => return 6
+                    }
+                case None => return 6
+            }
+        case None => return 6
+    }
+}
+
+/// 探针新鲜度判定：库里有**可解析**的探针且与 sourceProbeNow 一致才算新鲜。
+/// 缺记录 / 探针畸形 / 不一致 → 过期（「读不出来」不是「没变」）。
+func indexProbeFresh(p: ProjectEntry): (Bool, Option<SourceProbe>, Option<SourceProbe>) {
+    let now = sourceProbeNow(p.path)
+    match (indexMetaRead(indexDbPathOf(p))) {
+        case Some(m) =>
+            match (m.probe()) {
+                case Some(old) =>
+                    if (probeMatches(old, now)) {
+                        return (true, Some(old), Some(now))
+                    }
+                    return (false, Some(old), Some(now))
+                case None => return (false, None, Some(now))
+            }
+        case None => return (false, None, Some(now))
+    }
+}
+
+/// overview / query / render 共用的自愈入口（④A）：过期或缺库先重建，
+/// 返回 (重建后的版本号, 是否发生了自愈重建)。
+func indexEnsureFresh(p: ProjectEntry): (Int64, Bool) {
+    let (fresh, _, _) = indexProbeFresh(p)
+    if (fresh) {
+        return (indexCurrentCount(p), false)
+    }
+    let prev = indexCurrentCount(p)
+    let depth = indexCurrentDepth(p)
+    let (count, _) = indexRebuild(p, depth, prev)
+    return (count, true)
+}
+
+/// 单项目的探针变化摘要（重建/生成出口共用）。oldOpt None = 无旧探针记录。
+func indexProbeChangeText(oldOpt: Option<SourceProbe>, now: SourceProbe): String {
+    func fmt(pr: SourceProbe): String {
+        return "files=${pr.files} bytes=${pr.bytes} maxMtime=${pr.maxMtime}"
+    }
+    match (oldOpt) {
+        case Some(old) =>
+            return T("probe: ${fmt(old)} → ${fmt(now)}", "探针：${fmt(old)} → ${fmt(now)}")
+        case None =>
+            return T("probe: no previous record (first run, or the db was removed) → ${fmt(now)}",
+                "探针：库中无旧记录（首版或库被删）→ ${fmt(now)}")
+    }
+}
+
+// ------------------------------ arch 链路（arch.json 持久化 + render arch） ------------------------------
+
+/// arch 系列产物的路径。全部在项目 store 目录——不变量 1：产物不进项目工作区。
+func archJsonPathOf(p: ProjectEntry): String {
+    let sp = StorePaths(p.id)
+    ensureDir(sp.dir)
+    return sp.dir + "/arch.json"
+}
+
+func archRenderPathOf(p: ProjectEntry): String {
+    let sp = StorePaths(p.id)
+    ensureDir(sp.dir)
+    return sp.dir + "/render/arch.html"
+}
+
+/// 读出 arch.json 的持久化全文。文件缺席 / 不是合法 JSON → None——
+/// 「读不出来」不许被当成「没有」，调用方判过期重建（探针同样读不出）。
+func archStoreRead(p: ProjectEntry): Option<JsonValue> {
+    match (readFileText(archJsonPathOf(p))) {
+        case Some(text) =>
+            match (Json.parse(text)) {
+                case Some(j) => return Some(j)
+                case None => return None
+            }
+        case None => return None
+    }
+}
+
+/// 读出「当前版本号」：arch.json 的 updateCount；缺席/畸形 → -1（重建从 0 起版）。
+func archCurrentCount(p: ProjectEntry): Int64 {
+    match (archStoreRead(p)) {
+        case Some(j) =>
+            match (Json.asInt(Json.getOr(j, "updateCount"))) {
+                case Some(n) => return if (n >= 0) { n } else { -1 }
+                case None => return -1
+            }
+        case None => return -1
+    }
+}
+
+/// 探针新鲜度判定：arch.json 里有**可解析**的探针且与 sourceProbeNow 一致才算新鲜
+///（与 indexProbeFresh 同一判据形状；持久化位置不同——arch 的主产物就是
+/// arch.json，没有第二份 db 元数据可对账）。缺记录 / 探针畸形 / 不一致 → 过期。
+func archProbeFresh(p: ProjectEntry): (Bool, Option<SourceProbe>, Option<SourceProbe>) {
+    let now = sourceProbeNow(p.path)
+    match (archStoreRead(p)) {
+        case Some(j) =>
+            match (sourceProbeFromJson(Json.getOr(j, "probe"))) {
+                case Some(old) =>
+                    if (probeMatches(old, now)) {
+                        return (true, Some(old), Some(now))
+                    }
+                    return (false, Some(old), Some(now))
+                case None => return (false, None, Some(now))
+            }
+        case None => return (false, None, Some(now))
+    }
+}
+
+/// arch 重建的唯一路径：gen / update 过期 / query·render 自愈共用。
+/// buildGraphProbed（一次扫描拿探针）→ buildArch + layoutArch（布局坐标
+/// 进 archJson 的 modules x/y/w/h 与 lanes，绘图直接消费）→ archJson 全量
+/// + meta 包装（probe / updateCount / generatedAt / en）→ 写 arch.json。
+/// prevCount < 0（arch.json 缺席/无记录）→ 从 0 起版；否则旧值 +1——
+/// 版本号单调递增，render 的复用判定靠它区分「arch 变了没有」
+///（gen 重置为 0 会与旧 render 的 0 假匹配，同 index 的纪律）。
+/// en 烤进 meta：render 复用持久化产物时按**生成时**的语言渲染，不随 config 漂。
+func archRebuild(p: ProjectEntry, prevCount: Int64): (Int64, SourceProbe) {
+    let config = loadConfig()
+    let en = isEnglish(config.language)
+    let (graph, probe) = buildGraphProbed(p.path)
+    let arch = buildArch(graph)
+    layoutArch(arch)
+    let count = if (prevCount >= 0) { prevCount + 1 } else { 0 }
+    let payload = archJson(arch, en)
+    Json.set(payload, "probe", probe.toJson())
+    Json.set(payload, "updateCount", Json.of(count))
+    Json.set(payload, "generatedAt", Json.of(nowIso()))
+    Json.set(payload, "en", Json.of(en))
+    writeFileAtomic(archJsonPathOf(p), Json.pretty(payload))
+    return (count, probe)
+}
+
+/// query / render 共用的自愈入口：过期或缺 arch.json 先重建（等价 arch update）。
+/// 返回 (重建后的版本号, 是否发生了自愈重建)。
+func archEnsureFresh(p: ProjectEntry): (Int64, Bool) {
+    let (fresh, _, _) = archProbeFresh(p)
+    if (fresh) {
+        return (archCurrentCount(p), false)
+    }
+    let (count, _) = archRebuild(p, archCurrentCount(p))
+    return (count, true)
+}
+
+/// `moongit arch` —— 顶层架构命名空间：gen（构建 + 持久化）/ update
+///（探针比对的增量重建）/ query（总览 · 单模块 · 违规清单）。
+func cmdArch(rest: ArrayList<String>, ctx: CliContext): Int64 {
+    let subs = ["gen", "update", "query"]
+    if (rest.size == 0 || !subs.contains(rest[0])) {
+        throw DgError.usage(T(
+            "Usage: moongit arch <gen|update|query> <project>  (gen [--format json|text] [--out F] / update [--force] / query [module] [--violations])",
+            "用法：moongit arch <gen|update|query> <项目>（gen [--format json|text] [--out 文件] / update [--force] / query [模块] [--violations]）"))
+    }
+    let args = ArrayList<String>()
+    var i: Int64 = 1
+    while (i < rest.size) {
+        args.add(rest[i])
+        i += 1
+    }
+    match (rest[0]) {
+        case "gen" => return archGenCmd(args, ctx)
+        case "update" => return archUpdateCmd(args, ctx)
+        case "query" => return archQueryCmd(args, ctx)
+        case _ => throw DgError.usage(T(
+            "Unknown arch subcommand (use gen|update|query)",
+            "未知 arch 子命令（可用 gen|update|query）"))
+    }
+}
+
+/// `moongit arch gen <项目> [--format json|text] [--out F]`：
+/// buildGraphProbed → buildArch → 持久化 arch.json（archJson 全量 + meta 包装）
+/// → stdout 按 --format（json = 持久化 payload 全量 / text = 模块与违规摘要）。
+/// 首版 = 0；已有 arch.json 时沿用旧版本号 +1。
+func archGenCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
+    var fmt = "text"
+    match (flagValue(args, "--format")) {
+        case Some(v) =>
+            let f = v.trimAscii()
+            if (f != "json" && f != "text") {
+                throw DgError.usage(T(
+                    "--format accepts json | text (got: ${f})",
+                    "--format 只支持 json | text（收到：${f}）"))
+            }
+            fmt = f
+        case None => ()
+    }
+    let targets = resolveTargets(args, false)
+    if (targets.size != 1) {
+        throw DgError.usage(T(
+            "Usage: moongit arch gen <project> [--format json|text] [--out F]; exactly one project required (got ${targets.size})",
+            "用法：moongit arch gen <项目> [--format json|text] [--out 文件]；恰好一个项目（收到 ${targets.size} 个）"))
+    }
+    let p = targets[0]
+    // 旧探针在重建前读（变更摘要用）
+    var oldProbe: Option<SourceProbe> = None<SourceProbe>
+    match (archStoreRead(p)) {
+        case Some(j) => oldProbe = sourceProbeFromJson(Json.getOr(j, "probe"))
+        case None => ()
+    }
+    let (count, probe) = archRebuild(p, archCurrentCount(p))
+    let payloadText = readFileTextOr(archJsonPathOf(p), "")
+    // --out 导出副本（arch.json 已落 store，--out 是给 agent/脚本的外带副本）
+    match (flagValue(args, "--out")) {
+        case Some(f) => writeFileAtomic(f, payloadText)
+        case None => ()
+    }
+    if (ctx.json || fmt == "json") {
+        // 机读出口 = 持久化内容本身（archJson 全量 + meta 包装，一字不差——
+        // 拿到的就是落盘的那份，不存在「stdout 一版文件一版」）
+        printOut(payloadText)
+        return 0
+    }
+    let payload = match (Json.parse(payloadText)) {
+        case Some(j) => j
+        case None => throw DgError("ARCH_JSON_CORRUPT", T(
+            "arch.json just written is not valid JSON (${payloadText.size} bytes) — engine bug",
+            "刚写出的 arch.json 不是合法 JSON（${payloadText.size} 字节）——引擎缺陷"))
+    }
+    let warns = Json.getOr(payload, "warnings")
+    let nMods = Int64(Json.arrAt(payload, "modules").size)
+    let nFiles = Json.intAt(payload, "totalFiles", 0)
+    let nSyms = Json.intAt(payload, "totalSymbols", 0)
+    let nViol = Json.intAt(warns, "violations", 0)
+    let nCycle = Json.intAt(warns, "cycleEdges", 0)
+    printOut(T("Architecture generated: ${indexVersionLabel(count)}", "架构已生成：${indexVersionLabel(count)}"))
+    printOut("  ${indexProbeChangeText(oldProbe, probe)}")
+    printOut(T("  modules ${nMods} · files ${nFiles} · symbols ${nSyms} · violations ${nViol} · cycleEdges ${nCycle}",
+        "  模块 ${nMods} 个 · 文件 ${nFiles} · 符号 ${nSyms} · 违规 ${nViol} · 环边 ${nCycle}"))
+    printOut(T("  arch.json: ${archJsonPathOf(p)}", "  arch.json：${archJsonPathOf(p)}"))
+    printOut(T("  next: moongit arch query ${p.name} · moongit render arch ${p.name}",
+        "  下一步：moongit arch query ${p.name} · moongit render arch ${p.name}"))
+    return 0
+}
+
+/// `moongit arch update <项目> [--force]`：轻探针（sourceProbeNow，毫秒级）
+/// 比对 arch.json 的 meta.probe → 一致且非 --force → 「已最新」，exit 0，
+/// 不动任何文件；过期/缺失/--force → 重算重建（版本 +1）+ 变更摘要。
+func archUpdateCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
+    let targets = resolveTargets(args, false)
+    if (targets.size != 1) {
+        throw DgError.usage(T(
+            "Usage: moongit arch update <project> [--force]; exactly one project required (got ${targets.size})",
+            "用法：moongit arch update <项目> [--force]；恰好一个项目（收到 ${targets.size} 个）"))
+    }
+    let p = targets[0]
+    let force = hasFlag(args, "--force")
+    let (fresh, oldProbe, nowProbe) = archProbeFresh(p)
+    let count = archCurrentCount(p)
+    if (fresh && !force) {
+        if (ctx.json) {
+            let o = Json.obj()
+            Json.set(o, "project", Json.of(p.name))
+            Json.set(o, "fresh", Json.of(true))
+            Json.set(o, "updateCount", Json.of(count))
+            match (nowProbe) {
+                case Some(nw) => Json.set(o, "probe", nw.toJson())
+                case None => Json.set(o, "probe", JNull)
+            }
+            printOut(Json.pretty(o))
+        } else {
+            printOut(T("Up to date — ${indexVersionLabel(count)}: source probe matches, nothing touched",
+                "已最新——${indexVersionLabel(count)}：源状态探针一致，未改动任何文件"))
+        }
+        return 0
+    }
+    let (newCount, newProbe) = archRebuild(p, count)
+    var generatedAt = ""
+    match (archStoreRead(p)) {
+        case Some(j) => generatedAt = Json.strAt(j, "generatedAt", "")
+        case None => ()
+    }
+    if (ctx.json) {
+        let o = Json.obj()
+        Json.set(o, "project", Json.of(p.name))
+        Json.set(o, "fresh", Json.of(false))
+        Json.set(o, "rebuilt", Json.of(true))
+        Json.set(o, "updateCount", Json.of(newCount))
+        Json.set(o, "generatedAt", Json.of(generatedAt))
+        Json.set(o, "archJson", Json.of(archJsonPathOf(p)))
+        printOut(Json.pretty(o))
+    } else {
+        printOut(T("Architecture rebuilt: ${indexVersionLabel(newCount)}", "架构已重建：${indexVersionLabel(newCount)}"))
+        printOut("  ${indexProbeChangeText(oldProbe, newProbe)}")
+        printOut(T("  arch.json: ${archJsonPathOf(p)}", "  arch.json：${archJsonPathOf(p)}"))
+    }
+    return 0
+}
+
+/// `moongit arch query <项目> [模块] [--violations] [--json]`：
+/// 读 arch.json（探针过期 → 自动先 arch update 自愈）→ 三种视图：
+/// 无模块名 = 总览（模块列表 + fanIn/fanOut/instability + 违规/环计数）；
+/// 指定模块 = 单模块详情（入/出依赖逐条 + 权重、指标）；
+/// --violations = 违规对全清单 + 环上模块（0 条明说）。
+func archQueryCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
+    let refs = positionalsOnly(args, VALUE_FLAGS)
+    if (refs.size < 1 || refs.size > 2) {
+        throw DgError.usage(T(
+            "Usage: moongit arch query <project> [module] [--violations]",
+            "用法：moongit arch query <项目> [模块] [--violations]"))
+    }
+    let p = requireProject(refs[0])
+    var moduleId = ""
+    if (refs.size == 2) { moduleId = refs[1] }
+    let wantViolations = hasFlag(args, "--violations")
+    let (_, healed) = archEnsureFresh(p)
+    // 自愈之后 arch.json 必然可读（刚重写或本就新鲜）；读不出 = 写入失败，硬失败
+    let payload = match (archStoreRead(p)) {
+        case Some(j) => j
+        case None => throw DgError("ARCH_JSON_MISSING", T(
+            "arch.json not found: ${archJsonPathOf(p)} (run `moongit arch gen` first)",
+            "找不到 arch.json：${archJsonPathOf(p)}（先执行 moongit arch gen）"))
+    }
+    if (wantViolations) {
+        return archQueryViolations(p, payload, healed, ctx)
+    }
+    if (moduleId.isEmpty()) {
+        return archQueryOverview(p, payload, healed, ctx)
+    }
+    return archQueryModule(p, payload, moduleId, healed, ctx)
+}
+
+/// 总览视图的 JSON 构造（CLI --json 与 MCP arch_query 共用；键集恒发）。
+func archOverviewJson(p: ProjectEntry, payload: JsonValue, healed: Bool): JsonValue {
+    let warns = Json.getOr(payload, "warnings")
+    let o = Json.obj()
+    Json.set(o, "project", Json.of(p.name))
+    Json.set(o, "updateCount", Json.of(Json.intAt(payload, "updateCount", -1)))
+    Json.set(o, "generatedAt", Json.of(Json.strAt(payload, "generatedAt", "")))
+    Json.set(o, "selfHealed", Json.of(healed))
+    Json.set(o, "totalFiles", Json.of(Json.intAt(payload, "totalFiles", 0)))
+    Json.set(o, "totalSymbols", Json.of(Json.intAt(payload, "totalSymbols", 0)))
+    Json.set(o, "totalLines", Json.of(Json.intAt(payload, "totalLines", 0)))
+    Json.set(o, "truncated", Json.of(Json.boolAt(payload, "truncated", false)))
+    Json.set(o, "warnings", warns)
+    Json.set(o, "modules", Json.getOr(payload, "modules"))
+    return o
+}
+
+/// 单模块详情视图的 JSON 构造（CLI --json 与 MCP arch_query 共用）。
+/// 模块不存在 → None（调用方报错，不编结果）。
+func archModuleJson(p: ProjectEntry, payload: JsonValue, moduleId: String, healed: Bool): Option<JsonValue> {
+    var modOpt: Option<JsonValue> = None<JsonValue>
+    for (m in Json.arrAt(payload, "modules")) {
+        if (Json.strAt(m, "id", "") == moduleId) { modOpt = Some(m) }
+    }
+    let m = match (modOpt) {
+        case Some(v) => v
+        case None => return None<JsonValue>
+    }
+    // 入/出依赖逐条（edges 已按 from/to 全序持久化，行序确定）
+    let outs = ArrayList<JsonValue>()
+    let ins = ArrayList<JsonValue>()
+    for (e in Json.arrAt(payload, "edges")) {
+        if (Json.strAt(e, "from", "") == moduleId) { outs.add(e) }
+        if (Json.strAt(e, "to", "") == moduleId) { ins.add(e) }
+    }
+    let o = Json.obj()
+    Json.set(o, "project", Json.of(p.name))
+    Json.set(o, "module", Json.of(moduleId))
+    Json.set(o, "updateCount", Json.of(Json.intAt(payload, "updateCount", -1)))
+    Json.set(o, "generatedAt", Json.of(Json.strAt(payload, "generatedAt", "")))
+    Json.set(o, "selfHealed", Json.of(healed))
+    for (k in ["layer", "layerName", "files", "symbols", "lines", "fanIn", "fanOut", "instability"]) {
+        Json.set(o, k, Json.getOr(m, k))
+    }
+    Json.set(o, "langs", Json.getOr(m, "langs"))
+    Json.set(o, "dependsOn", JArr(outs))
+    Json.set(o, "dependedBy", JArr(ins))
+    return Some(o)
+}
+
+/// 违规/环视图的 JSON 构造（CLI --json 与 MCP arch_query 共用）。
+func archViolationsJson(p: ProjectEntry, payload: JsonValue, healed: Bool): JsonValue {
+    let warns = Json.getOr(payload, "warnings")
+    let o = Json.obj()
+    Json.set(o, "project", Json.of(p.name))
+    Json.set(o, "updateCount", Json.of(Json.intAt(payload, "updateCount", -1)))
+    Json.set(o, "generatedAt", Json.of(Json.strAt(payload, "generatedAt", "")))
+    Json.set(o, "selfHealed", Json.of(healed))
+    Json.set(o, "violationCount", Json.of(Json.intAt(warns, "violations", 0)))
+    Json.set(o, "violations", Json.getOr(warns, "violationPairs"))
+    Json.set(o, "cycleEdges", Json.of(Json.intAt(warns, "cycleEdges", 0)))
+    Json.set(o, "cycleModules", Json.getOr(warns, "cycleModules"))
+    return o
+}
+
+func archQueryOverview(p: ProjectEntry, payload: JsonValue, healed: Bool, ctx: CliContext): Int64 {
+    if (ctx.json) {
+        printOut(Json.pretty(archOverviewJson(p, payload, healed)))
+        return 0
+    }
+    let warns = Json.getOr(payload, "warnings")
+    let nMods = Int64(Json.arrAt(payload, "modules").size)
+    let healedNote = if (healed) {
+        T(" (probe stale — architecture rebuilt automatically)", "（探针过期——已自动重建架构）")
+    } else {
+        ""
+    }
+    printOut(T("Architecture overview: ${p.name} · ${indexVersionLabel(Json.intAt(payload, "updateCount", -1))} · generatedAt ${Json.strAt(payload, "generatedAt", "")}${healedNote}",
+        "架构总览：${p.name} · ${indexVersionLabel(Json.intAt(payload, "updateCount", -1))} · 生成于 ${Json.strAt(payload, "generatedAt", "")}${healedNote}"))
+    printOut(T("  modules ${nMods} · files ${Json.intAt(payload, "totalFiles", 0)} · symbols ${Json.intAt(payload, "totalSymbols", 0)} · violations ${Json.intAt(warns, "violations", 0)} · cycleEdges ${Json.intAt(warns, "cycleEdges", 0)}",
+        "  模块 ${nMods} 个 · 文件 ${Json.intAt(payload, "totalFiles", 0)} · 符号 ${Json.intAt(payload, "totalSymbols", 0)} · 违规 ${Json.intAt(warns, "violations", 0)} · 环边 ${Json.intAt(warns, "cycleEdges", 0)}"))
+    if (nMods == 0) {
+        printOut(T("  no modules (not a source repo, or no recognizable source files)",
+            "  无模块（不是源码仓库，或没有可识别的源码文件）"))
+        return 0
+    }
+    for (m in Json.arrAt(payload, "modules")) {
+        printOut(T("  ${Json.strAt(m, "id", "")}（${Json.strAt(m, "layerName", "")}）· files ${Json.intAt(m, "files", 0)} · symbols ${Json.intAt(m, "symbols", 0)} · in ${Json.intAt(m, "fanIn", 0)} / out ${Json.intAt(m, "fanOut", 0)} · instability ${Json.intAt(m, "instability", 0)}%",
+            "  ${Json.strAt(m, "id", "")}（${Json.strAt(m, "layerName", "")}）· 文件 ${Json.intAt(m, "files", 0)} · 符号 ${Json.intAt(m, "symbols", 0)} · 入 ${Json.intAt(m, "fanIn", 0)} / 出 ${Json.intAt(m, "fanOut", 0)} · 不稳定度 ${Json.intAt(m, "instability", 0)}%"))
+    }
+    printOut(T("  next: moongit arch query ${p.name} <module> · moongit arch query ${p.name} --violations",
+        "  下一步：moongit arch query ${p.name} <模块> · moongit arch query ${p.name} --violations"))
+    return 0
+}
+
+func archQueryModule(p: ProjectEntry, payload: JsonValue, moduleId: String, healed: Bool, ctx: CliContext): Int64 {
+    let core = archModuleJson(p, payload, moduleId, healed)
+    let o = match (core) {
+        case Some(v) => v
+        case None =>
+            // 查不到 → 报错（不编结果）；教回怎么查清单
+            Log.error(T(
+                "Module not in the architecture: ${moduleId} (run `moongit arch query ${p.name}` for the module list)",
+                "模块不在架构中：${moduleId}（moongit arch query ${p.name} 查看模块清单）"))
+            return 1
+    }
+    if (ctx.json) {
+        printOut(Json.pretty(o))
+        return 0
+    }
+    // 文本视图从 core 现读（构造点只有一份，文本只是它的投影）
+    let healedNote = if (healed) { T(" (auto-rebuilt)", "（已自动重建）") } else { "" }
+    printOut(T("Module: ${moduleId} · ${Json.strAt(o, "layerName", "")} · ${indexVersionLabel(Json.intAt(o, "updateCount", -1))}${healedNote}",
+        "模块：${moduleId} · ${Json.strAt(o, "layerName", "")} · ${indexVersionLabel(Json.intAt(o, "updateCount", -1))}${healedNote}"))
+    printOut(T("  files ${Json.intAt(o, "files", 0)} · symbols ${Json.intAt(o, "symbols", 0)} · lines ${Json.intAt(o, "lines", 0)} · in ${Json.intAt(o, "fanIn", 0)} / out ${Json.intAt(o, "fanOut", 0)} · instability ${Json.intAt(o, "instability", 0)}%",
+        "  文件 ${Json.intAt(o, "files", 0)} · 符号 ${Json.intAt(o, "symbols", 0)} · 行 ${Json.intAt(o, "lines", 0)} · 入 ${Json.intAt(o, "fanIn", 0)} / 出 ${Json.intAt(o, "fanOut", 0)} · 不稳定度 ${Json.intAt(o, "instability", 0)}%"))
+    let outs = Json.arrAt(o, "dependsOn")
+    let ins = Json.arrAt(o, "dependedBy")
+    printOut(T("  depends on (${outs.size}):", "  出向依赖（${outs.size}）："))
+    if (Int64(outs.size) == 0) {
+        printOut(T("    none", "    无"))
+    }
+    for (e in outs) {
+        printOut("    ${Json.strAt(e, "to", "")} · ${edgeSignalText(e)}")
+    }
+    printOut(T("  depended on by (${ins.size}):", "  入向依赖（${ins.size}）："))
+    if (Int64(ins.size) == 0) {
+        printOut(T("    none", "    无"))
+    }
+    for (e in ins) {
+        printOut("    ${Json.strAt(e, "from", "")} · ${edgeSignalText(e)}")
+    }
+    return 0
+}
+
+/// 依赖行尾的治理信号：`权重 N` / `权重 N（违规）` / `权重 N（环）`。
+/// 两个信号可以同时出现（违规边也可能在环上），逐个 if 追加。
+func edgeSignalText(e: JsonValue): String {
+    var t = T("weight ${Json.intAt(e, "weight", 0)}", "权重 ${Json.intAt(e, "weight", 0)}")
+    if (Json.boolAt(e, "violation", false)) {
+        t += T(" (violation)", "（违规）")
+    }
+    if (Json.boolAt(e, "cycle", false)) {
+        t += T(" (cycle)", "（环）")
+    }
+    return t
+}
+
+func archQueryViolations(p: ProjectEntry, payload: JsonValue, healed: Bool, ctx: CliContext): Int64 {
+    if (ctx.json) {
+        printOut(Json.pretty(archViolationsJson(p, payload, healed)))
+        return 0
+    }
+    let warns = Json.getOr(payload, "warnings")
+    let nViol = Json.intAt(warns, "violations", 0)
+    let nCycleEdges = Json.intAt(warns, "cycleEdges", 0)
+    let pairs = Json.arrAt(warns, "violationPairs")
+    let cycleMods = Json.strArrAt(warns, "cycleModules")
+    let healedNote = if (healed) { T(" (auto-rebuilt)", "（已自动重建）") } else { "" }
+    printOut(T("Architecture health: ${p.name} · ${indexVersionLabel(Json.intAt(payload, "updateCount", -1))}${healedNote}",
+        "架构体检：${p.name} · ${indexVersionLabel(Json.intAt(payload, "updateCount", -1))}${healedNote}"))
+    // 0 条明说：无违规与「没有数据」都是明确的事实，不许静默
+    if (nViol == 0) {
+        printOut(T("  violations: 0 — layering is healthy (low layers never depend on higher ones)",
+            "  违规：0 对——分层健康（低层没有依赖高层）"))
+    } else {
+        printOut(T("  violations: ${nViol} pairs (lower layer depending on a higher one):", "  违规：${nViol} 对（低层依赖高层）："))
+        for (pr in pairs) {
+            printOut("    ${Json.strAt(pr, "from", "")} → ${Json.strAt(pr, "to", "")}")
+        }
+    }
+    if (Int64(cycleMods.size) == 0) {
+        printOut(T("  cycles: none (no module sits on a dependency cycle)", "  环：无（没有模块处于依赖环上）"))
+    } else {
+        printOut(T("  cycle modules (${cycleMods.size}, ${nCycleEdges} edges): ${joinStrings(cycleMods, " · ")}",
+            "  环上模块（${cycleMods.size} 个，${nCycleEdges} 条边）：${joinStrings(cycleMods, " · ")}"))
+    }
+    return 0
+}
+
+// ------------------------------ confidence 链路（confidence.json 持久化 + 只读快照） ------------------------------
+
+/// confidence gen 的核心（CLI 与 MCP 共用；计算 + 持久化只有这一份实现）。
+/// 返回 (回执 JSON: path/generatedAt/indexUpdateCount/selfHealedIndex/score/
+/// findings/astUsed/db, 报告本体——CLI 文本视图与 --db 计数用)。
+func confidenceGenCore(p: ProjectEntry, useAst: Bool, wantDb: Bool): (JsonValue, ConfidenceReport) {
+    let config = loadConfig()
+    let en = isEnglish(config.language)
+    // ① 前置自愈（自愈 = 重写了 index.json/db，必须说出口）
+    let (indexCount, indexHealed) = indexEnsureFresh(p)
+    // ② 计算
+    let (graph, _) = buildGraphProbed(p.path)
+    let report = analyzeConfidence(graph, useAst)
+    // ③ 持久化 confidence.json（主产物与 render index --confidence 的消费端同一个文件）
+    let generatedAt = nowIso()
+    let confJson = confidenceEmbedJson(report, en)
+    // query 总览需要的维度/类别计数（渲染消费端只读 conf 块，多出的键无害——
+    // 同一份文件既当渲染叠层又当 query 快照，不写两个文件）
+    let dims = ArrayList<JsonValue>()
+    for ((d, pen, cnt, dScore) in report.dimensions) {
+        let dd = Json.obj()
+        Json.set(dd, "id", Json.of(dimensionId(d)))
+        Json.set(dd, "label", Json.of(dimensionLabel(d, en)))
+        Json.set(dd, "penalty", Json.of(pen))
+        Json.set(dd, "findings", Json.of(cnt))
+        Json.set(dd, "score", Json.of(dScore))
+        dims.add(dd)
+    }
+    Json.set(confJson, "dimensions", JArr(dims))
+    let kinds = ArrayList<JsonValue>()
+    for ((k, v) in report.byKind) {
+        let ko = Json.obj()
+        Json.set(ko, "kind", Json.of(flawId(k)))
+        Json.set(ko, "label", Json.of(flawLabel(k, en)))
+        Json.set(ko, "count", Json.of(v))
+        Json.set(ko, "weight", Json.of(flawWeight(k)))
+        kinds.add(ko)
+    }
+    Json.set(confJson, "byKind", JArr(kinds))
+    Json.set(confJson, "filesAnalyzed", Json.of(report.filesAnalyzed))
+    Json.set(confJson, "generatedAt", Json.of(generatedAt))
+    Json.set(confJson, "indexUpdateCount", Json.of(indexCount))
+    let jsonPath = indexConfidencePathOf(p)
+    writeFileAtomic(jsonPath, Json.pretty(confJson))
+    var dbPath = ""
+    if (wantDb) {
+        let sp = StorePaths(p.id)
+        dbPath = sp.dir + "/confidence.db"
+        if (!confidenceDbWrite(dbPath, report)) {
+            throw DgError("CONFIDENCE_DB_FAILED", T(
+                "Failed to write confidence database: ${dbPath} (see stderr for the sqlite error)",
+                "写出置信度库失败：${dbPath}（sqlite 原因见 stderr）"))
+        }
+    }
+    let o = Json.obj()
+    Json.set(o, "project", Json.of(p.name))
+    Json.set(o, "path", Json.of(jsonPath))
+    Json.set(o, "generatedAt", Json.of(generatedAt))
+    Json.set(o, "indexUpdateCount", Json.of(indexCount))
+    Json.set(o, "selfHealedIndex", Json.of(indexHealed))
+    Json.set(o, "score", Json.of(report.score))
+    Json.set(o, "findings", Json.of(Int64(report.findings.size)))
+    Json.set(o, "astUsed", Json.of(report.astUsed))
+    // 恒发（空串 = 未写 db）：键集不随模式漂
+    Json.set(o, "db", Json.of(dbPath))
+    return (o, report)
+}
+
+/// `moongit confidence gen <项目> [--format text|json] [--no-ast] [--db] [--out F]`：
+/// 见 confidenceGenCore（计算 + 持久化的唯一实现）；这里只做参数解析与呈现。
+func confidenceGenCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
+    var fmt = "text"
+    match (flagValue(args, "--format")) {
+        case Some(v) =>
+            let f = v.trimAscii()
+            if (f != "json" && f != "text") {
+                throw DgError.usage(T(
+                    "--format accepts text | json (got: ${f})",
+                    "--format 只支持 text | json（收到：${f}）"))
+            }
+            fmt = f
+        case None => ()
+    }
+    var useAst = true
+    if (hasFlag(args, "--no-ast")) { useAst = false }
+    let wantDb = hasFlag(args, "--db")
+    let targets = resolveTargets(args, false)
+    if (targets.size != 1) {
+        throw DgError.usage(T(
+            "Usage: moongit confidence gen <project> [--format text|json] [--no-ast] [--db] [--out F]; exactly one project required (got ${targets.size})",
+            "用法：moongit confidence gen <项目> [--format text|json] [--no-ast] [--db] [--out 文件]；恰好一个项目（收到 ${targets.size} 个）"))
+    }
+    let p = targets[0]
+    let (info, report) = confidenceGenCore(p, useAst, wantDb)
+    match (flagValue(args, "--out")) {
+        case Some(f) => writeFileAtomic(f, readFileTextOr(Json.strAt(info, "path", ""), ""))
+        case None => ()
+    }
+    // ④ stdout（文本视图 = 完整报告 + 快照明话；json 视图 = 回执信息）
+    if (ctx.json || fmt == "json") {
+        printOut(Json.pretty(info))
+        return 0
+    }
+    printOut(confidenceText(report))
+    let indexCount = Json.intAt(info, "indexUpdateCount", -1)
+    let indexHealed = Json.boolAt(info, "selfHealedIndex", false)
+    let healedNote = if (indexHealed) {
+        T(" (index was stale — rebuilt first: ${indexVersionLabel(indexCount)})",
+            "（索引已过期——已先自动重建：${indexVersionLabel(indexCount)}）")
+    } else {
+        ""
+    }
+    printOut(T("snapshot: ${Json.strAt(info, "path", "")} · generated at ${Json.strAt(info, "generatedAt", "")} · based on index ${indexVersionLabel(indexCount)}${healedNote}",
+        "快照：${Json.strAt(info, "path", "")} · 生成于 ${Json.strAt(info, "generatedAt", "")} · 依据索引 ${indexVersionLabel(indexCount)}${healedNote}"))
+    let dbPath = Json.strAt(info, "db", "")
+    if (!dbPath.isEmpty()) {
+        printOut(T("  db: ${dbPath}", "  db：${dbPath}"))
+    }
+    printOut(T("  next: moongit confidence query ${p.name} · moongit render index ${p.name} --confidence",
+        "  下一步：moongit confidence query ${p.name} · moongit render index ${p.name} --confidence"))
+    return 0
+}
+
+/// `moongit confidence query <项目> [--file F] [--symbol S] [--kind K] [--weight N] [--top N] [--json]`：
+/// **只读**持久化 confidence.json，绝不重算——报告缺席 → 报错提示先执行
+/// confidence gen（exit 1，不自动触发：query 是读，不该带 gen 的全部副作用）。
+/// 输出恒带快照元信息（generatedAt + 依据的 index 版本），让人知道快照新旧；
+/// 过滤组合（--file/--symbol/--kind/--weight/--top）作用于 findings；
+/// 无过滤 → 总览（score + 维度 + 罚分 Top + capped 披露）。
+func confidenceQueryCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
+    var fileArg = ""
+    match (flagValue(args, "--file")) {
+        case Some(v) => fileArg = v.trimAscii()
+        case None => ()
+    }
+    var symbolArg = ""
+    match (flagValue(args, "--symbol")) {
+        case Some(v) => symbolArg = v.trimAscii()
+        case None => ()
+    }
+    var kindArg = ""
+    match (flagValue(args, "--kind")) {
+        case Some(v) => kindArg = v.trimAscii()
+        case None => ()
+    }
+    var weightArg: Int64 = -1
+    match (flagValue(args, "--weight")) {
+        case Some(v) =>
+            try {
+                weightArg = Int64.parse(v.trimAscii())
+            } catch (e: Exception) {
+                throw DgError.usage(T(
+                    "--weight expects an integer (got \"${v}\")",
+                    "--weight 需要整数（收到 \"${v}\"）"))
+            }
+        case None => ()
+    }
+    var topArg: Int64 = -1
+    match (flagValue(args, "--top")) {
+        case Some(v) =>
+            try {
+                topArg = Int64.parse(v.trimAscii())
+            } catch (e: Exception) {
+                throw DgError.usage(T(
+                    "--top expects an integer (got \"${v}\")",
+                    "--top 需要整数（收到 \"${v}\"）"))
+            }
+            if (topArg < 1) {
+                throw DgError.usage(T(
+                    "--top expects a positive integer (got ${topArg})",
+                    "--top 需要正整数（收到 ${topArg}）"))
+            }
+        case None => ()
+    }
+    let refs = positionalsOnly(args, VALUE_FLAGS)
+    if (refs.size != 1) {
+        throw DgError.usage(T(
+            "Usage: moongit confidence query <project> [--file F] [--symbol S] [--kind K] [--weight N] [--top N]",
+            "用法：moongit confidence query <项目> [--file 路径] [--symbol 符号] [--kind 类别] [--weight 权重] [--top 条数]"))
+    }
+    let p = requireProject(refs[0])
+    let jsonPath = indexConfidencePathOf(p)
+    let snap = match (readFileText(jsonPath)) {
+        case Some(text) =>
+            match (Json.parse(text)) {
+                case Some(j) => j
+                case None => throw DgError("CONFIDENCE_JSON_CORRUPT", T(
+                    "confidence.json is not valid JSON: ${jsonPath} (run `moongit confidence gen` to regenerate)",
+                    "confidence.json 不是合法 JSON：${jsonPath}（执行 moongit confidence gen 重新生成）"))
+            }
+        case None =>
+            // 报告缺席 → 报错提示，不自动触发 gen（读操作不带来写的副作用）
+            throw DgError.notFound(T(
+                "No confidence snapshot: ${jsonPath} — run `moongit confidence gen ${p.name}` first (query reads the persisted snapshot only, it never recomputes)",
+                "置信度快照缺席：${jsonPath}——先执行 moongit confidence gen ${p.name}（query 只读持久化快照，绝不重算）"))
+    }
+    let result = confidenceQueryJson(snap, p, fileArg, symbolArg, kindArg, weightArg, topArg)
+    if (ctx.json) {
+        printOut(Json.pretty(result))
+        return 0
+    }
+    // 文本视图（从 core 投影——过滤只有 confidenceQueryJson 一份实现）
+    let indexCount = Json.intAt(result, "indexUpdateCount", -1)
+    let basedOn = if (indexCount >= 0) {
+        indexVersionLabel(indexCount)
+    } else {
+        T("unknown index version", "未知索引版本")
+    }
+    let generatedAt = Json.strAt(result, "generatedAt", "")
+    if (Json.has(result, "score")) {
+        // 总览：score + 维度 + 罚分 Top + capped 披露
+        let score = Json.intAt(result, "score", 0)
+        let astNote = Json.strAt(result, "astNote", "")
+        printOut(T("Confidence snapshot: ${p.name} · score ${score}/100 · ${Json.intAt(result, "findingCount", 0)} findings · generated at ${generatedAt} · based on index ${basedOn}",
+            "置信度快照：${p.name} · 分数 ${score}/100 · ${Json.intAt(result, "findingCount", 0)} 条疑点 · 生成于 ${generatedAt} · 依据索引 ${basedOn}"))
+        if (!astNote.isEmpty()) {
+            printOut("  ${astNote}")
+        }
+        // capped 披露（数据在快照里恒发；「没截断」不占篇幅——不天天提醒）
+        if (Json.boolAt(result, "cappedTotal", false)) {
+            printOut(T("  ⚠ findings hit the total cap — the snapshot holds a subset, not everything",
+                "  ⚠ 疑点已达全量上限——快照里是子集，不是全部"))
+        } else if (Json.boolAt(result, "cappedKind", false)) {
+            printOut(T("  ⚠ some kinds hit the per-file cap — excess findings summarized per kind",
+                "  ⚠ 部分类别达到每文件上限——超出该类的疑点已按类汇总"))
+        }
+        printOut(T("  (score = structural findings summary, not a correctness proof)",
+            "  （分数是结构性疑点汇总，不是正确性证明）"))
+        let dims = Json.arrAt(result, "dimensions")
+        if (Int64(dims.size) > 0) {
+            printOut(T("  by dimension:", "  按维度："))
+            for (d in dims) {
+                printOut(T("    ${Json.strAt(d, "label", "")}：${Json.intAt(d, "score", 0)}/100（penalty ${Json.intAt(d, "penalty", 0)} · ${Json.intAt(d, "findings", 0)} findings）",
+                    "    ${Json.strAt(d, "label", "")}：${Json.intAt(d, "score", 0)}/100（罚分 ${Json.intAt(d, "penalty", 0)} · ${Json.intAt(d, "findings", 0)} 条）"))
+            }
+        }
+        let files = Json.arrAt(result, "penaltyByFile")
+        if (Int64(files.size) > 0) {
+            let topN: Int64 = 5
+            var n: Int64 = 0
+            printOut(T("  penalty top:", "  罚分 Top："))
+            for (pf in files) {
+                if (n >= topN) { break }
+                printOut(T("    ${Json.strAt(pf, "file", "")} · penalty ${Json.intAt(pf, "penalty", 0)}",
+                    "    ${Json.strAt(pf, "file", "")} · 罚分 ${Json.intAt(pf, "penalty", 0)}"))
+                n += 1
+            }
+            if (Int64(files.size) > topN) {
+                printOut(T("    … ${Int64(files.size) - topN} more files in the snapshot",
+                    "    … 快照里还有 ${Int64(files.size) - topN} 个文件"))
+            }
+        }
+        if (Json.intAt(result, "findingCount", 0) == 0) {
+            printOut(T("  no findings in the snapshot.", "  快照里没有疑点。"))
+        }
+        return 0
+    }
+    // 过滤视图
+    let matched = Json.intAt(result, "matched", 0)
+    let nShown = Json.intAt(result, "shown", 0)
+    let topTruncated = Json.boolAt(result, "topTruncated", false)
+    printOut(T("Confidence snapshot: ${p.name} · matched ${matched} · shown ${nShown} · generated at ${generatedAt} · based on index ${basedOn}",
+        "置信度快照：${p.name} · 匹配 ${matched} 条 · 显示 ${nShown} 条 · 生成于 ${generatedAt} · 依据索引 ${basedOn}"))
+    if (topTruncated) {
+        printOut(T("  ⚠ truncated by --top ${topArg} — ${matched - nShown} more matched findings not shown",
+            "  ⚠ 已按 --top ${topArg} 截断——还有 ${matched - nShown} 条匹配的疑点未显示"))
+    }
+    if (matched == 0) {
+        printOut(T("  nothing matches the given filters.", "  没有疑点匹配给定过滤条件。"))
+        return 0
+    }
+    for (f in Json.arrAt(result, "findings")) {
+        printOut(T("  [${Json.strAt(f, "kind", "")}] ${Json.strAt(f, "file", "")}:${Json.intAt(f, "line", 0)} · weight ${Json.intAt(f, "weight", 0)}",
+            "  [${Json.strAt(f, "kind", "")}] ${Json.strAt(f, "file", "")}:${Json.intAt(f, "line", 0)} · 权重 ${Json.intAt(f, "weight", 0)}"))
+        printOut("    ${Json.strAt(f, "evidence", "")}")
+    }
+    return 0
+}
+
+/// confidence query 的核心（CLI --json 与 MCP confidence_query 共用；
+/// 过滤只有这一份实现）。无过滤 → 总览形状（score/dimensions/penaltyByFile/
+/// capped/astNote/findingCount）；有过滤 → findings 清单形状（matched/shown/
+/// topTruncated/findings）。两种形状都恒带 project/generatedAt/indexUpdateCount
+///（快照元信息——读的人必须知道快照新旧）。过滤全在快照内进行，不重算。
+func confidenceQueryJson(snap: JsonValue, p: ProjectEntry,
+                         fileArg: String, symbolArg: String, kindArg: String,
+                         weightArg: Int64, topArg: Int64): JsonValue {
+    let findings = Json.arrAt(snap, "findings")
+    // 过滤组合：--file 精确或路径后缀；--symbol/--kind 精确；--weight 下限。
+    // findings 已按权重降序持久化（sortFindings 的全序）。
+    let filtered = ArrayList<JsonValue>()
+    for (f in findings) {
+        if (!fileArg.isEmpty()) {
+            let fp = Json.strAt(f, "file", "")
+            if (fp != fileArg && !hasPathSuffix(fp, fileArg)) { continue }
+        }
+        if (!symbolArg.isEmpty() && Json.strAt(f, "symbol", "") != symbolArg) { continue }
+        if (!kindArg.isEmpty() && Json.strAt(f, "kind", "") != kindArg) { continue }
+        if (weightArg >= 0 && Json.intAt(f, "weight", 0) < weightArg) { continue }
+        filtered.add(f)
+    }
+    var shown = filtered
+    var topTruncated = false
+    if (topArg > 0 && Int64(filtered.size) > topArg) {
+        shown = ArrayList<JsonValue>()
+        var i: Int64 = 0
+        while (i < topArg) {
+            shown.add(filtered[i])
+            i += 1
+        }
+        topTruncated = true
+    }
+    let matched = Int64(filtered.size)
+    // --top 也是过滤维度（任务口径：file/symbol/kind/weight/top 都作用于
+    // findings）——只给 --top 时走清单形状而不是总览，否则 --top 静默无效。
+    let noFilter = fileArg.isEmpty() && symbolArg.isEmpty() && kindArg.isEmpty()
+        && weightArg < 0 && topArg < 0
+    let o = Json.obj()
+    Json.set(o, "project", Json.of(p.name))
+    Json.set(o, "generatedAt", Json.of(Json.strAt(snap, "generatedAt", "")))
+    Json.set(o, "indexUpdateCount", Json.of(Json.intAt(snap, "indexUpdateCount", -1)))
+    if (noFilter) {
+        // 总览（计数键叫 findingCount——「findings」留给过滤形状的数组，
+        // 同一命令两个视图不许同名不同义）
+        Json.set(o, "score", Json.of(Json.intAt(snap, "score", 0)))
+        Json.set(o, "findingCount", Json.of(matched))
+        Json.set(o, "astUsed", Json.of(Json.boolAt(snap, "astUsed", false)))
+        Json.set(o, "astNote", Json.of(Json.strAt(snap, "astNote", "")))
+        Json.set(o, "cappedTotal", Json.of(Json.boolAt(snap, "cappedTotal", false)))
+        Json.set(o, "cappedKind", Json.of(Json.boolAt(snap, "cappedKind", false)))
+        Json.set(o, "dimensions", Json.getOr(snap, "dimensions"))
+        Json.set(o, "byKind", Json.getOr(snap, "byKind"))
+        Json.set(o, "penaltyByFile", Json.getOr(snap, "files"))
+    } else {
+        Json.set(o, "matched", Json.of(matched))
+        Json.set(o, "shown", Json.of(Int64(shown.size)))
+        Json.set(o, "topTruncated", Json.of(topTruncated))
+        let fs = ArrayList<JsonValue>()
+        for (f in shown) { fs.add(f) }
+        Json.set(o, "findings", JArr(fs))
+    }
+    return o
+}
+
+/// 路径后缀匹配：`--file src/a.cj` 命中 `src/a.cj` 与 `repo/src/a.cj`。
+/// 按 `/` 分段对齐（`xa.cj` 不得命中 `a.cj`）。
+func hasPathSuffix(path: String, suffix: String): Bool {
+    if (suffix.isEmpty() || suffix.size > path.size) { return false }
+    if (!path.endsWith(suffix)) { return false }
+    let head = path[..path.size - suffix.size]
+    if (head.isEmpty()) { return true }
+    return head.endsWith("/")
+}
+
+/// `moongit render <arch|index> ...`：渲染入口（两者都已落地——
+/// 持久化 payload → 单文件 HTML，复用/重绘三段判定）。
+func cmdRender(rest: ArrayList<String>, ctx: CliContext): Int64 {
+    if (rest.size == 0) {
+        throw DgError.usage(T(
+            "Usage: moongit render <arch|index> <project> [--confidence] [--force] [--out F]",
+            "用法：moongit render <arch|index> <项目> [--confidence] [--force] [--out 文件]"))
+    }
+    let args = ArrayList<String>()
+    var i: Int64 = 1
+    while (i < rest.size) {
+        args.add(rest[i])
+        i += 1
+    }
+    if (rest[0] == "arch") {
+        return renderArchCmd(args, ctx)
+    }
+    if (rest[0] != "index") {
+        throw DgError.usage(T(
+            "Usage: moongit render <arch|index> <project> [--confidence] [--force] [--out F]",
+            "用法：moongit render <arch|index> <项目> [--confidence] [--force] [--out 文件]"))
+    }
+    return renderIndexCmd(args, ctx)
+}
+
+/// `render index` 的核心（CLI 与 MCP 共用；三段判定只有这一份实现）：
+/// ① 自愈（过期/缺库先重建 indexEnsureFresh，等价 index update）；
+/// ② 读持久化 index.json →（wantConf 时叠加项目库的 confidence.json，
+///    缺席则纯结构渲染 + 图例恒发「无置信度数据」）→ renderIndexHtml；
+/// ③ 复用判定：现有产物内嵌的 (updateCount, generatedAt) == index.json 的
+///    同名两键且非 --force → 复用（不重写）；否则重绘。
+/// 返回回执 JSON（project/path/reused/updateCount/generatedAt/confidence/selfHealed）。
+func renderIndexCore(p: ProjectEntry, wantConf: Bool, force: Bool, outPath: String): JsonValue {
+    let config = loadConfig()
+    let en = isEnglish(config.language)
+    let jsonPath = indexJsonPathOf(p)
+    let renderPath = indexRenderPathOf(p)
+    ensureDir(dirname(renderPath))
+
+    // ① 自愈（过期/缺库先重建；重建会同时重写 index.json）
+    let (_, healed) = indexEnsureFresh(p)
+
+    // ② 读持久化 payload
+    let payload = match (readFileText(jsonPath)) {
+        case Some(text) =>
+            match (Json.parse(text)) {
+                case Some(j) => j
+                case None => throw DgError("INDEX_JSON_CORRUPT", T(
+                    "index.json is not valid JSON: ${jsonPath} (run `moongit index gen` to regenerate)",
+                    "index.json 不是合法 JSON：${jsonPath}（执行 moongit index gen 重新生成）"))
+            }
+        case None => throw DgError("INDEX_JSON_MISSING", T(
+            "index.json not found: ${jsonPath} (run `moongit index gen` first)",
+            "找不到 index.json：${jsonPath}（先执行 moongit index gen）"))
+    }
+    // 复用判定的基准是 **index.json 自己的 updateCount**（不是 db 的）：
+    // 两者理论上同源，但 index.json 是渲染的输入——比对输入与产物才回答
+    // 「这份产物是不是从这份 index 画出来的」；拿 db 的数当基准会漏掉
+    // index.json 被单独改过/旧写失败的情形（那是另一个真实状态）。
+    // 缺键/畸形 = 无法证明产物新鲜 = 重绘（「读不出来」不许当「没变」）。
+    var payloadCount: Int64 = -1
+    match (Json.asInt(Json.getOr(payload, "updateCount"))) {
+        case Some(n) => payloadCount = n
+        case None => payloadCount = -1
+    }
+
+    // 置信度叠加（--confidence）：读到就换上；缺席不编数据，只打标记
+    var confOpt: Option<JsonValue> = None<JsonValue>
+    var confMissing = false
+    if (wantConf) {
+        var loaded = false
+        match (readFileText(indexConfidencePathOf(p))) {
+            case Some(text) =>
+                match (Json.parse(text)) {
+                    case Some(c) =>
+                        confOpt = Some<JsonValue>(c)
+                        loaded = true
+                    case None => loaded = false
+                }
+            case None => loaded = false
+        }
+        if (!loaded) {
+            confMissing = true
+        }
+    }
+
+    // ③ 复用判定：现有产物内嵌 (updateCount, generatedAt) == index.json 的
+    // 同名两键。版本号会在「db 与 index.json 双缺后重建」时从 0 重计，
+    // 单比版本号可能把旧 0 当新 0——时间戳参与比对，陈旧产物绝不复用。
+    var reuse = false
+    let payloadGen = Json.strAt(payload, "generatedAt", "")
+    if (!force && payloadCount >= 0 && !payloadGen.isEmpty() && fileExists(renderPath)) {
+        match (readFileText(renderPath)) {
+            case Some(oldHtml) =>
+                match (renderIndexEmbeddedUpdateCount(oldHtml)) {
+                    case Some(oldCount) =>
+                        reuse = oldCount == payloadCount &&
+                            renderIndexEmbeddedGeneratedAt(oldHtml) == payloadGen
+                    case None => reuse = false   // 无标记 = 旧产物/被改过，不可复用
+                }
+            case None => reuse = false
+        }
+    }
+    var html = ""
+    if (reuse) {
+        html = readFileTextOr(renderPath, "")
+    } else {
+        html = renderIndexHtml(payload, confOpt, en, confMissing)
+        writeFileAtomic(renderPath, html)
+    }
+    // --out 导出副本（复用时也导——调用方要的是文件，不是「重新画一遍」）
+    if (!outPath.isEmpty()) {
+        writeFileAtomic(outPath, html)
+    }
+
+    let shownCount = if (payloadCount >= 0) { payloadCount } else { indexCurrentCount(p) }
+    let confState = if (confMissing) { "missing" } else if (confOpt.isSome()) { "overlay" } else { "embedded" }
+    let o = Json.obj()
+    Json.set(o, "project", Json.of(p.name))
+    Json.set(o, "path", Json.of(renderPath))
+    Json.set(o, "reused", Json.of(reuse))
+    Json.set(o, "updateCount", Json.of(shownCount))
+    Json.set(o, "generatedAt", Json.of(Json.strAt(payload, "generatedAt", "")))
+    Json.set(o, "confidence", Json.of(confState))
+    Json.set(o, "selfHealed", Json.of(healed))
+    return o
+}
+
+/// `moongit render index <项目> [--confidence] [--force] [--out F]`。
+func renderIndexCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
+    let targets = resolveTargets(args, false)
+    if (targets.size != 1) {
+        throw DgError.usage(T(
+            "Usage: moongit render index <project> [--confidence] [--force] [--out F]; exactly one project required (got ${targets.size})",
+            "用法：moongit render index <项目> [--confidence] [--force] [--out 文件]；恰好一个项目（收到 ${targets.size} 个）"))
+    }
+    let p = targets[0]
+    let force = hasFlag(args, "--force")
+    let wantConf = hasFlag(args, "--confidence")
+    var outPath = ""
+    match (flagValue(args, "--out")) {
+        case Some(f) => outPath = f
+        case None => ()
+    }
+    let o = renderIndexCore(p, wantConf, force, outPath)
+    let reuse = Json.boolAt(o, "reused", false)
+    let shownCount = Json.intAt(o, "updateCount", 0)
+    let healed = Json.boolAt(o, "selfHealed", false)
+    let confMissing = Json.strAt(o, "confidence", "") == "missing"
+    if (ctx.json) {
+        printOut(Json.pretty(o))
+    } else {
+        let verb = if (reuse) {
+            T("reused (product unchanged)", "已复用（产物未变）")
+        } else {
+            T("rendered", "已重绘")
+        }
+        let healedNote = if (healed) {
+            T(" (index was stale — rebuilt first)", "（索引已过期——先自动重建）")
+        } else {
+            ""
+        }
+        printOut(T("${verb}：${Json.strAt(o, "path", "")} · ${indexVersionLabel(shownCount)}${healedNote}",
+            "${verb}：${Json.strAt(o, "path", "")} · ${indexVersionLabel(shownCount)}${healedNote}"))
+        if (confMissing) {
+            printOut(T("  legend note: no confidence data (confidence.json absent) — structure only",
+                "  图例注明：无置信度数据（confidence.json 缺席）——本页只呈现结构"))
+        }
+    }
+    return 0
+}
+
+/// `render arch` 的核心（CLI 与 MCP 共用；三段判定只有这一份实现）：
+/// ① 自愈（过期/缺 arch.json 先重建，等价 arch update）；
+/// ② 读持久化 arch.json → renderArchHtml（布局坐标已在 archJson 的
+///    modules x/y/w/h 与 lanes 里，绘图直接消费，不重算图谱）；
+/// ③ 复用判定：现有产物内嵌 (updateCount, generatedAt) == arch.json 的
+///    同名两键且非 --force → 复用；否则重绘。与 render index 同一纪律：
+///    版本号在「arch.json 缺席后重建」会从 0 重计，时间戳参与比对，
+///    无标记 = 旧产物/被改过，不可复用（「读不出来」不许当「没变」）。
+/// 渲染语言取 arch.json meta 的 en（生成时的语言烤进产物，不随 config 漂）。
+/// 返回回执 JSON（project/path/reused/updateCount/generatedAt/selfHealed）。
+func renderArchCore(p: ProjectEntry, force: Bool, outPath: String): JsonValue {
+    let (_, healed) = archEnsureFresh(p)
+    let jsonPath = archJsonPathOf(p)
+    let renderPath = archRenderPathOf(p)
+    ensureDir(dirname(renderPath))
+    // ② 读持久化 arch.json（自愈之后必然可读；读不出 = 写入失败，硬失败）
+    let payloadText = match (readFileText(jsonPath)) {
+        case Some(t) => t
+        case None => throw DgError("ARCH_JSON_MISSING", T(
+            "arch.json not found: ${jsonPath} (run `moongit arch gen` first)",
+            "找不到 arch.json：${jsonPath}（先执行 moongit arch gen）"))
+    }
+    let payload = match (Json.parse(payloadText)) {
+        case Some(j) => j
+        case None => throw DgError("ARCH_JSON_CORRUPT", T(
+            "arch.json is not valid JSON: ${jsonPath} (run `moongit arch gen` to regenerate)",
+            "arch.json 不是合法 JSON：${jsonPath}（执行 moongit arch gen 重新生成）"))
+    }
+    var payloadCount: Int64 = -1
+    match (Json.asInt(Json.getOr(payload, "updateCount"))) {
+        case Some(n) => payloadCount = n
+        case None => payloadCount = -1
+    }
+    let payloadGen = Json.strAt(payload, "generatedAt", "")
+    let en = Json.boolAt(payload, "en", false)
+    // ③ 复用判定（与 renderIndexCore 同一格式的一对读写：
+    // renderArchHtml 内嵌标记，renderIndexEmbeddedUpdateCount/GeneratedAt 读回）
+    var reuse = false
+    if (!force && payloadCount >= 0 && !payloadGen.isEmpty() && fileExists(renderPath)) {
+        match (readFileText(renderPath)) {
+            case Some(oldHtml) =>
+                match (renderIndexEmbeddedUpdateCount(oldHtml)) {
+                    case Some(oldCount) =>
+                        reuse = oldCount == payloadCount &&
+                            renderIndexEmbeddedGeneratedAt(oldHtml) == payloadGen
+                    case None => reuse = false
+                }
+            case None => reuse = false
+        }
+    }
+    var html = ""
+    if (reuse) {
+        html = readFileTextOr(renderPath, "")
+    } else {
+        html = renderArchHtml(payloadText, en)
+        writeFileAtomic(renderPath, html)
+    }
+    if (!outPath.isEmpty()) {
+        writeFileAtomic(outPath, html)
+    }
+    let shownCount = if (payloadCount >= 0) { payloadCount } else { archCurrentCount(p) }
+    let o = Json.obj()
+    Json.set(o, "project", Json.of(p.name))
+    Json.set(o, "path", Json.of(renderPath))
+    Json.set(o, "reused", Json.of(reuse))
+    Json.set(o, "updateCount", Json.of(shownCount))
+    Json.set(o, "generatedAt", Json.of(payloadGen))
+    Json.set(o, "selfHealed", Json.of(healed))
+    return o
+}
+
+/// `moongit render arch <项目> [--force] [--out F]`。
+func renderArchCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
+    let targets = resolveTargets(args, false)
+    if (targets.size != 1) {
+        throw DgError.usage(T(
+            "Usage: moongit render arch <project> [--force] [--out F]; exactly one project required (got ${targets.size})",
+            "用法：moongit render arch <项目> [--force] [--out 文件]；恰好一个项目（收到 ${targets.size} 个）"))
+    }
+    let p = targets[0]
+    let force = hasFlag(args, "--force")
+    var outPath = ""
+    match (flagValue(args, "--out")) {
+        case Some(f) => outPath = f
+        case None => ()
+    }
+    let o = renderArchCore(p, force, outPath)
+    let reuse = Json.boolAt(o, "reused", false)
+    let count = Json.intAt(o, "updateCount", 0)
+    let healed = Json.boolAt(o, "selfHealed", false)
+    let healedNote = if (healed) {
+        T(" (architecture was stale — rebuilt first)", "（架构已过期——先自动重建）")
+    } else {
+        ""
+    }
+    if (ctx.json) {
+        printOut(Json.pretty(o))
+        return 0
+    }
+    if (reuse) {
+        printOut(T("Reused persisted render (${indexVersionLabel(count)}): ${Json.strAt(o, "path", "")}${healedNote}",
+            "已复用持久化渲染（${indexVersionLabel(count)}）：${Json.strAt(o, "path", "")}${healedNote}"))
+    } else {
+        printOut(T("Redrawn: ${Json.strAt(o, "path", "")} · ${indexVersionLabel(count)}${healedNote}",
+            "已重绘：${Json.strAt(o, "path", "")} · ${indexVersionLabel(count)}${healedNote}"))
+    }
+    return 0
+}
+
+/// `moongit index <gen|overview|update|query>`：持久化代码索引的顶层命令。
+func cmdIndex(rest: ArrayList<String>, ctx: CliContext): Int64 {
+    let subs = ["gen", "overview", "update", "query"]
+    if (rest.size == 0 || !subs.contains(rest[0])) {
+        throw DgError.usage(T(
+            "Usage: moongit index <gen|overview|update|query> ...  (gen <project> [--depth N] [--format json|tree] [--stats] [--out F] / overview <project> / update <project> [--force] / query <symbol> | query --file <path>)",
+            "用法：moongit index <gen|overview|update|query> …（gen <项目> [--depth N] [--format json|tree] [--stats] [--out F] / overview <项目> / update <项目> [--force] / query <符号> | query --file <路径>）"))
+    }
+    let sub = rest[0]
+    let args = ArrayList<String>()
+    var i: Int64 = 1
+    while (i < rest.size) {
+        args.add(rest[i])
+        i += 1
+    }
+    match (sub) {
+        case "gen" => return indexGenCmd(args, ctx)
+        case "overview" => return indexOverviewCmd(args, ctx)
+        case "update" => return indexUpdateCmd(args, ctx)
+        case "query" => return indexQueryCmd(args, ctx)
+        case _ => throw DgError.usage(T(
+            "Unknown index subcommand (use gen|overview|update|query)",
+            "未知 index 子命令（可用 gen|overview|update|query）"))
+    }
+}
+
+/// `moongit index gen <项目> [--depth N] [--format json|tree] [--stats] [--out F]`。
+/// 计算（含探针，一次扫描）→ 写 codegraph.db（store_meta 全套）+ index.json
+/// → 按 --format/--json/stdout 默认视图输出。版本明话恒发。
+func indexGenCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
+    // --depth 复用 graph tree 的解析与下限校验（同一个 flag 不能两种判据）
+    let depth = parseGraphTreeDepth(args)
+    var fmt = "tree"
+    match (flagValue(args, "--format")) {
+        case Some(v) =>
+            let f = v.trimAscii()
+            if (f != "json" && f != "tree") {
+                throw DgError.usage(T(
+                    "--format accepts json | tree (got: ${f})",
+                    "--format 只支持 json | tree（收到：${f}）"))
+            }
+            fmt = f
+        case None => ()
+    }
+    let targets = resolveTargets(args, false)
+    if (targets.size != 1) {
+        throw DgError.usage(T(
+            "Usage: moongit index gen <project> [--depth N] [--format json|tree] [--stats] [--out F]; exactly one project required (got ${targets.size})",
+            "用法：moongit index gen <项目> [--depth N] [--format json|tree] [--stats] [--out 文件]；恰好一个项目（收到 ${targets.size} 个）"))
+    }
+    let p = targets[0]
+    let oldMeta = indexMetaRead(indexDbPathOf(p))
+    var oldProbe: Option<SourceProbe> = None<SourceProbe>
+    match (oldMeta) {
+        case Some(m) => oldProbe = m.probe()
+        case None => ()
+    }
+    let (count, probe) = indexRebuild(p, depth, indexCurrentCount(p))
+    let payloadText = readFileTextOr(indexJsonPathOf(p), "")
+    let payload = match (Json.parse(payloadText)) {
+        case Some(j) => j
+        case None => throw DgError("INDEX_JSON_CORRUPT", T(
+            "index.json just written is not valid JSON: ${payloadText.size} bytes (engine bug)",
+            "刚写出的 index.json 不是合法 JSON（${payloadText.size} 字节）——引擎缺陷"))
+    }
+    // --out 导出副本（index.json 已落 store，--out 是给 agent/脚本的外带副本）
+    match (flagValue(args, "--out")) {
+        case Some(f) => writeFileAtomic(f, payloadText)
+        case None => ()
+    }
+
+    if (ctx.json || fmt == "json") {
+        // 机读出口：11 契约键 + 新增恒发键（键集 = INDEX_JSON_KEYS，一处清单）
+        printOut(Json.pretty(indexContractJson(payload)))
+        return 0
+    }
+    // 文本视图：版本明话 + 产物路径 + 探针（--stats 展开统计）
+    printOut(T("Index generated: ${indexVersionLabel(count)}", "索引已生成：${indexVersionLabel(count)}"))
+    printOut("  ${indexProbeChangeText(oldProbe, probe)}")
+    printOut(T("  db: ${indexDbPathOf(p)}", "  db：${indexDbPathOf(p)}"))
+    printOut(T("  index.json: ${indexJsonPathOf(p)}", "  index.json：${indexJsonPathOf(p)}"))
+    if (hasFlag(args, "--stats")) {
+        printOut(T("  nodes ${Json.intAt(payload, "tierSymbols", 0)} · files ${Json.intAt(payload, "tierFiles", 0)} (depth ${Json.intAt(payload, "depth", 0)})",
+            "  符号 ${Json.intAt(payload, "tierSymbols", 0)} 个 · 文件 ${Json.intAt(payload, "tierFiles", 0)} 个（depth ${Json.intAt(payload, "depth", 0)}）"))
+        let mods = Json.arrAt(payload, "graphModules")
+        if (Int64(mods.size) > 0) {
+            var line = ""
+            for (m in mods) {
+                line = line + "${Json.strAt(m, "id", "")}:${Json.intAt(m, "files", 0)}f/${Json.intAt(m, "symbols", 0)}s "
+            }
+            printOut(T("  modules: ${line}", "  模块：${line}"))
+        }
+        printOut(T("  next: moongit index overview ${p.name} · moongit index query <symbol>",
+            "  下一步：moongit index overview ${p.name} · moongit index query <符号>"))
+    }
+    return 0
+}
+
+/// `moongit index update <项目> [--force]`：轻探针比对 → 一致且非 --force
+/// → 「已最新」，exit 0，不动任何文件；不一致/缺失/--force → 重建（版本 +1）
+/// + 重写 index.json，输出变更摘要。
+func indexUpdateCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
+    let targets = resolveTargets(args, false)
+    if (targets.size != 1) {
+        throw DgError.usage(T(
+            "Usage: moongit index update <project> [--force]; exactly one project required (got ${targets.size})",
+            "用法：moongit index update <项目> [--force]；恰好一个项目（收到 ${targets.size} 个）"))
+    }
+    let p = targets[0]
+    let force = hasFlag(args, "--force")
+    let (fresh, oldProbe, nowProbe) = indexProbeFresh(p)
+    let count = indexCurrentCount(p)
+    if (fresh && !force) {
+        if (ctx.json) {
+            let o = Json.obj()
+            Json.set(o, "project", Json.of(p.name))
+            Json.set(o, "fresh", Json.of(true))
+            Json.set(o, "updateCount", Json.of(count))
+            match (nowProbe) {
+                case Some(nw) => Json.set(o, "probe", nw.toJson())
+                case None => Json.set(o, "probe", JNull)
+            }
+            printOut(Json.pretty(o))
+        } else {
+            printOut(T("Up to date — ${indexVersionLabel(count)}: source probe matches, nothing touched",
+                "已最新——${indexVersionLabel(count)}：源状态探针一致，未改动任何文件"))
+        }
+        return 0
+    }
+    // 过期 / 缺记录 / --force → 重建（沿用生成时的 depth 口径）
+    let (newCount, newProbe) = indexRebuild(p, indexCurrentDepth(p), count)
+    if (ctx.json) {
+        let o = Json.obj()
+        Json.set(o, "project", Json.of(p.name))
+        Json.set(o, "fresh", Json.of(false))
+        Json.set(o, "rebuilt", Json.of(true))
+        Json.set(o, "updateCount", Json.of(newCount))
+        Json.set(o, "generatedAt", match (indexMetaRead(indexDbPathOf(p))) {
+            case Some(m) => Json.of(m.generatedAt)
+            case None => Json.of("")
+        })
+        Json.set(o, "probe", newProbe.toJson())
+        Json.set(o, "indexJson", Json.of(indexJsonPathOf(p)))
+        printOut(Json.pretty(o))
+    } else {
+        printOut(T("Index rebuilt: ${indexVersionLabel(newCount)}", "索引已重建：${indexVersionLabel(newCount)}"))
+        printOut("  ${indexProbeChangeText(oldProbe, newProbe)}")
+        printOut(T("  index.json: ${indexJsonPathOf(p)}", "  index.json：${indexJsonPathOf(p)}"))
+    }
+    return 0
+}
+
+/// `moongit index overview <项目>`：读 db 的 SQL 聚合统计
+///（nodes/edges/files/byKind——不是旧 overview 的全部投影；旧出口保留在
+/// graph overview 兼容面）。探针过期先自愈重建（④A），并输出说明。
+func indexOverviewCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
+    let targets = resolveTargets(args, false)
+    if (targets.size != 1) {
+        throw DgError.usage(T(
+            "Usage: moongit index overview <project>; exactly one project required (got ${targets.size})",
+            "用法：moongit index overview <项目>；恰好一个项目（收到 ${targets.size} 个）"))
+    }
+    let p = targets[0]
+    let (count, healed) = indexEnsureFresh(p)
+    let meta = indexMetaRead(indexDbPathOf(p))
+    var generatedAt = ""
+    match (meta) {
+        case Some(m) => generatedAt = m.generatedAt
+        case None => ()
+    }
+    let dbPath = indexDbPathOf(p)
+    let ov = match (indexOverviewRead(dbPath)) {
+        case Some(v) => v
+        case None => throw DgError("INDEX_DB_FAILED", T(
+            "Failed to read the index database: ${dbPath} (run `moongit index gen` first)",
+            "读不出索引库：${dbPath}（先执行 moongit index gen）"))
+    }
+    if (ctx.json) {
+        let o = Json.obj()
+        Json.set(o, "project", Json.of(p.name))
+        Json.set(o, "updateCount", Json.of(count))
+        Json.set(o, "generatedAt", Json.of(generatedAt))
+        Json.set(o, "selfHealed", Json.of(healed))
+        Json.set(o, "nodes", Json.of(ov.nodes))
+        Json.set(o, "edges", Json.of(ov.edges))
+        Json.set(o, "files", Json.of(ov.files))
+        let bk = Json.obj()
+        for ((k, v) in ov.byKind) {
+            Json.set(bk, k, Json.of(v))
+        }
+        Json.set(o, "byKind", bk)
+        match (indexMetaRead(dbPath)) {
+            case Some(m) =>
+                match (m.probe()) {
+                    case Some(pr) => Json.set(o, "probe", pr.toJson())
+                    case None => Json.set(o, "probe", JNull)
+                }
+            case None => Json.set(o, "probe", JNull)
+        }
+        printOut(Json.pretty(o))
+        return 0
+    }
+    let healedNote = if (healed) {
+        T(" (probe stale — index rebuilt automatically)", "（探针过期——已自动重建索引）")
+    } else {
+        ""
+    }
+    printOut(T("Index overview: ${p.name} · ${indexVersionLabel(count)} · generatedAt ${generatedAt}${healedNote}",
+        "索引总览：${p.name} · ${indexVersionLabel(count)} · 生成于 ${generatedAt}${healedNote}"))
+    printOut(T("  nodes ${ov.nodes} · edges ${ov.edges} · files ${ov.files}",
+        "  符号 ${ov.nodes} · 调用边 ${ov.edges} · 文件 ${ov.files}"))
+    if (Int64(ov.byKind.size) > 0) {
+        var line = ""
+        for ((k, v) in ov.byKind) {
+            line = line + "${k}:${v} "
+        }
+        printOut(T("  byKind: ${line}", "  按种类：${line}"))
+    }
+    printOut(T("  next: moongit index query <symbol> · moongit index query --file <path>",
+        "  下一步：moongit index query <符号> · moongit index query --file <路径>"))
+    return 0
+}
+
+/// `moongit index query <符号>` / `moongit index query --file <路径>`：
+/// 读 db（同样先自愈）→ 符号：defs + callers + callees 一体载荷；
+/// 文件：符号清单 + 调入/调出文件与权重。查不到 → 报错（不编结果）。
+func indexQueryCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
+    var fileArg = ""
+    match (flagValue(args, "--file")) {
+        case Some(v) => fileArg = v.trimAscii()
+        case None => ()
+    }
+    let refs = positionalsOnly(args, VALUE_FLAGS)
+    // 项目解析：第二个位置参数（--file 模式下是第一个）可显式给项目；
+    // 不给则从 cwd 推断（与 graph symbol 同一条路）。
+    var symbolName = ""
+    var projectRef = ""
+    if (!fileArg.isEmpty()) {
+        // --file 模式：位置参数至多 1 个（项目）
+        if (refs.size > 1) {
+            throw DgError.usage(T(
+                "index query --file takes at most one project name (got ${refs.size})",
+                "index query --file 至多接受一个项目名（收到 ${refs.size} 个）"))
+        }
+        if (refs.size == 1) { projectRef = refs[0] }
+    } else {
+        // 符号模式：<符号> [项目]，1..2 个位置参数
+        if (refs.size < 1 || refs.size > 2) {
+            throw DgError.usage(T(
+                "Usage: moongit index query <symbol> [project] | moongit index query --file <path> [project]",
+                "用法：moongit index query <符号> [项目] | moongit index query --file <路径> [项目]"))
+        }
+        symbolName = refs[0]
+        if (refs.size == 2) { projectRef = refs[1] }
+    }
+    let p = if (projectRef.isEmpty()) {
+        let cwd = normalizePath(expandHome(getCwd()))
+        match (findProject(cwd)) {
+            case Some(entry) => entry
+            case None => throw DgError.notFound(T(
+                "Current directory is not a registered project; pass <symbol> <project> (or --file <path> <project>)",
+                "当前目录不属于任何已注册项目；请传 <符号> <项目>（或 --file <路径> <项目>）"))
+        }
+    } else {
+        requireProject(projectRef)
+    }
+    let (_, healed) = indexEnsureFresh(p)
+    let dbPath = indexDbPathOf(p)
+    if (!fileArg.isEmpty()) {
+        match (indexQueryFile(dbPath, fileArg)) {
+            case Some(q) =>
+                if (ctx.json) {
+                    printOut(Json.pretty(q))
+                } else {
+                    printOut(indexFileQueryText(q, healed))
+                }
+                return 0
+            case None =>
+                Log.error(T(
+                    "File not in the index: ${fileArg} (run `moongit index gen`; only supported source languages are indexed)",
+                    "文件不在索引中：${fileArg}（先执行 moongit index gen；索引只覆盖受支持的源码语言）"))
+                return 1
+        }
+    }
+    match (indexQuerySymbol(dbPath, symbolName)) {
+        case Some(q) =>
+            if (ctx.json) {
+                printOut(Json.pretty(q))
+            } else {
+                printOut(indexSymbolQueryText(q, healed))
+            }
+            return 0
+        case None =>
+            Log.error(T(
+                "Symbol not found in the index: ${symbolName} (run `moongit index gen`; only supported source languages are indexed)",
+                "符号不在索引中：${symbolName}（先执行 moongit index gen；索引只覆盖受支持的源码语言）"))
+            return 1
+    }
+}
+
+/// `index query <符号>` 文本视图（defs + callers + callees 一体）。
+func indexSymbolQueryText(q: JsonValue, healed: Bool): String {
+    let healedNote = if (healed) { T(" (index auto-rebuilt)", "（索引已自动重建）") } else { "" }
+    let sb = StringBuilder()
+    sb.append(T("Symbol: ${Json.strAt(q, "symbol", "")}${healedNote}\n", "符号：${Json.strAt(q, "symbol", "")}${healedNote}\n"))
+    sb.append(T("  defs (${Json.arrAt(q, "defs").size}):\n", "  定义（${Json.arrAt(q, "defs").size} 处）：\n"))
+    for (d in Json.arrAt(q, "defs")) {
+        sb.append(T("    ${Json.strAt(d, "kind", "")} ${Json.strAt(d, "file", "")}:${Json.intAt(d, "line", 0)} (lang ${Json.strAt(d, "lang", "")}, findings ${Json.intAt(d, "findings", 0)}, maxWeight ${Json.intAt(d, "maxWeight", 0)})\n",
+            "    ${Json.strAt(d, "kind", "")} ${Json.strAt(d, "file", "")}:${Json.intAt(d, "line", 0)}（语言 ${Json.strAt(d, "lang", "")}，疑点 ${Json.intAt(d, "findings", 0)}，最高权重 ${Json.intAt(d, "maxWeight", 0)}）\n"))
+    }
+    sb.append(T("  callers (${Json.arrAt(q, "callers").size}):\n", "  调用方（${Json.arrAt(q, "callers").size}）：\n"))
+    for (c in Json.arrAt(q, "callers")) {
+        sb.append(T("    ${Json.strAt(c, "name", "")} · ${Json.strAt(c, "file", "")}:${Json.intAt(c, "line", 0)} · weight ${Json.intAt(c, "weight", 0)} · ${Json.strAt(c, "tier", "")}\n",
+            "    ${Json.strAt(c, "name", "")} · ${Json.strAt(c, "file", "")}:${Json.intAt(c, "line", 0)} · 权重 ${Json.intAt(c, "weight", 0)} · ${Json.strAt(c, "tier", "")}\n"))
+    }
+    sb.append(T("  callees (${Json.arrAt(q, "callees").size}):\n", "  被调（${Json.arrAt(q, "callees").size}）：\n"))
+    for (c in Json.arrAt(q, "callees")) {
+        sb.append(T("    ${Json.strAt(c, "name", "")} · ${Json.strAt(c, "file", "")}:${Json.intAt(c, "line", 0)} · weight ${Json.intAt(c, "weight", 0)} · ${Json.strAt(c, "tier", "")}\n",
+            "    ${Json.strAt(c, "name", "")} · ${Json.strAt(c, "file", "")}:${Json.intAt(c, "line", 0)} · 权重 ${Json.intAt(c, "weight", 0)} · ${Json.strAt(c, "tier", "")}\n"))
+    }
+    return sb.toString()
+}
+
+/// `index query --file` 文本视图（符号清单 + 调入/调出文件）。
+func indexFileQueryText(q: JsonValue, healed: Bool): String {
+    let healedNote = if (healed) { T(" (index auto-rebuilt)", "（索引已自动重建）") } else { "" }
+    let sb = StringBuilder()
+    sb.append(T("File: ${Json.strAt(q, "file", "")}${healedNote}\n", "文件：${Json.strAt(q, "file", "")}${healedNote}\n"))
+    sb.append(T("  symbols (${Json.arrAt(q, "symbols").size}):\n", "  符号（${Json.arrAt(q, "symbols").size} 个）：\n"))
+    for (s in Json.arrAt(q, "symbols")) {
+        sb.append(T("    ${Json.strAt(s, "kind", "")} ${Json.strAt(s, "name", "")}:${Json.intAt(s, "line", 0)}\n",
+            "    ${Json.strAt(s, "kind", "")} ${Json.strAt(s, "name", "")}:${Json.intAt(s, "line", 0)}\n"))
+    }
+    sb.append(T("  calledBy (${Json.arrAt(q, "calledBy").size}):\n", "  调入（${Json.arrAt(q, "calledBy").size} 个文件）：\n"))
+    for (c in Json.arrAt(q, "calledBy")) {
+        sb.append(T("    ${Json.strAt(c, "file", "")} · weight ${Json.intAt(c, "weight", 0)}\n",
+            "    ${Json.strAt(c, "file", "")} · 权重 ${Json.intAt(c, "weight", 0)}\n"))
+    }
+    sb.append(T("  calls (${Json.arrAt(q, "calls").size}):\n", "  调出（${Json.arrAt(q, "calls").size} 个文件）：\n"))
+    for (c in Json.arrAt(q, "calls")) {
+        sb.append(T("    ${Json.strAt(c, "file", "")} · weight ${Json.intAt(c, "weight", 0)}\n",
+            "    ${Json.strAt(c, "file", "")} · 权重 ${Json.intAt(c, "weight", 0)}\n"))
+    }
+    return sb.toString()
+}
+
 func cmdTools(rest: ArrayList<String>, ctx: CliContext): Int64 {
+    // ⚠️ #196 同族（本轮审查补齐）：tools 不吃任何位置参数，多余的原来被静默
+    // 吞掉、rc=0 —— `moongit tools foo` 看起来成功，foo 蒸发，用户以为清单
+    // 按什么过滤过了。元数固定（0 个）⇒ rejectExtraPositionals 报 usage（exit 2）。
+    rejectExtraPositionals("tools", positionalsOnly(rest, VALUE_FLAGS), 0)
     printOut(Json.pretty(agentToolsManifest()))
     return 0
 }
 
 let SKILL_FRONTMATTER = "---\nname: moongit\ndescription: 用 moonGit 引擎管理本地 git 项目群的进度与代码：查现状、记进度、浅/深更新文档、git 操作、里程碑，以及代码图谱、架构图（Canvas 契约）、代码置信度与补丁置信度三层体检。适用于任何关于本地项目状态、分支进度、项目文档维护、代码结构与可信度分析的问题。\n---\n\n"
+
+/// 代码图谱工具在 skill 文本里的附加注解（纯呈现细节，名字本身来自 mcpToolList）。
+func skillGraphToolNote(name: String): String {
+    if (name == "codegraph_tree") {
+        return "（depth 控制目录深度）"
+    }
+    if (name == "codegraph_arch") {
+        return "（format=html|mermaid|dot|json|**scene**）"
+    }
+    if (name == "codegraph_confidence") {
+        return "（format=json|text|**llm**——可直接喂给模型的逐条复核提示词）"
+    }
+    if (name == "arch_gen") {
+        return "（产出 arch.json + 摘要；交互 HTML 归 render）"
+    }
+    if (name == "index_gen") {
+        return "（写 codegraph.db + index.json，返回统计）"
+    }
+    if (name == "confidence_gen") {
+        return "（前置自愈索引；format=text|json|llm——llm 是可直接喂给模型的逐条复核提示词）"
+    }
+    if (name == "render") {
+        return "（target=arch|index；落盘单文件交互 HTML，回执只带路径与复用/新绘判定）"
+    }
+    return ""
+}
+
+/// 新工具面的图能力名（skillToolSection 的分组谓词用；旧 codegraph_* 走前缀判定）。
+func isGraphToolName(n: String): Bool {
+    return n.startsWith("arch_") || n.startsWith("index_")
+        || n.startsWith("confidence_") || n == "render"
+}
+
+/// skill 教学包的「工具清单」段落：名字集合与计数全部从 mcpToolList() 派生。
+///
+/// ⚠️ 原来这段是手抄的：标题硬写「23 个」而正文实际只枚举 22 个（缺
+/// get_group_context）—— 同一份清单的第二份副本必然漂移（不变量 26/43 同族）。
+/// 现在分组按名字前缀派生（codegraph_patch* / codegraph_* / 其余），
+/// 注解是呈现细节可以手写，但**名字与数字**跟着 mcpToolList 走：
+/// 新增 MCP 工具时教学包自动跟上，漏一个会有对账测试变红。
+/// 对账测试：testSkillMarkdownToolListMatchesMcpToolList（cli_test.cj）。
+func skillToolSection(): String {
+    let progress = ArrayList<String>()
+    let graph = ArrayList<String>()
+    let patch = ArrayList<String>()
+    let tools = Json.arrAt(mcpToolList(), "tools")
+    for (t in tools) {
+        let n = Json.strAt(t, "name", "")
+        if (n.isEmpty()) {
+            continue
+        }
+        if (n.startsWith("codegraph_patch")) {
+            patch.add(n)
+        } else if (n.startsWith("codegraph_") || isGraphToolName(n)) {
+            // 新工具面（arch_*/index_*/confidence_*/render）与旧 codegraph_* 同属
+            // 代码图谱组——分组谓词只有这一处，新工具进清单自动跟上
+            graph.add(n)
+        } else {
+            progress.add(n)
+        }
+    }
+    // 前提：工具表是空的话，下面的「N 个」与分组全部空转成绿 —— 对账测试会抓，
+    // 这里直接返回空串让标题行消失、教学包结构不完整，问题在测试层爆出来。
+    let total = progress.size + graph.size + patch.size
+    let groups = ArrayList<String>()
+    if (progress.size > 0) {
+        groups.add("   - 进度管理：" + joinStrings(progress, " / "))
+    }
+    if (graph.size > 0) {
+        let parts = ArrayList<String>()
+        for (n in graph) {
+            parts.add(n + skillGraphToolNote(n))
+        }
+        groups.add("   - 代码图谱：" + joinStrings(parts, " / "))
+    }
+    if (patch.size > 0) {
+        var line = "   - 补丁置信度三层："
+        if (patch.size == 2) {
+            line += patch[0] + "（Layer 1 算法分析）→ **你做 Layer 2**（按 `moongit skill print` 的任务书逐条裁决 uncertain）→ "
+                + patch[1] + "（Layer 3 合并出 final 分数）"
+        } else {
+            // 名字集合仍然全部保留（对账测试按名字钉住），只是不再编排三层流程
+            line += joinStrings(patch, " / ")
+        }
+        groups.add(line)
+    }
+    return "工具（${total} 个，分 ${groups.size} 组）：\n" + joinStrings(groups, "\n")
+}
 
 func skillMarkdown(): String {
     let engine = currentExecutable()
@@ -1265,14 +3174,7 @@ func skillMarkdown(): String {
     let ways = ArrayList<String>()
     ways.add("**MCP 服务器**（推荐，工具化接入）。宿主配置：\n   ```json\n   "
         + "{\"mcpServers\": {\"moongit\": {\"command\": \"" + engine + "\", \"args\": [\"mcp\"]}}}\n   ```\n   "
-        + "工具（23 个，分三组）：\n"
-        + "   - 进度管理：list_projects / get_project_context / get_project_status / get_dashboard / get_project_docs / "
-        + "get_journal / run_shallow_update / run_deep_update / run_track / git_op / list_milestones / "
-        + "milestone_add / milestone_action / add_project\n"
-        + "   - 代码图谱：codegraph_overview / codegraph_tree（depth 控制目录深度）/ codegraph_symbol / codegraph_impact / "
-        + "codegraph_arch（format=html|mermaid|dot|json|**scene**） / codegraph_confidence（format=json|text|**llm**——可直接喂给模型的逐条复核提示词）\n"
-        + "   - 补丁置信度三层：codegraph_patch_confidence（Layer 1 算法分析）→ **你做 Layer 2**（按 `moongit skill print` 的任务书逐条裁决 uncertain）→ "
-        + "codegraph_patch_merge（Layer 3 合并出 final 分数）")
+        + skillToolSection())
     ways.add("**CLI**（一次性问答/脚本）：`" + engine + " status --json`、`context [项目] --budget N`、`tools`、"
         + "`journal <项目>`、`dashboard --json`、"
         + "`graph overview|tree --format html|symbol <名>|impact <名>|arch --format scene|confidence [--llm]|patchconf --patch <diff>`（tree/arch 默认即 Web Canvas 交互图）")
@@ -1606,7 +3508,7 @@ func printHelp(): Unit {
         printOut("  scan [root...] [--depth N] [--git-only]  Discover and register projects (--git-only skips non-git dirs)")
         printOut("  status [project]         Show progress status (writes nothing)")
         printOut("  track [project]          Progress snapshot: record only, never touch docs (for hooks)")
-        printOut("  update [project] [--docs S] [--dry-run] [--no-ai]  Shallow update: record branch progress + refresh managed doc sections (S = all|readme|agent, default all)")
+        printOut("  update [project] [--docs S] [--dry-run]  Shallow update: record branch progress + refresh managed doc sections (S = all|readme|agent, default all)")
         printOut("  deep [project] [--scope S]   Deep update: rewrite overview/architecture/commands/history")
         printOut("  journal [project] [--branch B]  View the progress log")
         printOut("  git <pull|push|commit|stash|unstash|fetch> [project] [--message M]")
@@ -1624,6 +3526,12 @@ func printHelp(): Unit {
         printOut("                           confidence: structural confidence report (--llm for the LLM review prompt; --no-ast skips the syntax-tree layer)")
         printOut("                           Code graph: symbol index / relationship tree / impact /")
         printOut("                           interactive architecture canvas (--format html|mermaid|dot|json|scene)")
+        printOut("  graph db [project] [--out F]  Write the symbol-level index to a single-file SQLite DB (nodes/edges with confidence tiers; query callers/callees via SQL)")
+        printOut("  confidence db [project] [--out F]  Write the confidence report to a single-file SQLite DB (findings/dimensions/penalty table)")
+        printOut("  arch <gen|update|query> <project>  Architecture index: gen (arch.json, layout included) / update (probe-driven, --force) / query [module] [--violations]")
+        printOut("  index <gen|overview|update|query>  Persistent code index: gen (db + index.json) / overview (SQL counts) / update (probe-driven) / query <symbol> | --file <path>")
+        printOut("  confidence <gen|query> <project>   Confidence: gen (confidence.json; rebuilds the index first when stale; --db also writes confidence.db) / query (read-only snapshot, filters --file/--symbol/--kind/--weight/--top)")
+        printOut("  render <arch|index> <project>  Render deliverables from the persisted payload (reuses when unchanged; --force redraws; render index --confidence overlays confidence.json)")
         printOut("  config <list|get|set> [k] [v]  Configuration (AI preset, etc.)")
         printOut("  verify [project]         Verify doc integrity (user content untouched)")
         printOut("  doctor                   Environment self-check")
@@ -1655,7 +3563,7 @@ func printHelp(): Unit {
     printOut("  scan [根目录...] [--depth N] [--git-only]  扫描发现项目并注册（--git-only 跳过非 git 目录）")
     printOut("  status [项目]            查看项目进度现状（不写任何文件）")
     printOut("  track [项目]             进度快照：只记录，不改文档（钩子用）")
-    printOut("  update [项目] [--docs S] [--dry-run] [--no-ai]  浅更新：记录各分支进度 + 刷新文档进度区域（S = all|readme|agent，默认 all）")
+    printOut("  update [项目] [--docs S] [--dry-run]  浅更新：记录各分支进度 + 刷新文档进度区域（S = all|readme|agent，默认 all）")
     printOut("  deep [项目] [--scope S]   深度更新：重写 overview/architecture/commands/history")
     printOut("  journal [项目] [--branch B]  查看进度日志")
     printOut("  git <pull|push|commit|stash|unstash|fetch> [项目] [--message M]")
@@ -1673,6 +3581,12 @@ func printHelp(): Unit {
     printOut("                           confidence：代码置信度报告（--llm 出 LLM 复核提示词；--no-ast 跳过语法树层）")
     printOut("                           代码图谱：符号索引/关系树/影响面/技术架构图")
     printOut("                           （arch 用 --format html|mermaid|dot|json|scene；html 为 Canvas 交互图）")
+    printOut("  graph db [项目] [--out F]  符号级索引写入单文件 SQLite（nodes/edges，含 tier 确信度；agent 用 SQL 查 callers/callees）")
+    printOut("  confidence db [项目] [--out F]  置信度报告写入单文件 SQLite（findings/dimensions/罚分表）")
+    printOut("  arch <gen|update|query> <项目>  架构索引：gen（arch.json，含布局坐标）/ update（探针增量，--force 强制）/ query [模块] [--violations]")
+    printOut("  index <gen|overview|update|query>  持久化代码索引：gen（db + index.json）/ overview（SQL 计数）/ update（探针增量）/ query <符号> | --file <路径>")
+    printOut("  confidence <gen|query> <项目>   置信度：gen（confidence.json；索引过期先自动重建；--db 额外写 confidence.db）/ query（只读快照，过滤 --file/--symbol/--kind/--weight/--top）")
+    printOut("  render <arch|index> <项目>  用持久化 payload 渲染交付物（未变即复用；--force 重绘；render index --confidence 叠加 confidence.json）")
     printOut("  config <list|get|set> [k] [v]  配置（AI 预设等）")
     printOut("  verify [项目]            校验文档完整性（用户内容是否被改动）")
     printOut("  doctor                   环境自检")

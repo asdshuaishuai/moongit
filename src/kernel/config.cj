@@ -154,7 +154,8 @@ public func configToJson(cfg: Config): JsonValue {
 
 public func loadConfig(): Config {
     let base = Config.defaults()
-    match (readFileText(configPath())) {
+    let path = configPath()
+    match (readFileText(path)) {
         case Some(text) =>
             match (Json.parse(text)) {
                 case Some(j) =>
@@ -164,7 +165,20 @@ public func loadConfig(): Config {
                     Log.warn("config.json 解析失败，使用默认配置")
                     return applyEnvOverrides(base)
             }
-        case None => return applyEnvOverrides(base)
+        case None =>
+            // ⚠️ readFileText 把两种完全不同的 None 混在一起：
+            //   · 文件不存在 —— 首次运行的正常路径，静默回落默认是对的；
+            //   · 文件**存在但读不出来**（权限 / 瞬时 I/O）—— 用户的全部设置
+            //     （语言、roots、backupKeep…）被丢弃，而他一句话也看不到。
+            // 同一个函数里「解析失败」有 Log.warn，这一种却没有 ——
+            // 两种不完整处置不对称，读不出来的那一种恰好更严重
+            // （用户明明写了配置，引擎却装作第一次见面）。
+            // 区分方式：文件存在（fileExists 走 stat，不受文件读权限影响）
+            // 而 readFileText 返回 None，只可能是读失败。
+            if (fileExists(path)) {
+                Log.warn("config.json 存在但读不出来（权限或 I/O 错误），已回落默认配置")
+            }
+            return applyEnvOverrides(base)
     }
 }
 
@@ -436,9 +450,9 @@ private func allCjFiles(dir: String, acc: ArrayList<String>): Unit {
 /// 十进制数字串，于是后面所有 `contains` 恒为 false。
 private func codeOnly(src: String): String {
     let bytes = ArrayList<UInt8>()
-    var blk = false
+    var blk = CjStripState.Normal
     for (raw in src.split("\n")) {
-        let (l, nb) = stripCjComment(raw, blk)
+        let (l, nb) = stripCjCommentEx(raw, blk)
         blk = nb
         for (c in l) {
             bytes.add(c)
@@ -577,9 +591,9 @@ func __lintConfigGatesShareOneJudge(): Unit {
     for (f in ["src/kernel/config.cj", "src/kernel/docs.cj", "src/cli/cli.cj"]) {
         let raw = readFileTextChecked(f).getOrThrow()
         let sb = StringBuilder()
-        var blk = false
+        var blk = CjStripState.Normal
         for (r in raw.split("\n")) {
-            let (l, nb) = stripCjComment(r, blk)
+            let (l, nb) = stripCjCommentEx(r, blk)
             blk = nb
             sb.append(l)
             sb.append("\n")
@@ -649,6 +663,79 @@ func testReadPathRepairsBothJudgesNotJustNegative(): Unit {
     @Assert(cfg3.maxShallowBranches == 3)
 }
 
+// ------------------------------ loadConfig：两种不完整都要出声 ------------------------------
+
+/// loadConfig 对「读不到 config.json」的两种成因必须区别对待：
+///   · 文件不存在 —— 首次运行的正常路径，**不**告警（否则每个新用户都被吓一次）；
+///   · 文件存在但读不出来 / 解析失败 —— 用户的设置被丢弃，必须 Log.warn。
+///
+/// 原来只有「解析失败」有告警，而 readFileText 把「存在但读不出来」（权限 /
+/// I/O）与「不存在」都吞成 None 静默回落 —— 两种不完整处置不对称，恰好更严重
+/// 的那一种（用户明明写了配置）一声不吭。
+///
+/// 通过 Log.setErrOut 捕获 stderr 出口断言（Log.warn 是唯一的告警通道）。
+/// 「存在但读不出来」用 chmod 000 构造：fileExists 走 stat（只需父目录可搜索，
+/// 不受文件读权限影响）仍为 true，而 File.readFrom 因 EACCES 失败 → None。
+@Test
+func testLoadConfigWarnsOnUnreadableButNotOnMissing(): Unit {
+    let base = "/tmp/dg-cfg-load-${nowMillis()}"
+    let testHome = "${base}-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    let collected = ArrayList<String>()
+    Log.setErrOut({ s => collected.add(s) })
+    try {
+        let cfgPath = configPath()
+        // 场景 1：文件不存在 → 正常首跑，不许告警
+        removePathIfExists(cfgPath)
+        collected.clear()
+        _ = loadConfig()
+        for (line in collected) {
+            @Assert(!line.contains("config.json"))
+        }
+
+        // 场景 2：解析失败 → 必须告警（既有行为，钉住不回退）
+        writeFileAtomic(cfgPath, "{ 这不是合法 JSON")
+        collected.clear()
+        _ = loadConfig()
+        var parseWarned = false
+        for (line in collected) {
+            if (line.contains("解析失败")) {
+                parseWarned = true
+            }
+        }
+        @Assert(parseWarned)
+
+        // 场景 3：存在但读不出来 → 必须告警「读不出来」与「回落默认」
+        writeFileAtomic(cfgPath, "{\"language\":\"en\"}")
+        let ch = execCapture("chmod", ["000", cfgPath], None, 8000)
+        @Assert(ch.ok())
+        // 前提自检：fixture 必须真的处于「存在但读不了」状态，
+        // 否则场景 3 空转着变绿（AGENTS 不变量 18 的教训）
+        @Assert(fileExists(cfgPath))
+        @Assert(readFileText(cfgPath).isNone())
+        collected.clear()
+        let unreadable = loadConfig()
+        execCapture("chmod", ["644", cfgPath], None, 8000)
+        var readWarned = false
+        for (line in collected) {
+            if (line.contains("读不出来")) {
+                readWarned = true
+            }
+        }
+        @Assert(readWarned)
+        // 读不出来时行为上回落默认（文件里写的 en 被丢弃 —— 这件事由告警披露）
+        @Assert(unreadable.language == "zh")
+    } finally {
+        // 权限必须先恢复，否则 removePathIfExists 删不掉
+        execCapture("chmod", ["644", configPath()], None, 8000)
+        Log.resetErrOut()
+        exitTestHome()
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
 // ------------------------------ #203：语言取值与 20 份副本 ------------------------------
 
 /// 支持的语言只有一个来源，判据只有一个口径。
@@ -712,9 +799,9 @@ func __lintEnglishCheckHasExactlyOneCopy(): Unit {
                "src/flow/update.cj", "src/flow/deep.cj", "src/cli/cli.cj", "src/cli/mcp.cj"]) {
         let raw = readFileTextChecked(f).getOrThrow()
         let sb = StringBuilder()
-        var blk = false
+        var blk = CjStripState.Normal
         for (r in raw.split("\n")) {
-            let (l, nb) = stripCjComment(r, blk)
+            let (l, nb) = stripCjCommentEx(r, blk)
             blk = nb
             sb.append(l)
             sb.append("\n")

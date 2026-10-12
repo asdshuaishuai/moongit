@@ -296,14 +296,13 @@ public func renderPulse(facts: RepoFacts, lang: String): String {
     }
 
     if (facts.hotFiles.size > 0) {
+        // ⚠️ 渲染全部采集条目，不自砍：引擎侧 fileHeatmap 的 top（collectFacts
+        // 传 8）就是「热点文件」的唯一口径，JSON 出口全量发这几条，
+        // 渲染层再砍一刀（原来只画前 5）就是「部分当全量」—— 藏掉 3 条零披露。
+        // 口径若要变，只改采集那一处，这里永远照单全收。
         let parts = ArrayList<String>()
-        var i: Int64 = 0
         for ((f, count) in facts.hotFiles) {
-            if (i >= 5) {
-                break
-            }
             parts.add("`" + f + "` ×${count}")
-            i += 1
         }
         lines.add("- ${if (zh) { "热点文件" } else { "Hot files" }}：${joinStrings(parts, "、")}")
     }
@@ -447,9 +446,14 @@ public func renderProgressAgent(
     }
 
     let sorted = sortBranches(branchNames, facts, progress)
+    // AGENT 区域是紧凑形态：分支只列前 8 条。
+    // ⚠️ K5（审查）：截断必须披露 —— README 侧同一族截断有
+    // 「其他分支（N）」的 <details> 先例，这里原来静默截掉，
+    // 读者（人与 agent）会把 8 当成分支总数（「部分当全量」族在 render 出口）。
+    let maxListed: Int64 = 8
     var i: Int64 = 0
     for (name in sorted) {
-        if (i >= 8) {
+        if (i >= maxListed) {
             break
         }
         match (progressBranch(progress, name)) {
@@ -496,6 +500,12 @@ public func renderProgressAgent(
             case None => ()
         }
         i += 1
+    }
+    // 截断披露：与 README 侧「其他分支（N）」同一族、同一口径 ——
+    // 列出的条数是样本，被藏掉的 N 必须出现在文本里。
+    if (sorted.size > maxListed) {
+        sb.append(if (zh) { "_另有 ${sorted.size - maxListed} 个分支未列出。_\n" }
+                  else { "_${sorted.size - maxListed} more branches not listed._\n" })
     }
 
     // 需要注意
@@ -691,7 +701,11 @@ public func renderHistoryFallback(facts: RepoFacts, progress: JsonValue, lang: S
     }
     if (milestones.size > 0) {
         sb.append("**${if (zh) { "进度记录" } else { "Progress entries" }}**\n")
-        var i: Int64 = milestones.size - 8
+        // 小节只列最后 8 条（progress.json 最多 200 条）——
+        // 截断必须披露，对齐「另有 N 个分支未列出」的既有文案风格；
+        // 静默截掉会让读者把 8 条当成全部历史（「部分当全量」族在 render 出口）。
+        let maxListed: Int64 = 8
+        var i: Int64 = milestones.size - maxListed
         if (i < 0) {
             i = 0
         }
@@ -699,6 +713,13 @@ public func renderHistoryFallback(facts: RepoFacts, progress: JsonValue, lang: S
             let e = milestones[i]
             sb.append("- ${formatDateTime(Json.strAt(e, "at", ""))} · `${Json.strAt(e, "branch", "-")}` · ${truncate(oneLine(Json.strAt(e, "summary", "")), 80, "…")}\n")
             i += 1
+        }
+        if (milestones.size > maxListed) {
+            sb.append(if (zh) {
+                "_另有 ${milestones.size - maxListed} 条更早的进度记录未列出（完整历史在 journal.jsonl）。_\n"
+            } else {
+                "_${milestones.size - maxListed} older progress entries not listed (full history in journal.jsonl)._\n"
+            })
         }
         sb.append("\n")
     }
@@ -804,6 +825,49 @@ func testRenderAgentCompact(): Unit {
     @Assert(md.contains("## 当前进度（moonGit 维护）"))
     @Assert(md.contains("feat/x"))
     @Assert(md.contains("3 个待记录提交"))
+}
+
+/// K5 回归：AGENT 进度区截断到前 8 条分支必须披露「另有 N 个」。
+///
+/// README 侧同一族截断有「其他分支（N）」的 <details> 先例，
+/// AGENT 侧原来静默截掉 —— 读者（人与 agent）会把 8 当成分支总数，
+/// 两个出口不对称。列出的条数是样本，被藏掉的 N 必须出现在文本里。
+@Test
+func testRenderAgentDisclosesTruncatedBranches(): Unit {
+    let facts = makeTestFacts("main", "main")
+    let progress = Json.obj()
+    Json.set(progress, "branches", Json.obj())
+    // 11 条分支记录：前 8 条照列，3 条被截掉 —— N 必须说成 3
+    var bi: Int64 = 0
+    while (bi < 11) {
+        setProgressBranch(progress, "feat/b${bi}", jsonPatchOf([("status", Json.of("active")), ("head", Json.of("abc1234567890"))]))
+        bi += 1
+    }
+    let md = renderProgressAgent(facts, progress, HashMap<String, BranchNarrative>(), "zh", "shallow", nowIso())
+    @Assert(md.contains("另有 3 个分支"))
+    // 英文出口共用同一条披露（lang 走 en）
+    let en = renderProgressAgent(facts, progress, HashMap<String, BranchNarrative>(), "en", "shallow", nowIso())
+    @Assert(en.contains("more branches not listed"))
+
+    // 对照：恰好 8 条（等于上限、没超过）不是截断，不许凭空造披露
+    let progress8 = Json.obj()
+    Json.set(progress8, "branches", Json.obj())
+    var bj: Int64 = 0
+    while (bj < 8) {
+        setProgressBranch(progress8, "feat/c${bj}", jsonPatchOf([("status", Json.of("active")), ("head", Json.of("abc1234567890"))]))
+        bj += 1
+    }
+    let md8 = renderProgressAgent(facts, progress8, HashMap<String, BranchNarrative>(), "zh", "shallow", nowIso())
+    @Assert(!md8.contains("另有"))
+    // 前 8 条本身仍然都在（披露不许把正文挤掉）：列出的分支行恰好 8 行。
+    // 不按名字断言 —— sortBranches 对同优先级分支的顺序不是契约。
+    var listed: Int64 = 0
+    for (line in md.split("\n")) {
+        if (line.startsWith("- **`feat/")) {
+            listed += 1
+        }
+    }
+    @Assert(listed == 8)
 }
 
 @Test
@@ -916,6 +980,53 @@ func testRenderPulseEnglish(): Unit {
     @Assert(!pulse.contains("工程脉搏"))
 }
 
+/// 「热点文件」行必须渲染引擎采集的**全部**条目，不许渲染层自砍。
+///
+/// 引擎侧 fileHeatmap 的 top（collectFacts 传 8）是唯一口径，
+/// JSON 出口全量发这 8 条；渲染层原来只画前 5（`if (i >= 5) break`），
+/// 藏掉 3 条且零披露 —— 读者把 5 当成全部热点，「部分当全量」族在渲染出口。
+/// 修法是统一口径：渲染照单全收（engine 给几条画几条），不在渲染层留第二个数字。
+@Test
+func testRenderPulseListsAllCollectedHotFiles(): Unit {
+    // 8 条热点（= collectFacts 采集口径 fileHeatmap(root, "HEAD", 200, 8)）
+    let hot = ArrayList<(String, Int64)>()
+    for (i in 0..8) {
+        hot.add(("src/hot${i}.cj", 10 - i))
+    }
+    let facts = RepoFacts(
+        "git", "t", "/tmp/t", "", "feat/a", "main", "abc", "feat: x", nowIso(), "", 1,
+        ArrayList<BranchInfo>(), DirtyState(false, 0, 0, 0, 0, 0, ArrayList<String>()), 0,
+        ArrayList<(String, String)>(), ArrayList<(Int64, String)>(),
+        1, ArrayList<(String, Int64)>(), ArrayList<String>(),
+        ArrayList<CommitInfo>(), ArrayList<CommitInfo>(), ArrayList<(String, Int64)>(),
+        ArrayList<String>(), ArrayList<String>(),
+        Option<ActivitySnapshot>.None, ArrayList<String>(),
+        ArrayList<(String, Int64)>(), 0, 1, Option<MergePlan>.None, hot,
+    )
+    let pulse = renderPulse(facts, "zh")
+    // 8 条全部出现 —— 旧实现第 6~8 条（hot5/hot6/hot7）被静默砍掉
+    for (i in 0..8) {
+        @Assert(pulse.contains("hot${i}.cj"))
+    }
+    // 恰好 8 个条目（×N 计一次一个），不是「多了」也不是「只有前 5」
+    var entries: Int64 = 0
+    for (line in pulse.split("\n")) {
+        if (line.contains("热点文件")) {
+            for (seg in line.split("、")) {
+                if (seg.contains("×")) {
+                    entries += 1
+                }
+            }
+        }
+    }
+    @Assert(entries == 8)
+
+    // 英文出口同一口径（两个出口共用 renderPulse，钉住不单边漂移）
+    let en = renderPulse(facts, "en")
+    @Assert(en.contains("hot7.cj"))
+    @Assert(en.contains("Hot files"))
+}
+
 @Test
 func testRenderPulseWithNotes(): Unit {
     // untracked / stash / worktree 全部触发注意项
@@ -1006,6 +1117,72 @@ func testOneLineClampedContract(): Unit {
     @Assert(displayWidth(oneLineClamped(long, 120)) <= 120)
     @Assert(oneLineClamped("正常标题", 120) == "正常标题")
     @Assert(oneLineClamped("a\nb\tc", 120) == "a b c")
+}
+
+/// 深度更新 README 的「进度记录」小节只列最后 8 条（progress.json 最多 200 条），
+/// 截断必须披露 —— 对齐「另有 N 个分支未列出」的既有文案风格。
+///
+/// 旧实现静默截掉：读者把 8 条当成全部历史，而「这个项目只做过这些事」
+/// 正是 journal.md 截断（store.cj）修过的同族谎报。
+@Test
+func testRenderHistoryDisclosesTruncatedProgressEntries(): Unit {
+    let facts = makeTestFacts("main", "main")
+    // 11 条非 deep 的 progress 条目：前 8 条照列，最旧 3 条被截掉。
+    // 夹具名带尾部哨兵 -END：否则 "-1" 是 "-10" 的子串，
+    // 「最旧的没出现」断言会被合法列出的 10 号撞红（前缀碰撞，非产品缺陷）。
+    let progress = Json.obj()
+    let entries = ArrayList<JsonValue>()
+    for (i in 0..11) {
+        let e = Json.obj()
+        Json.set(e, "mode", Json.of("shallow"))
+        Json.set(e, "at", Json.of("2026-03-01T10:00:00+08:00"))
+        Json.set(e, "branch", Json.of("main"))
+        Json.set(e, "summary", Json.of("progress-entry-${i}-END"))
+        entries.add(e)
+    }
+    Json.set(progress, "entries", JArr(entries))
+    let md = renderHistoryFallback(facts, progress, "zh")
+    // 披露必须说清藏了几条、去哪看全量
+    @Assert(md.contains("另有 3 条更早的进度记录未列出"))
+    @Assert(md.contains("journal.jsonl"))
+    // 被截掉的是**最旧**的 3 条（s0/s1/s2），最新的 8 条照列
+    @Assert(!md.contains("progress-entry-0-END"))
+    @Assert(!md.contains("progress-entry-1-END"))
+    @Assert(!md.contains("progress-entry-2-END"))
+    for (i in 3..11) {
+        @Assert(md.contains("progress-entry-${i}-END"))
+    }
+    // 列出的恰好 8 行（不是全量 11 行）
+    var listed: Int64 = 0
+    for (line in md.split("\n")) {
+        if (line.contains("progress-entry-")) {
+            listed += 1
+        }
+    }
+    @Assert(listed == 8)
+
+    // 英文出口共用同一披露（lang=en）
+    let en = renderHistoryFallback(facts, progress, "en")
+    @Assert(en.contains("older progress entries not listed"))
+    @Assert(en.contains("journal.jsonl"))
+
+    // 对照：恰好 8 条（=上限、没超过）不是截断，不许凭空造披露
+    let progress8 = Json.obj()
+    let entries8 = ArrayList<JsonValue>()
+    for (i in 0..8) {
+        let e = Json.obj()
+        Json.set(e, "mode", Json.of("shallow"))
+        Json.set(e, "at", Json.of("2026-03-01T10:00:00+08:00"))
+        Json.set(e, "branch", Json.of("main"))
+        Json.set(e, "summary", Json.of("exact-eight-${i}"))
+        entries8.add(e)
+    }
+    Json.set(progress8, "entries", JArr(entries8))
+    let md8 = renderHistoryFallback(facts, progress8, "zh")
+    @Assert(!md8.contains("另有"))
+    for (i in 0..8) {
+        @Assert(md8.contains("exact-eight-${i}"))
+    }
 }
 
 @Test

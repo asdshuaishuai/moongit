@@ -21,6 +21,51 @@ import moongit.util.*
 
 // MARK: - 主题 token
 
+/// 语言 → 色值表的**唯一构造点**（清单与色值只许写这一份）。
+/// 三处消费方各自派生输出形态，不许再抄色值字面量（多份手抄副本必然漂移，
+/// 漂移的症状是同一语言在 scene / 架构图页 / 图谱页三个画面颜色不一致）：
+///   · themeJson()（本文件）—— scene 的 themes.{dark,light}.langs
+///   · archhtml.cj 的 langPaletteJs —— 内嵌驱动 JS 的 PAL.{dark,light}.langs
+///   · treehtml.cj 的 langThemesJson —— 图谱页的 langThemes.{dark,light}
+/// 返回顺序（swift…module）是契约的一部分：三处输出按此序生成，字节级稳定。
+public func langThemeColors(dark: Bool): ArrayList<(String, String)> {
+    let out = ArrayList<(String, String)>()
+    if (dark) {
+        out.add(("swift", "#f05138"))
+        out.add(("cangjie", "#f7801e"))
+        out.add(("ts", "#3178c6"))
+        out.add(("python", "#3572a5"))
+        out.add(("go", "#00add8"))
+        out.add(("rust", "#dea584"))
+        out.add(("java", "#b07219"))
+        out.add(("kotlin", "#a97bff"))
+        out.add(("c", "#555555"))
+        out.add(("module", "#94a3b8"))
+    } else {
+        out.add(("swift", "#f05138"))
+        out.add(("cangjie", "#de6d10"))
+        out.add(("ts", "#3178c6"))
+        out.add(("python", "#3572a5"))
+        out.add(("go", "#00869b"))
+        out.add(("rust", "#b7410e"))
+        out.add(("java", "#b07219"))
+        out.add(("kotlin", "#7c4dff"))
+        out.add(("c", "#444444"))
+        out.add(("module", "#64748b"))
+    }
+    return out
+}
+
+/// langs 主题 token（scene 契约形态）：从 langThemeColors 派生，
+/// 键序 = 构造点顺序（JObj 按插入序序列化）。
+func langsTokenJson(dark: Bool): JsonValue {
+    let o = Json.obj()
+    for ((lang, color) in langThemeColors(dark)) {
+        Json.set(o, lang, Json.of(color))
+    }
+    return o
+}
+
 /// 主题对象。色值直接内嵌两套（与 Web 驱动 v1 相同的取值）——
 /// 主题切换由驱动在两套之间切换，场景无需重建。
 func themeJson(): JsonValue {
@@ -38,24 +83,17 @@ func themeJson(): JsonValue {
     Json.set(dark, "fills", Json.strArray([
         "rgba(56,189,248,0.10)", "rgba(167,139,250,0.10)", "rgba(52,211,153,0.10)",
         "rgba(251,191,36,0.08)", "rgba(142,163,189,0.08)"]))
-    let dlangs = Json.obj()
-    Json.set(dlangs, "swift", Json.of("#f05138"))
-    Json.set(dlangs, "cangjie", Json.of("#f7801e"))
-    Json.set(dlangs, "ts", Json.of("#3178c6"))
-    Json.set(dlangs, "python", Json.of("#3572a5"))
-    Json.set(dlangs, "go", Json.of("#00add8"))
-    Json.set(dlangs, "rust", Json.of("#dea584"))
-    Json.set(dlangs, "java", Json.of("#b07219"))
-    Json.set(dlangs, "kotlin", Json.of("#a97bff"))
-    Json.set(dlangs, "c", Json.of("#555555"))
-    Json.set(dlangs, "module", Json.of("#94a3b8"))
-    Json.set(dark, "langs", dlangs)
+    Json.set(dark, "langs", langsTokenJson(true))
     // M13：场景 JSON 的节点底色用的是 token `panel`，而 themes 里原来
     // **根本没有这个色值**——schema 文档承诺「颜色一律 token，按当前主题解析」
     // 且未定义未知 token 的回退语义，于是第三方驱动必然落空。
     // 引擎自带 Web 驱动不受影响（它内嵌 archJson，panel 由 CSS var 提供）——
     // 那正是它一直没被发现的原因。
     Json.set(dark, "panel", Json.of("#131e35"))
+    // 语义色 token（不稳定度条三档的「危险/警戒」两档；绿档复用 accent）：
+    // 场景出口不许发裸 hex —— 不在 token 表里的值驱动按「引擎违约」处理。
+    Json.set(dark, "bad", Json.of("#f87171"))
+    Json.set(dark, "warn", Json.of("#fbbf24"))
 
     let light = Json.obj()
     Json.set(light, "bg0", Json.of("#f7f9fd"))
@@ -71,19 +109,10 @@ func themeJson(): JsonValue {
     Json.set(light, "fills", Json.strArray([
         "rgba(2,132,199,0.07)", "rgba(124,58,237,0.07)", "rgba(5,150,105,0.07)",
         "rgba(217,119,6,0.07)", "rgba(100,116,139,0.07)"]))
-    let llangs = Json.obj()
-    Json.set(llangs, "swift", Json.of("#f05138"))
-    Json.set(llangs, "cangjie", Json.of("#de6d10"))
-    Json.set(llangs, "ts", Json.of("#3178c6"))
-    Json.set(llangs, "python", Json.of("#3572a5"))
-    Json.set(llangs, "go", Json.of("#00869b"))
-    Json.set(llangs, "rust", Json.of("#b7410e"))
-    Json.set(llangs, "java", Json.of("#b07219"))
-    Json.set(llangs, "kotlin", Json.of("#7c4dff"))
-    Json.set(llangs, "c", Json.of("#444444"))
-    Json.set(llangs, "module", Json.of("#64748b"))
-    Json.set(light, "langs", llangs)
+    Json.set(light, "langs", langsTokenJson(false))
     Json.set(light, "panel", Json.of("#ffffff"))
+    Json.set(light, "bad", Json.of("#dc2626"))
+    Json.set(light, "warn", Json.of("#d97706"))
 
     let th = Json.obj()
     Json.set(th, "dark", dark)
@@ -135,6 +164,14 @@ func sceneEdgesArch(edges: ArrayList<ArchEdge>, max: Int64): (ArrayList<ArchEdge
         i += 1
     }
     return (kept, Int64(sorted.size) - Int64(kept.size))
+}
+
+/// 边宽 ∝ weight：min(3.5, 1 + weight*0.15)。架构视图与下钻视图共用
+/// 这一个公式——同一个量只允许一个算法（两处各写一份必然漂移，
+/// Web 驱动的 renderJs 侧同式，两侧对同一数据画出的边一样粗）。
+func archEdgeStroke(weight: Int64): Float64 {
+    let v = 1.0 + Float64(weight) * 0.15
+    return if (v > 3.5) { 3.5 } else { v }
 }
 
 /// 视图构建的中间态：攒 shapes/particles/hits，最后装配成 view JSON。
@@ -223,42 +260,27 @@ public func buildArchScene(data: ArchData, en: Bool): JsonValue {
         arch.order[m.id] = ord
         ord += 1
     }
-    // 层框（虚线 + 标签）
-    var col = 0
-    while (col < LAYER_COUNT) {
-        let colMods = ArrayList<ArchModule>()
-        for (m in sorted) { if (m.layer == col) { colMods.add(m) } }
-        if (colMods.size > 0) {
-            var x0 = 0.0
-            var y0 = 0.0
-            var x1 = 0.0
-            var y1 = 0.0
-            var first = true
-            for (m in colMods) {
-                if (first) {
-                    x0 = m.x - 18.0
-                    y0 = m.y - 46.0
-                    x1 = m.x + m.w + 18.0
-                    y1 = m.y + m.h + 18.0
-                    first = false
-                } else {
-                    if (m.x - 18.0 < x0) { x0 = m.x - 18.0 }
-                    if (m.y - 46.0 < y0) { y0 = m.y - 46.0 }
-                    if (m.x + m.w + 18.0 > x1) { x1 = m.x + m.w + 18.0 }
-                    if (m.y + m.h + 18.0 > y1) { y1 = m.y + m.h + 18.0 }
-                }
-            }
-            let frame = Json.obj()
-            Json.set(frame, "t", Json.of("frame"))
-            Json.set(frame, "x", Json.of(x0))
-            Json.set(frame, "y", Json.of(y0))
-            Json.set(frame, "w", Json.of(x1 - x0))
-            Json.set(frame, "h", Json.of(y1 - y0))
-            Json.set(frame, "label", Json.of("${layerName(col, en)}  L${col}"))
-            Json.set(frame, "color", Json.of("cols.${col}"))
-            arch.addShape(frame)
-        }
-        col += 1
+    // 泳道（分层泳道布局：几何唯一来源 = archLaneRects，与 archJson 的 lanes
+    // 是同一份——这里不再从模块 bounds 反推，反推是第二份布局必然漂移）。
+    // fill token 让认识 fills 的驱动画出「按层配色的实色淡底泳道」；
+    // 只认描边的既有驱动忽略追加键、仍按 frame 画框——向后兼容。
+    for (lane in archLaneRects(data, en)) {
+        let li = Json.intAt(lane, "layer", 0)
+        let lx = Json.numAt(lane, "x", 0.0)
+        let ly = Json.numAt(lane, "y", 0.0)
+        let lw = Json.numAt(lane, "w", 0.0)
+        let lh = Json.numAt(lane, "h", 0.0)
+        let lc = Json.intAt(lane, "modules", 0)
+        let frame = Json.obj()
+        Json.set(frame, "t", Json.of("frame"))
+        Json.set(frame, "x", Json.of(lx))
+        Json.set(frame, "y", Json.of(ly))
+        Json.set(frame, "w", Json.of(lw))
+        Json.set(frame, "h", Json.of(lh))
+        Json.set(frame, "label", Json.of("L${li} ${layerName(li, en)} · ${lc} ${ui.modulesWord}"))
+        Json.set(frame, "color", Json.of("cols.${li}"))
+        Json.set(frame, "fill", Json.of("fills.${li}"))
+        arch.addShape(frame)
     }
     // 边（渐变 + 箭头 + 生长动画声明）。受 SCENE_MAX_EDGES_PER_VIEW 限制并披露丢弃数。
     let (archEdges, archDropped) = sceneEdgesArch(data.edges, SCENE_MAX_EDGES_PER_VIEW)
@@ -276,7 +298,7 @@ public func buildArchScene(data: ArchData, en: Bool): JsonValue {
         Json.set(shape, "p", numsJson([x1, y1, mx, y1, mx, y2, x2, y2]))
         Json.set(shape, "c0", Json.of("node:${ae.fromId}"))
         Json.set(shape, "c1", Json.of("node:${ae.toId}"))
-        Json.set(shape, "sw", Json.of(if (ae.weight > 8) { 3.0 } else { if (ae.weight > 3) { 2.2 } else { 1.4 } }))
+        Json.set(shape, "sw", Json.of(archEdgeStroke(ae.weight)))
         Json.set(shape, "alpha", Json.of(if (ae.weight > 8) { 0.9 } else { if (ae.weight > 3) { 0.7 } else { 0.5 } }))
         Json.set(shape, "arrow", Json.of(9.0))
         Json.set(shape, "edge", Json.strArray([ae.fromId, ae.toId]))
@@ -327,8 +349,8 @@ public func buildArchScene(data: ArchData, en: Bool): JsonValue {
         arch.addShape(bar)
         let label = Json.obj()
         Json.set(label, "t", Json.of("text"))
-        Json.set(label, "x", Json.of(m.x + 13.0))
-        Json.set(label, "y", Json.of(m.y + 23.0))
+        Json.set(label, "x", Json.of(m.x + 12.0))
+        Json.set(label, "y", Json.of(m.y + 22.0))
         Json.set(label, "text", Json.of(m.id))
         Json.set(label, "size", Json.of(13.0))
         Json.set(label, "weight", Json.of(600))
@@ -339,8 +361,8 @@ public func buildArchScene(data: ArchData, en: Bool): JsonValue {
         arch.addShape(label)
         let sub = Json.obj()
         Json.set(sub, "t", Json.of("text"))
-        Json.set(sub, "x", Json.of(m.x + 13.0))
-        Json.set(sub, "y", Json.of(m.y + m.h - 12.0))
+        Json.set(sub, "x", Json.of(m.x + 12.0))
+        Json.set(sub, "y", Json.of(m.y + 39.0))
         Json.set(sub, "text", Json.of("${m.files} ${ui.filesWord} · ${m.symbols} ${ui.symWord} · ${m.lines} ${ui.lineWord}"))
         Json.set(sub, "size", Json.of(11.0))
         Json.set(sub, "weight", Json.of(400))
@@ -349,6 +371,49 @@ public func buildArchScene(data: ArchData, en: Bool): JsonValue {
         Json.set(sub, "maxw", Json.of(m.w - 22.0))
         Json.set(sub, "node", Json.of(m.id))
         arch.addShape(sub)
+        // 入出徽标 + 不稳定度条（60×5，按 instability% 填充；三档色 token：
+        // >66 bad / 33..66 warn / <33 accent——阈值只写这一处，Web 驱动同式）
+        let fan = Json.obj()
+        Json.set(fan, "t", Json.of("text"))
+        Json.set(fan, "x", Json.of(m.x + 12.0))
+        Json.set(fan, "y", Json.of(m.y + 59.0))
+        Json.set(fan, "text", Json.of("${ui.inShort} ${m.fanIn} / ${ui.outShort} ${m.fanOut}"))
+        Json.set(fan, "size", Json.of(10.0))
+        Json.set(fan, "weight", Json.of(400))
+        Json.set(fan, "color", Json.of("muted"))
+        Json.set(fan, "align", Json.of("left"))
+        Json.set(fan, "node", Json.of(m.id))
+        arch.addShape(fan)
+        let barBg = Json.obj()
+        Json.set(barBg, "t", Json.of("rect"))
+        Json.set(barBg, "x", Json.of(m.x + 96.0))
+        Json.set(barBg, "y", Json.of(m.y + 52.0))
+        Json.set(barBg, "w", Json.of(60.0))
+        Json.set(barBg, "h", Json.of(5.0))
+        Json.set(barBg, "fill", Json.of("border"))
+        Json.set(barBg, "node", Json.of(m.id))
+        arch.addShape(barBg)
+        let instTok = if (m.instability > 66) { "bad" } else { if (m.instability >= 33) { "warn" } else { "accent" } }
+        let barFill = Json.obj()
+        Json.set(barFill, "t", Json.of("rect"))
+        Json.set(barFill, "x", Json.of(m.x + 96.0))
+        Json.set(barFill, "y", Json.of(m.y + 52.0))
+        Json.set(barFill, "w", Json.of(60.0 * Float64(m.instability) / 100.0))
+        Json.set(barFill, "h", Json.of(5.0))
+        Json.set(barFill, "fill", Json.of(instTok))
+        Json.set(barFill, "node", Json.of(m.id))
+        arch.addShape(barFill)
+        let instPct = Json.obj()
+        Json.set(instPct, "t", Json.of("text"))
+        Json.set(instPct, "x", Json.of(m.x + 162.0))
+        Json.set(instPct, "y", Json.of(m.y + 59.0))
+        Json.set(instPct, "text", Json.of("${m.instability}%"))
+        Json.set(instPct, "size", Json.of(9.0))
+        Json.set(instPct, "weight", Json.of(400))
+        Json.set(instPct, "color", Json.of(instTok))
+        Json.set(instPct, "align", Json.of("left"))
+        Json.set(instPct, "node", Json.of(m.id))
+        arch.addShape(instPct)
         if (hasDrilldown(data, m.id)) {
             let plus = Json.obj()
             Json.set(plus, "t", Json.of("text"))
@@ -364,19 +429,37 @@ public func buildArchScene(data: ArchData, en: Bool): JsonValue {
         }
     }
     arch.computeBounds()
+    // bounds 必须把泳道框进来：computeBounds 只看 hits（卡片），而泳道左端的
+    // 层标签区在最左卡片左侧 150px——不扩进去，按 bounds fit 的驱动会把它裁掉
+    for (lane in archLaneRects(data, en)) {
+        let lx = Json.numAt(lane, "x", 0.0)
+        let ly = Json.numAt(lane, "y", 0.0)
+        let lw = Json.numAt(lane, "w", 0.0)
+        let lh = Json.numAt(lane, "h", 0.0)
+        if (lx - 60.0 < arch.bx0) { arch.bx0 = lx - 60.0 }
+        if (ly - 90.0 < arch.by0) { arch.by0 = ly - 90.0 }
+        if (lx + lw + 60.0 > arch.bx1) { arch.bx1 = lx + lw + 60.0 }
+        if (ly + lh + 60.0 > arch.by1) { arch.by1 = ly + lh + 60.0 }
+    }
 
     // ── 模块子视图（文件级）──
     let views = Json.obj()
     viewsSet(views, "arch", sceneViewJson(arch))
     let panels = Json.obj()
 
-    // 架构级 panel（每模块）
+    // 架构级 panel（每模块）。治理四键恒发（0 也发）——与 archJson 的 modules
+    // 同一份事实、同一个口径（模块级 ArchEdge），场景消费方（客户端详情面板）
+    // 不必再从 out/in 数组自己求和算第二份。
     for (m in sorted) {
         let po = Json.obj()
         Json.set(po, "title", Json.of(m.id))
         Json.set(po, "sub", Json.of("${ui.layerWord} L${m.layer} · ${layerName(m.layer, en)}"))
         Json.set(po, "stats", Json.of("${m.files} ${ui.filesWord} · ${m.symbols} ${ui.symWord} · ${m.lines} ${ui.lineWord}"))
         Json.set(po, "langs", Json.strArray(m.langs.toArray()))
+        Json.set(po, "fanIn", Json.of(m.fanIn))
+        Json.set(po, "fanOut", Json.of(m.fanOut))
+        Json.set(po, "instability", Json.of(m.instability))
+        Json.set(po, "layerName", Json.of(layerName(m.layer, en)))
         let o = ArrayList<JsonValue>()
         let i2 = ArrayList<JsonValue>()
         for (e in data.edges) {
@@ -476,7 +559,7 @@ public func buildArchScene(data: ArchData, en: Bool): JsonValue {
             Json.set(e, "p", numsJson([x1, y1, mx, y1, mx, y2, x2, y2]))
             Json.set(e, "c0", Json.of("node:${a}"))
             Json.set(e, "c1", Json.of("node:${b}"))
-            Json.set(e, "sw", Json.of(1.4))
+            Json.set(e, "sw", Json.of(archEdgeStroke(w)))
             Json.set(e, "alpha", Json.of(0.55))
             Json.set(e, "arrow", Json.of(8.0))
             Json.set(e, "edge", Json.strArray([a, b]))
@@ -546,7 +629,7 @@ public func buildArchScene(data: ArchData, en: Bool): JsonValue {
 
     // ── 装配 ──
     let chips = ArrayList<JsonValue>()
-    col = 0
+    var col: Int64 = 0
     while (col < LAYER_COUNT) {
         var count: Int64 = 0
         for (m in data.modules) { if (m.layer == col) { count += 1 } }
@@ -577,6 +660,11 @@ public func buildArchScene(data: ArchData, en: Bool): JsonValue {
     let meta = Json.obj()
     Json.set(meta, "title", Json.of(ui.title))
     Json.set(meta, "warnings", warnings)
+    // 恒发 truncated（false 也发）：「文件数达上限、部分扫描不是全量」是驱动
+    // 必须能回答的事实。原先只有 archJson 出口有这个键，scene 连键都没有 ——
+    // 数据在数据出口说了、在场景出口没说（数据显示=没算）。与 archJson 同名键
+    // 同一事实（data.truncated 由 buildArch 从 graph.truncated 透传）。
+    Json.set(meta, "truncated", Json.of(data.truncated))
     Json.set(meta, "sub", Json.of(ui.sub))
     Json.set(meta, "stats", Json.of("${data.totalFiles} ${ui.filesWord} / ${data.totalSymbols} ${ui.symWord} / ${data.totalLines} ${ui.lineWord}"))
     Json.set(meta, "hint", Json.of(ui.hint))

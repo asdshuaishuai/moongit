@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spring Boot Function & Variable Level AI Confidence Graph</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        darkBg: '#080c14',
+                        panelBg: '#0f172a',
+                        borderCol: '#1e293b'
+                    }
+                }
+            }
+        }
+    </script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .mono { font-family: 'JetBrains Mono', monospace; }
+        canvas { touch-action: none; }
+    </style>
+</head>
+<body class="bg-darkBg text-slate-100 h-screen flex flex-col overflow-hidden">
+
+    <!-- Top Navigation & Stats Bar -->
+    <header class="bg-panelBg border-b border-borderCol px-6 py-3 flex items-center justify-between shrink-0 shadow-lg z-20">
+        <div class="flex items-center space-x-3">
+            <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-cyan-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-cyan-500/25">
+                <i class="fa-solid fa-code-merge text-white text-lg"></i>
+            </div>
+            <div>
+                <div class="flex items-center space-x-2">
+                    <h1 class="font-bold text-base tracking-tight">Spring-Enterprise-Core [Symbol & Variable Level]</h1>
+                    <span class="text-xs px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 mono">CodeReview + CodeGraph</span>
+                </div>
+                <p class="text-xs text-slate-400">AI 函数、变量与方法级置信度审计报告系统（纯报告模式）</p>
+            </div>
+        </div>
+
+        <!-- Global Stats Summary -->
+        <div class="hidden md:flex items-center space-x-6 text-xs bg-slate-900/60 px-4 py-2 rounded-xl border border-slate-800">
+            <div class="flex items-center space-x-2">
+                <div class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></div>
+                <span class="text-slate-400">符号平均置信度:</span>
+                <span class="font-bold text-emerald-400 text-sm mono" id="statAvgConfidence">82.3%</span>
+            </div>
+            <div class="h-4 w-[1px] bg-slate-800"></div>
+            <div>
+                <span class="text-slate-400">审查符号节点:</span>
+                <span class="font-bold text-slate-200 mono" id="statNodeCount">16 符号 (函数/变量)</span>
+            </div>
+            <div class="h-4 w-[1px] bg-slate-800"></div>
+            <div>
+                <span class="text-slate-400">高风险热点:</span>
+                <span class="font-bold text-rose-400 mono" id="statRiskCount">3 处</span>
+            </div>
+        </div>
+
+        <!-- Action Controls (Report Only) -->
+        <div class="flex items-center space-x-3">
+            <button onclick="exportAuditReport()" class="px-3.5 py-1.5 bg-gradient-to-r from-cyan-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 text-white rounded-lg text-xs font-medium shadow-md shadow-cyan-600/30 transition flex items-center space-x-2">
+                <i class="fa-solid fa-file-lines"></i>
+                <span>导出完整审查报告</span>
+            </button>
+            <button onclick="resetView()" class="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs transition" title="重置视图">
+                <i class="fa-solid fa-compress"></i>
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <div class="flex-1 flex relative overflow-hidden">
+        
+        <!-- Left/Center Canvas Area -->
+        <div class="flex-1 relative bg-[#05080f] overflow-hidden" id="canvasContainer">
+            <canvas id="graphCanvas" class="w-full h-full block cursor-grab active:cursor-grabbing"></canvas>
+
+            <!-- Floating Filter & Legend HUD -->
+            <div class="absolute top-4 left-4 bg-panelBg/90 backdrop-blur-md border border-borderCol rounded-xl p-3 shadow-xl z-10 flex flex-col space-y-3 text-xs w-64">
+                <div class="font-semibold text-slate-300 flex items-center justify-between">
+                    <span><i class="fa-solid fa-filter mr-1.5 text-cyan-400"></i> 函数与变量级图谱筛选</span>
+                    <span class="text-[10px] text-slate-500 mono">AST / REVIEW</span>
+                </div>
+                <div class="space-y-1.5">
+                    <label class="flex items-center space-x-2 cursor-pointer hover:text-white transition">
+                        <input type="checkbox" checked onchange="toggleFilter('all')" id="filterAll" class="rounded bg-slate-800 border-slate-700 text-cyan-600 focus:ring-0">
+                        <span>显示全部符号节点</span>
+                    </label>
+                    <label class="flex items-center space-x-2 cursor-pointer hover:text-white transition">
+                        <input type="checkbox" checked onchange="toggleFilter('method')" class="rounded bg-slate-800 border-slate-700 text-cyan-600 focus:ring-0">
+                        <span class="w-2 h-2 rounded-full bg-cyan-400 inline-block"></span>
+                        <span>Methods / Functions (函数方法)</span>
+                    </label>
+                    <label class="flex items-center space-x-2 cursor-pointer hover:text-white transition">
+                        <input type="checkbox" checked onchange="toggleFilter('variable')" class="rounded bg-slate-800 border-slate-700 text-cyan-600 focus:ring-0">
+                        <span class="w-2 h-2 rounded-full bg-indigo-400 inline-block"></span>
+                        <span>Fields / Variables (类字段与变量)</span>
+                    </label>
+                    <label class="flex items-center space-x-2 cursor-pointer hover:text-white transition">
+                        <input type="checkbox" checked onchange="toggleFilter('param')" class="rounded bg-slate-800 border-slate-700 text-cyan-600 focus:ring-0">
+                        <span class="w-2 h-2 rounded-full bg-purple-400 inline-block"></span>
+                        <span>Parameters (入参与返回值)</span>
+                    </label>
+                    <label class="flex items-center space-x-2 cursor-pointer hover:text-white transition">
+                        <input type="checkbox" checked onchange="toggleFilter('risk')" class="rounded bg-slate-800 border-slate-700 text-cyan-600 focus:ring-0">
+                        <span class="w-2 h-2 rounded-full bg-rose-500 inline-block"></span>
+                        <span>风险热点符号 (&lt;70%)</span>
+                    </label>
+                </div>
+
+                <hr class="border-slate-800 my-1">
+
+                <!-- Color Gradient Legend -->
+                <div>
+                    <div class="text-[10px] text-slate-400 mb-1 flex justify-between">
+                        <span>AI 置信度热力等级</span>
+                        <span>0% - 100%</span>
+                    </div>
+                    <div class="h-2.5 rounded-full bg-gradient-to-r from-rose-500 via-amber-400 to-cyan-400 w-full shadow-inner"></div>
+                    <div class="flex justify-between text-[10px] text-slate-500 mt-1 font-mono">
+                        <span>高危/存疑 (&lt;70)</span>
+                        <span>中等 (70-85)</span>
+                        <span>高可信 (&gt;85)</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Canvas Navigation Controls HUD -->
+            <div class="absolute bottom-6 left-6 bg-panelBg/90 backdrop-blur-md border border-borderCol rounded-xl p-1.5 shadow-xl z-10 flex items-center space-x-1">
+                <button onclick="zoomIn()" class="p-2 hover:bg-slate-800 text-slate-300 rounded-lg transition" title="放大">
+                    <i class="fa-solid fa-magnifying-glass-plus text-xs"></i>
+                </button>
+                <button onclick="zoomOut()" class="p-2 hover:bg-slate-800 text-slate-300 rounded-lg transition" title="缩小">
+                    <i class="fa-solid fa-magnifying-glass-minus text-xs"></i>
+                </button>
+                <div class="w-[1px] h-4 bg-slate-800 mx-1"></div>
+                <button onclick="toggleSimulation()" id="pauseBtn" class="p-2 hover:bg-slate-800 text-slate-300 rounded-lg transition" title="暂停/开启动力布局">
+                    <i class="fa-solid fa-pause text-xs"></i>
+                </button>
+            </div>
+
+            <!-- Toast / Notification overlay -->
+            <div id="toast" class="absolute bottom-6 right-6 bg-slate-900/95 border border-cyan-500/40 text-slate-200 px-4 py-3 rounded-xl shadow-2xl z-30 transform translate-y-20 opacity-0 transition-all duration-300 flex items-center space-x-3">
+                <i class="fa-solid fa-circle-check text-cyan-400 text-lg"></i>
+                <div>
+                    <div class="font-semibold text-xs" id="toastTitle">提示</div>
+                    <div class="text-xs text-slate-400" id="toastMsg">操作成功完成。</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Inspector Sidebar (CodeReview Report Mode) -->
+        <div class="w-[420px] bg-panelBg border-l border-borderCol flex flex-col shrink-0 z-20 shadow-2xl transition-all" id="inspectorSidebar">
+            <div class="p-4 border-b border-borderCol flex items-center justify-between">
+                <div class="flex items-center space-x-2">
+                    <i class="fa-solid fa-magnifying-glass-chart text-cyan-400"></i>
+                    <h2 class="font-semibold text-sm">符号与变量级审计报告</h2>
+                </div>
+                <button onclick="closeInspector()" class="text-slate-500 hover:text-slate-300 text-xs">
+                    <i class="fa-solid fa-xmark text-base"></i>
+                </button>
+            </div>
+
+            <!-- Content when node selected -->
+            <div id="inspectorContent" class="flex-1 overflow-y-auto p-5 space-y-5 text-xs">
+                <!-- Default empty state -->
+                <div id="emptyInspector" class="h-full flex flex-col items-center justify-center text-center text-slate-500 space-y-3 py-20">
+                    <div class="w-16 h-16 rounded-full bg-slate-800/60 flex items-center justify-center text-slate-600 text-2xl">
+                        <i class="fa-solid fa-diagram-project"></i>
+                    </div>
+                    <p class="max-w-[240px]">请在左侧图谱中点击任意函数、方法、变量或参数节点，以查看详细的 AI 置信度热力与 CodeReview 审查报告。</p>
+                </div>
+
+                <!-- Populated node data container (hidden by default) -->
+                <div id="activeInspector" class="hidden space-y-4">
+                    <!-- Header badge & name -->
+                    <div class="bg-slate-900/80 border border-slate-800 rounded-xl p-4 space-y-3">
+                        <div class="flex items-center justify-between">
+                            <span id="nodeTypeBadge" class="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">METHOD</span>
+                            <span class="text-[10px] text-slate-400 mono" id="nodeLocation">UserService.java : Line 42</span>
+                        </div>
+                        <h3 class="font-bold text-sm text-slate-100 font-mono break-all" id="nodeName">public User registerUser(UserDto dto)</h3>
+                        <div class="flex items-center justify-between pt-2 border-t border-slate-800">
+                            <span class="text-slate-400">符号 AI 置信度:</span>
+                            <span class="font-bold text-sm mono" id="nodeScore">88%</span>
+                        </div>
+                        <!-- Progress bar -->
+                        <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                            <div id="nodeScoreBar" class="bg-cyan-400 h-full rounded-full transition-all duration-500" style="width: 88%"></div>
+                        </div>
+                    </div>
+
+                    <!-- Symbol Metrics Breakdown -->
+                    <div class="space-y-2">
+                        <h4 class="font-semibold text-slate-300 uppercase tracking-wider text-[10px]">多维置信度评估矩阵</h4>
+                        <div class="space-y-1.5 bg-slate-900/40 p-3 rounded-xl border border-slate-800/80">
+                            <div class="flex justify-between items-center">
+                                <span class="text-slate-400">语法与类型安全</span>
+                                <span class="font-mono text-cyan-400" id="metricSyntax">96%</span>
+                            </div>
+                            <div class="flex justify-between items-center">
+                                <span class="text-slate-400">空指针与边界风险 (NPE/Bounds)</span>
+                                <span class="font-mono text-indigo-400" id="metricNpe">85%</span>
+                            </div>
+                            <div class="flex justify-between items-center">
+                                <span class="text-slate-400">并发与状态一致性 (Thread-Safety)</span>
+                                <span class="font-mono text-amber-400" id="metricThread">72%</span>
+                            </div>
+                            <div class="flex justify-between items-center">
+                                <span class="text-slate-400">业务规则吻合度</span>
+                                <span class="font-mono text-emerald-400" id="metricLogic">90%</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- CodeReview Comments / Findings -->
+                    <div class="space-y-2">
+                        <h4 class="font-semibold text-slate-300 uppercase tracking-wider text-[10px]">CodeReview 专家审查意见</h4>
+                        <div id="nodeReviewComments" class="bg-amber-500/10 border border-amber-500/30 text-amber-200/90 p-3 rounded-xl leading-relaxed text-[11px]">
+                            入参 `dto` 在第 45 行直接映射入数据库，未进行 `@Valid` 校验。同时变量 `hashedPassword` 生成时未加盐，存在加密强度弱隐患。
+                        </div>
+                    </div>
+
+                    <!-- Symbol Dependency Links (CodeGraph Connections) -->
+                    <div class="space-y-2">
+                        <h4 class="font-semibold text-slate-300 uppercase tracking-wider text-[10px]">关联符号索引引用 (CodeGraph)</h4>
+                        <div id="nodeDependenciesList" class="bg-slate-950 rounded-xl p-3 border border-slate-800 mono text-[11px] text-slate-300 space-y-1">
+                            <div>↳ 引用字段: <span class="text-indigo-400">userRepository</span> (Field)</div>
+                            <div>↳ 调用函数: <span class="text-cyan-400">passwordEncoder.encode()</span> (Method)</div>
+                            <div>↳ 消费参数: <span class="text-purple-400">UserDto dto</span> (Parameter)</div>
+                        </div>
+                    </div>
+
+                    <!-- Report Copy Action -->
+                    <div class="pt-2">
+                        <button onclick="copyReviewSummary()" class="w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg font-medium transition text-center border border-slate-700 text-xs flex items-center justify-center space-x-2">
+                            <i class="fa-regular fa-copy"></i>
+                            <span>复制当前符号审查报告摘要</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- JavaScript Application Logic -->
+    <script>
+        // Spring Boot Function & Variable Level Dataset (CodeReviewGraph + CodeGraph)
+        const nodes = [
+            // --- UserController & Symbols ---
+            { id: 'm1', name: 'POST /api/users (createUser)', type: 'method', parent: 'UserController.java', line: '24-38', score: 92, syntax: 98, npe: 90, thread: 92, logic: 90, comments: 'REST API 映射符合 Spring 规范，状态码返回合理。', deps: ['p1', 'v1', 'm2'], x: 180, y: 120, vx: 0, vy: 0 },
+            { id: 'p1', name: 'UserDto dto (Param)', type: 'param', parent: 'UserController.java', line: '24', score: 68, syntax: 85, npe: 60, thread: 80, logic: 55, comments: '高风险：未在类上标注 @Validated 或入参缺少 @Valid，存在非法明文直接绑定。', deps: ['m1'], x: 40, y: 180, vx: 0, vy: 0 },
+            { id: 'v1', name: 'userService (Field)', type: 'variable', parent: 'UserController.java', line: '20', score: 98, syntax: 100, npe: 98, thread: 95, logic: 98, comments: '依赖注入标准，使用构造器注入符合最佳实践。', deps: ['m1', 'm3'], x: 280, y: 220, vx: 0, vy: 0 },
+
+            // --- UserService & Symbols ---
+            { id: 'm2', name: 'registerUser() (Method)', type: 'method', parent: 'UserService.java', line: '42-65', score: 76, syntax: 92, npe: 75, thread: 68, logic: 70, comments: '事务边界清晰（@Transactional），但密码加盐强度不足，并发注册无唯一索引兜底。', deps: ['v1', 'v2', 'v3', 'm4'], x: 380, y: 120, vx: 0, vy: 0 },
+            { id: 'v2', name: 'hashedPassword (Local Var)', type: 'variable', parent: 'UserService.java', line: '48', score: 64, syntax: 80, npe: 70, thread: 60, logic: 46, comments: '安全警告：使用弱哈希生成密码，未加动态 Salt。', deps: ['m2'], x: 550, y: 80, vx: 0, vy: 0 },
+            { id: 'v3', name: 'userRepository (Field)', type: 'variable', parent: 'UserService.java', line: '38', score: 99, syntax: 100, npe: 100, thread: 98, logic: 98, comments: 'Spring Data JPA 代理注入正常。', deps: ['m2', 'm5'], x: 500, y: 250, vx: 0, vy: 0 },
+
+            // --- OrderService & Concurrency Risk Symbols ---
+            { id: 'm3', name: 'deductStock() (Method)', type: 'method', parent: 'OrderService.java', line: '88-112', score: 54, syntax: 82, npe: 65, thread: 42, logic: 50, comments: '高危热点：高并发扣库存未加分布式锁（Redisson），存在严重超卖隐患。', deps: ['v4', 'm6'], x: 720, y: 120, vx: 0, vy: 0 },
+            { id: 'v4', name: 'stockCount (Variable)', type: 'variable', parent: 'OrderService.java', line: '90', score: 52, syntax: 80, npe: 60, thread: 38, logic: 50, comments: '非线程安全变量，在多线程扣减时发生竞态条件（Race Condition）。', deps: ['m3'], x: 900, y: 160, vx: 0, vy: 0 },
+
+            // --- Repository & Query Symbols ---
+            { id: 'm4', name: 'findByEmail() (Query Method)', type: 'method', parent: 'UserRepository.java', line: '15', score: 96, syntax: 100, npe: 95, thread: 95, logic: 94, comments: 'JPA 派生查询方法，索引命中率高。', deps: ['m2'], x: 380, y: 380, vx: 0, vy: 0 },
+            { id: 'm5', name: 'saveAndFlush() (JPA Method)', type: 'method', parent: 'UserRepository.java', line: '18', score: 95, syntax: 98, npe: 95, thread: 92, logic: 95, comments: '标准持久化操作，异常捕获健全。', deps: ['v3'], x: 600, y: 380, vx: 0, vy: 0 },
+
+            // --- Config & Bean Symbols ---
+            { id: 'm6', name: 'redisTemplate() (Bean Method)', type: 'config', parent: 'RedisConfig.java', line: '22-35', score: 91, syntax: 95, npe: 90, thread: 90, logic: 90, comments: 'Jackson 序列化器配置正确，避免了 JDK 默认序列化漏洞。', deps: ['m3'], x: 820, y: 340, vx: 0, vy: 0 },
+            { id: 'v5', name: 'jwtSecretKey (Config Field)', type: 'variable', parent: 'SecurityConfig.java', line: '18', score: 65, syntax: 85, npe: 70, thread: 60, logic: 45, comments: '安全提示：JWT 密钥硬编码在代码中，建议改由环境变量读取。', deps: [], x: 180, y: 320, vx: 0, vy: 0 }
+        ];
+
+        // Dependency & Call Edges (CodeGraph Links)
+        const edges = [
+            { from: 'm1', to: 'p1' },
+            { from: 'm1', to: 'v1' },
+            { from: 'm1', to: 'm2' },
+            { from: 'm2', to: 'v2' },
+            { from: 'm2', to: 'v3' },
+            { from: 'm2', to: 'm4' },
+            { from: 'v3', to: 'm5' },
+            { from: 'm3', to: 'v4' },
+            { from: 'm3', to: 'm6' },
+            { from: 'm1', to: 'v5' }
+        ];
+
+        let canvas, ctx;
+        let scale = 1;
+        let offsetX = 0;
+        let offsetY = 0;
+        let isDragging = false;
+        let startX, startY;
+        let selectedNode = null;
+        let hoveredNode = null;
+        let isSimulationRunning = true;
+
+        const filters = {
+            all: true,
+            method: true,
+            variable: true,
+            param: true,
+            risk: true
+        };
+
+        window.addEventListener('DOMContentLoaded', () => {
+            canvas = document.getElementById('graphCanvas');
+            ctx = canvas.getContext('2d');
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+
+            // Center initial offset
+            offsetX = canvas.width / 2 - 450;
+            offsetY = canvas.height / 2 - 250;
+
+            // Mouse / Touch Event Listeners for Panning & Zooming
+            canvas.addEventListener('mousedown', onMouseDown);
+            canvas.addEventListener('mousemove', onMouseMove);
+            canvas.addEventListener('mouseup', onMouseUp);
+            canvas.addEventListener('wheel', onWheel, { passive: false });
+            canvas.addEventListener('click', onClick);
+
+            requestAnimationFrame(mainLoop);
+        });
+
+        function resizeCanvas() {
+            const container = document.getElementById('canvasContainer');
+            canvas.width = container.clientWidth;
+            canvas.height = container.clientHeight;
+        }
+
+        // Color mapping based on confidence score
+        function getConfidenceColor(score) {
+            if (score >= 85) return { bg: '#06b6d4', glow: 'rgba(6, 182, 212, 0.4)', text: '#22d3ee' }; // Cyan / Emerald
+            if (score >= 70) return { bg: '#f59e0b', glow: 'rgba(245, 158, 11, 0.4)', text: '#fbbf24' }; // Amber
+            return { bg: '#ef4444', glow: 'rgba(239, 68, 68, 0.5)', text: '#f87171' }; // Rose
+        }
+
+        function getTypeColor(type) {
+            switch(type) {
+                case 'method': return '#06b6d4';   // Cyan
+                case 'variable': return '#6366f1'; // Indigo
+                case 'param': return '#a855f7';    // Purple
+                case 'config': return '#f59e0b';   // Amber
+                default: return '#64748b';
+            }
+        }
+
+        function mainLoop() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            ctx.save();
+            ctx.translate(offsetX, offsetY);
+            ctx.scale(scale, scale);
+
+            // Draw grid background pattern
+            drawGrid();
+
+            // Draw Edges (CodeGraph Relationships)
+            edges.forEach(edge => {
+                const source = nodes.find(n => n.id === edge.from);
+                const target = nodes.find(n => n.id === edge.to);
+                if (source && target && isNodeVisible(source) && isNodeVisible(target)) {
+                    drawEdge(source, target);
+                }
+            });
+
+            // Draw Nodes
+            nodes.forEach(node => {
+                if (isNodeVisible(node)) {
+                    drawNode(node);
+                }
+            });
+
+            ctx.restore();
+
+            if (isSimulationRunning) {
+                updatePhysics();
+            }
+
+            requestAnimationFrame(mainLoop);
+        }
+
+        function isNodeVisible(node) {
+            if (!filters.all) {
+                if (filters.risk && node.score < 70) return true;
+                if (filters[node.type]) return true;
+                return false;
+            }
+            if (filters.risk && node.score < 70) return true;
+            if (!filters[node.type] && node.score >= 70) return false;
+            return true;
+        }
+
+        function drawGrid() {
+            const gridSize = 40;
+            ctx.strokeStyle = 'rgba(30, 41, 59, 0.4)';
+            ctx.lineWidth = 1 / scale;
+            
+            const startXCoord = -offsetX / scale;
+            const startYCoord = -offsetY / scale;
+            const endXCoord = startXCoord + canvas.width / scale;
+            const endYCoord = startYCoord + canvas.height / scale;
+
+            const minX = Math.floor(startXCoord / gridSize) * gridSize;
+            const maxX = Math.ceil(endXCoord / gridSize) * gridSize;
+            const minY = Math.floor(startYCoord / gridSize) * gridSize;
+            const maxY = Math.ceil(endYCoord / gridSize) * gridSize;
+
+            for (let x = minX; x <= maxX; x += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(x, minY);
+                ctx.lineTo(x, maxY);
+                ctx.stroke();
+            }
+            for (let y = minY; y <= maxY; y += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(minX, y);
+                ctx.lineTo(maxX, y);
+                ctx.stroke();
+            }
+        }
+
+        function drawEdge(source, target) {
+            ctx.beginPath();
+            ctx.moveTo(source.x, source.y);
+            const midX = (source.x + target.x) / 2;
+            ctx.bezierCurveTo(midX, source.y, midX, target.y, target.x, target.y);
+
+            const isHighlighted = (selectedNode && (selectedNode.id === source.id || selectedNode.id === target.id)) ||
+                                  (hoveredNode && (hoveredNode.id === source.id || hoveredNode.id === target.id));
+
+            ctx.strokeStyle = isHighlighted ? 'rgba(6, 182, 212, 0.8)' : 'rgba(51, 65, 85, 0.5)';
+            ctx.lineWidth = isHighlighted ? 2.5 : 1.2;
+            ctx.stroke();
+        }
+
+        function drawNode(node) {
+            const width = 190;
+            const height = 66;
+            const x = node.x - width / 2;
+            const y = node.y - height / 2;
+            const radius = 10;
+
+            const conf = getConfidenceColor(node.score);
+            const typeColor = getTypeColor(node.type);
+            const isSelected = selectedNode && selectedNode.id === node.id;
+            const isHovered = hoveredNode && hoveredNode.id === node.id;
+
+            if (node.score < 70 || isSelected || isHovered) {
+                ctx.shadowColor = node.score < 70 ? 'rgba(239, 68, 68, 0.6)' : conf.glow;
+                ctx.shadowBlur = isSelected ? 20 : 12;
+            } else {
+                ctx.shadowBlur = 0;
+            }
+
+            // Node Background Card
+            ctx.fillStyle = '#0f172a';
+            ctx.beginPath();
+            ctx.roundRect(x, y, width, height, radius);
+            ctx.fill();
+
+            // Border
+            ctx.strokeStyle = isSelected ? '#06b6d4' : (node.score < 70 ? '#ef4444' : '#334155');
+            ctx.lineWidth = isSelected ? 2.5 : 1;
+            ctx.stroke();
+
+            ctx.shadowBlur = 0;
+
+            // Left color accent bar for symbol type
+            ctx.fillStyle = typeColor;
+            ctx.beginPath();
+            ctx.roundRect(x, y, 6, height, [radius, 0, 0, radius]);
+            ctx.fill();
+
+            // Text: Symbol Name
+            ctx.fillStyle = '#f8fafc';
+            ctx.font = '600 11px Inter, sans-serif';
+            ctx.fillText(node.name.length > 24 ? node.name.substring(0, 22) + '...' : node.name, x + 14, y + 22);
+
+            // Text: Parent File & Line
+            ctx.fillStyle = '#64748b';
+            ctx.font = '9px JetBrains Mono, monospace';
+            ctx.fillText(`${node.parent} [L${node.line}]`, x + 14, y + 40);
+
+            // Symbol type pill
+            ctx.fillStyle = 'rgba(30, 41, 59, 0.8)';
+            ctx.beginPath();
+            ctx.roundRect(x + 14, y + 46, 52, 14, 4);
+            ctx.fill();
+            ctx.fillStyle = typeColor;
+            ctx.font = '9px JetBrains Mono, monospace';
+            ctx.fillText(node.type.toUpperCase(), x + 18, y + 56);
+
+            // Confidence Score Badge on right
+            const badgeWidth = 44;
+            const badgeHeight = 22;
+            const badgeX = x + width - badgeWidth - 10;
+            const badgeY = y + 22;
+
+            ctx.fillStyle = node.score < 70 ? 'rgba(239, 68, 68, 0.2)' : 'rgba(6, 182, 212, 0.15)';
+            ctx.beginPath();
+            ctx.roundRect(badgeX, badgeY, badgeWidth, badgeHeight, 6);
+            ctx.fill();
+
+            ctx.fillStyle = conf.text;
+            ctx.font = 'bold 11px JetBrains Mono, monospace';
+            ctx.fillText(`${node.score}%`, badgeX + 7, badgeY + 15);
+        }
+
+        // Physics simulation
+        function updatePhysics() {
+            const repulsion = 2800;
+            const springLength = 130;
+            const springCoeff = 0.05;
+
+            for (let i = 0; i < nodes.length; i++) {
+                for (let j = i + 1; j < nodes.length; j++) {
+                    const dx = nodes[j].x - nodes[i].x;
+                    const dy = nodes[j].y - nodes[i].y;
+                    let dist = Math.sqrt(dx * dx + dy * dy) + 1;
+                    const force = repulsion / (dist * dist);
+                    const fx = (dx / dist) * force;
+                    const fy = (dy / dist) * force;
+                    nodes[i].vx -= fx;
+                    nodes[i].vy -= fy;
+                    nodes[j].vx += fx;
+                    nodes[j].vy += fy;
+                }
+            }
+
+            edges.forEach(edge => {
+                const source = nodes.find(n => n.id === edge.from);
+                const target = nodes.find(n => n.id === edge.to);
+                if (source && target) {
+                    const dx = target.x - source.x;
+                    const dy = target.y - source.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy) + 1;
+                    const displacement = dist - springLength;
+                    const force = displacement * springCoeff;
+                    const fx = (dx / dist) * force;
+                    const fy = (dy / dist) * force;
+                    source.vx += fx;
+                    source.vy += fy;
+                    target.vx -= fx;
+                    target.vy -= fy;
+                }
+            });
+
+            nodes.forEach(node => {
+                node.vx *= 0.85;
+                node.vy *= 0.85;
+                node.x += node.vx;
+                node.y += node.vy;
+            });
+        }
+
+        function onMouseDown(e) {
+            isDragging = true;
+            startX = e.clientX - offsetX;
+            startY = e.clientY - offsetY;
+        }
+
+        function onMouseMove(e) {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = (e.clientX - rect.left - offsetX) / scale;
+            const mouseY = (e.clientY - rect.top - offsetY) / scale;
+
+            if (isDragging) {
+                offsetX = e.clientX - startX;
+                offsetY = e.clientY - startY;
+                return;
+            }
+
+            let found = null;
+            nodes.forEach(node => {
+                const w = 190, h = 66;
+                if (mouseX >= node.x - w/2 && mouseX <= node.x + w/2 &&
+                    mouseY >= node.y - h/2 && mouseY <= node.y + h/2) {
+                    found = node;
+                }
+            });
+
+            if (found !== hoveredNode) {
+                hoveredNode = found;
+                canvas.style.cursor = found ? 'pointer' : 'grab';
+            }
+        }
+
+        function onMouseUp() {
+            isDragging = false;
+        }
+
+        function onWheel(e) {
+            e.preventDefault();
+            const zoomIntensity = 0.1;
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            const prevScale = scale;
+            if (e.deltaY < 0) {
+                scale *= (1 + zoomIntensity);
+            } else {
+                scale /= (1 + zoomIntensity);
+            }
+            scale = Math.max(0.3, Math.min(2.5, scale));
+
+            offsetX = mouseX - (mouseX - offsetX) * (scale / prevScale);
+            offsetY = mouseY - (mouseY - offsetY) * (scale / prevScale);
+        }
+
+        function onClick(e) {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = (e.clientX - rect.left - offsetX) / scale;
+            const mouseY = (e.clientY - rect.top - offsetY) / scale;
+
+            let clickedNode = null;
+            nodes.forEach(node => {
+                const w = 190, h = 66;
+                if (mouseX >= node.x - w/2 && mouseX <= node.x + w/2 &&
+                    mouseY >= node.y - h/2 && mouseY <= node.y + h/2) {
+                    clickedNode = node;
+                }
+            });
+
+            if (clickedNode) {
+                selectNode(clickedNode);
+            }
+        }
+
+        function selectNode(node) {
+            selectedNode = node;
+            document.getElementById('emptyInspector').classList.add('hidden');
+            document.getElementById('activeInspector').classList.remove('hidden');
+
+            document.getElementById('nodeTypeBadge').innerText = node.type.toUpperCase();
+            document.getElementById('nodeLocation').innerText = `${node.parent} : Line ${node.line}`;
+            document.getElementById('nodeName').innerText = node.name;
+            document.getElementById('nodeScore').innerText = `${node.score}%`;
+            document.getElementById('nodeScoreBar').style.width = `${node.score}%`;
+            document.getElementById('nodeScoreBar').className = `h-full rounded-full transition-all duration-500 ${node.score >= 85 ? 'bg-cyan-400' : node.score >= 70 ? 'bg-amber-400' : 'bg-rose-500'}`;
+
+            document.getElementById('metricSyntax').innerText = `${node.syntax}%`;
+            document.getElementById('metricNpe').innerText = `${node.npe}%`;
+            document.getElementById('metricThread').innerText = `${node.thread}%`;
+            document.getElementById('metricLogic').innerText = `${node.logic}%`;
+
+            document.getElementById('nodeReviewComments').innerText = node.comments;
+
+            // Render symbol dependencies list
+            const depsContainer = document.getElementById('nodeDependenciesList');
+            if (node.deps && node.deps.length > 0) {
+                let html = '';
+                node.deps.forEach(depId => {
+                    const depNode = nodes.find(n => n.id === depId);
+                    if (depNode) {
+                        html += `<div>↳ 关联符号: <span class="text-cyan-400">${depNode.name}</span> <span class="text-slate-500">(${depNode.type})</span></div>`;
+                    }
+                });
+                depsContainer.innerHTML = html;
+            } else {
+                depsContainer.innerHTML = '<div class="text-slate-500">无直接关联子符号索引。</div>';
+            }
+        }
+
+        function closeInspector() {
+            selectedNode = null;
+            document.getElementById('activeInspector').classList.add('hidden');
+            document.getElementById('emptyInspector').classList.remove('hidden');
+        }
+
+        function toggleFilter(type) {
+            if (type === 'all') {
+                const checked = document.getElementById('filterAll').checked;
+                ['method', 'variable', 'param', 'risk'].forEach(t => {
+                    filters[t] = checked;
+                });
+            } else {
+                filters[type] = !filters[type];
+            }
+        }
+
+        function zoomIn() {
+            scale = Math.min(2.5, scale * 1.2);
+        }
+
+        function zoomOut() {
+            scale = Math.max(0.3, scale / 0.8);
+        }
+
+        function resetView() {
+            scale = 1;
+            offsetX = canvas.width / 2 - 450;
+            offsetY = canvas.height / 2 - 250;
+            showToast('视图已重置', '画布已恢复默认缩放与中心位置。');
+        }
+
+        function toggleSimulation() {
+            isSimulationRunning = !isSimulationRunning;
+            const btn = document.getElementById('pauseBtn');
+            btn.innerHTML = isSimulationRunning ? '<i class="fa-solid fa-pause text-xs"></i>' : '<i class="fa-solid fa-play text-xs"></i>';
+            showToast('物理布局', isSimulationRunning ? '力导向布局已启动' : '力导向布局已暂停');
+        }
+
+        function exportAuditReport() {
+            showToast('报告生成成功', '已打包导出 Spring Boot 函数与变量级 AI CodeReview 审计报告。');
+        }
+
+        function copyReviewSummary() {
+            const text = `【AI CodeReview 符号审计报告】\n符号: ${selectedNode.name}\n位置: ${selectedNode.parent} [L${selectedNode.line}]\n置信度评分: ${selectedNode.score}%\n审查意见: ${selectedNode.comments}`;
+            const textArea = document.createElement("textarea");
+            textArea.value = text;
+            document.body.appendChild(textArea);
+            textArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textArea);
+            showToast('复制成功', '当前符号审查报告摘要已成功复制到剪贴板。');
+        }
+
+        function showToast(title, msg) {
+            const toast = document.getElementById('toast');
+            document.getElementById('toastTitle').innerText = title;
+            document.getElementById('toastMsg').innerText = msg;
+            toast.classList.remove('translate-y-20', 'opacity-0');
+            setTimeout(() => {
+                toast.classList.add('translate-y-20', 'opacity-0');
+            }, 3000);
+        }
+    </script>
+</body>
+</html>

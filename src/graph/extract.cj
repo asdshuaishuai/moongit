@@ -94,10 +94,14 @@ public func forEachToken(line: String, action: (String) -> Unit): Unit {
     }
 }
 
-/// 声明关键词的字节表（模块级预计算一次；mayDeclare 热路径上零分配比较用）
+/// 声明关键词的字节表（模块级预计算一次；mayDeclare 热路径上零分配比较用）。
+/// ⚠️ 必须覆盖各语言表（DECL_TABLES）的全部声明词：仓颉的扩展关键词是
+/// extend（漏了它，`extend String {` 在 mayDeclare 前置过滤就被短路，
+/// 根本走不到 gateDeclTokens 的声明提取）。
 func declKeywordBytes(): Array<(UInt8, Array<UInt8>)> {
     let words = ["func", "fn", "def", "function", "class", "struct", "interface",
-        "protocol", "trait", "enum", "extension", "impl", "type", "typealias", "typedef"]
+        "protocol", "trait", "enum", "extension", "impl", "type", "typealias", "typedef",
+        "extend"]
     let out = ArrayList<(UInt8, Array<UInt8>)>()
     for (w in words) {
         let b = w.toArray()
@@ -140,6 +144,75 @@ func cStyleFuncName(line: String, lang: String): Option<String> {
     // 必须是定义（含 {）而非声明（; 结尾）
     if (!line.contains("{")) { return None }
     // static inline 等多词返回类型：把首关键词剥掉再看一次
+    return Some(name)
+}
+
+/// Go **带接收者**的方法声明：`func (r *Rect) Area() float64`。
+///
+/// ⚠️ G1：tokenize 后接收者变量名（r）紧跟在 `func` 之后，而 scanDeclLine 的
+/// `Some(kind)` 分支无条件取 `tokens[i+1]` —— 方法真名（Area）整体从符号索引
+/// 消失、接收者被抽成符号。连锁后果：方法声明行里 `Area(` 恰好是「自由调用」
+/// 形态，而 defFiles 里没有 Area ⇒ 幻觉 API 假指控（健康 Go 文件被打低分）。
+///
+/// 判定用剥过注释的行：trim 后以 `func` 开头、且 `func` 之后只跟空白（空格/tab，
+/// 任意数量）直到接收者的 `(`，即方法声明；方法名 = 接收者右括号之后、
+/// 第一个 `(` 之前的**最后一个**标识符
+/// （`func (r *Rect) Area() float64` → Area；跨行参数签名同样成立）。
+/// 接收者内的变量名（r/q/…）绝不进符号表。
+///
+/// ⚠️ 入口只判 `func` 前缀，括号定位全部交给下面的字节循环——它本来就只容忍
+/// 「任意数量的空格/tab 之后紧跟 '('」。原先这里硬判 startsWith("func (") /
+/// startsWith("func(") 两种写法当 gate，`func\t(…)`（tab）与 `func  (…)`
+/// （双空格）落不进任何一支，方法声明回落旧路径（scanDeclLine 把接收者变量名
+/// 抽成符号，G1 缺陷的残留入口）。`func` 后接非空白非括号（如 `function make(`）
+/// 仍会被字节循环拒绝，不会误判。
+func goReceiverMethodName(line: String): Option<String> {
+    let t = line.trimAscii()
+    if (!t.startsWith("func")) { return None }
+    let b = t.toArray()
+    let n = Int64(b.size)
+    // 接收者左括号：func 之后只许空白，然后是 '('
+    var open1: Int64 = -1
+    var i: Int64 = 4   // 跳过 "func"
+    while (i < n) {
+        if (b[i] == 40) { open1 = i; break }
+        if (b[i] != 32 && b[i] != 9) { return None }
+        i += 1
+    }
+    if (open1 < 0) { return None }
+    // 接收者右括号：接收者类型里不会有嵌套括号，取第一个 ')' 即可
+    var close1: Int64 = -1
+    var j: Int64 = open1 + 1
+    while (j < n) {
+        if (b[j] == 41) { close1 = j; break }
+        j += 1
+    }
+    if (close1 < 0) { return None }
+    // 接收者之后到第一个 '('（方法参数表）之间取最后一个标识符 = 方法名
+    var open2: Int64 = -1
+    var k: Int64 = close1 + 1
+    while (k < n) {
+        if (b[k] == 40) { open2 = k; break }
+        k += 1
+    }
+    if (open2 < 0) { return None }
+    var name = ""
+    var st: Int64 = -1
+    var m: Int64 = close1 + 1
+    while (m < open2) {
+        if (isIdentByte(b[m])) {
+            if (st < 0) { st = m }
+        } else {
+            if (st >= 0) {
+                name = fromUtf8Lossy(b[st..m])
+                st = -1
+            }
+        }
+        m += 1
+    }
+    if (st >= 0) { name = fromUtf8Lossy(b[st..open2]) }
+    if (name.isEmpty()) { return None }
+    if (!looksLikeName(name)) { return None }
     return Some(name)
 }
 
@@ -280,9 +353,17 @@ public func stripCode(line: String, inState: Int64): (String, Int64) {
             if (b == 47 && i + 1 < n && line[i + 1] == 47) { break }   // //
             // M9：`/* */` 块注释原先完全没接 —— 注释里的代码被当成真符号。
             // 同行闭合就跳过去（后面的仍是代码）；不闭合则进入块注释状态。
+            // ⚠️ 闭合跨度以**一个空格字节占位**，不是让它完全消失：注释在真实
+            // 语言里等价于空白，是 token 边界。直接跳过会把 `a/*c*/b(` 拼成
+            // `ab(` —— 相邻标识符粘连后 unresolved-call 检测编造一个全仓不存在
+            // 的 ab。与无引号快路径 stripLineComment 的「`*/` 之后拼一个空格」
+            // 逐字等价（两条路径同一语义）。
             if (b == 47 && i + 1 < n && line[i + 1] == 42) {
                 match (findSubstr(line[i + 2..], "*/")) {
-                    case Some(rel) => i = i + 2 + rel + 2; continue
+                    case Some(rel) =>
+                        out.add(UInt8(32))
+                        i = i + 2 + rel + 2
+                        continue
                     case None => state = 3; break
                 }
             }
@@ -352,6 +433,40 @@ public func stripCode(line: String, inState: Int64): (String, Int64) {
             i += 1
         } else if (state == 1) {
             if (b == 92) { i += 2; continue }
+            // ⚠️ 插值字符串感知：`${…}` 段内的引号不参与外层配对。
+            // 原实现不认插值——`${Json.strAt(s, "name", "")}` 的内嵌引号被当成
+            // 字符串闭合，name/kind/git 等片段泄漏进剥后文本成为**假 token**，
+            // 被 buildGraph 的自由调用扫描编出全仓不存在的幻觉指控（实证
+            // cli.cj:2382 的 unresolved-call "namekindgit"，name=泄漏 token 粘连）。
+            // 跳过策略：花括号深度计数到配平；段内嵌套串跳到其闭合引号
+            // （转义与 `${` 不再递归——两层插值在仓内无实例，近似可接受）。
+            // 取舍：Cangjie/Swift/Kotlin/TS 的 `${…}` 都是插值，统一按插值处理；
+            // 无插值语义的语言（C/Go）里 `${x}` 是字面文本，多剥的代价是
+            // 少一个 token（漏引用），不剥的代价是多一个假 token（假指控）——
+            // 假指控更糟，与 stripCode 的既有一贯方向（误截的后果是少不是编）相反处
+            // 在这里必须选剥。
+            if (b == 36 && i + 1 < n && line[i + 1] == 123) {
+                var depth: Int64 = 1
+                i += 2
+                while (i < n && depth > 0) {
+                    let c = line[i]
+                    if (c == 123) {
+                        depth += 1
+                    } else if (c == 125) {
+                        depth -= 1
+                    } else if (c == 34) {
+                        // 插值内的嵌套字符串：跳到其闭合引号（转义跳 2）
+                        i += 1
+                        while (i < n) {
+                            if (line[i] == 92) { i += 2; continue }
+                            if (line[i] == 34) { break }
+                            i += 1
+                        }
+                    }
+                    i += 1
+                }
+                continue
+            }
             if (b == 34) {
                 state = 0
                 i += 1
@@ -398,6 +513,9 @@ func stripLineComment(line: String): String {
     if (s < n) {
         let b0 = line[s]
         let b1: UInt8 = if (s + 1 < n) { line[s + 1] } else { 0 }
+        // 注：本函数唯一调用点（stripCode 快路径入口）已把含 `/*` 的行走慢路径，
+        // 故下面的行首 `/*` 半支与行内 `/*...*/` 闭合支当前不可达——保留作
+        // 镜像防御（本函数若被独立复用仍语义完整），勿据「没被执行」删除。
         if (b0 == 47 && (b1 == 47 || b1 == 42)) { return "" }   // // 或 /*
         if (b0 == 42 && b1 != 47) { return "" }                 // * 续行（`*/` 不算）
         if (b0 == 35) { return "" }                             // #
@@ -512,6 +630,13 @@ public struct SourceFacts {
 
 /// 声明关键词 → 符号种类。返回 None = 这行不是声明。
 /// go 的 `type X struct` 是双关键词，单独在 scanLine 里特判。
+///
+/// ⚠️ 本函数的词表是**跨语言混编**的（fn/def/function/trait/protocol 同为
+/// Func/Interface），只保留给 scanDeclLine 的包内既有调用点
+/// （patchconf.cj / confidence_detect.cj）用；scanSource 的声明提取走
+/// DECL_TABLES 的**语言感知**版本（gateDeclTokens）——`def` 只在 python
+/// 是函数声明词，在仓颉/TS/Go 里是合法标识符，混编词表把
+/// `Json.set(def, …)` 这类调用行编成了 func:Json（实证见 DECL_TABLES）。
 func kindOf(word: String): Option<SymKind> {
     match (word) {
         case "func" => Some(Func)
@@ -529,6 +654,58 @@ func kindOf(word: String): Option<SymKind> {
         case _ => None
     }
 }
+
+// MARK: - 语言门控与作用域（假符号根治）
+
+/// 每种语言**真正认**的声明词表（scanSource 专用）。
+///
+/// ⚠️ 假符号 (a) 的根因：kindOf 的混编词表让「声明词后第一个像名字的
+/// token」在撞名时把 RHS/实参顶成名字。实证（引擎自身图谱，graph symbol Json）：
+/// src/flow/status.cj:703 的 `let def = Json.obj()`（def 撞 python 声明词，
+/// 取 RHS 的 Json）与 704/705 的 `Json.set(def, "isCurrent", …)`（def 是
+/// **实参**，tokens[3] 恰是 Json）各编出一个 kind=func、name=Json 的假符号
+/// ——三个假符号里只有一个是 let 行，只拦 let 清不了零。门控原则与 M8
+/// （cStyleFuncName 只对 C 生效）一致：为 A 语言写的规则不得在 B 语言编符号。
+/// 各表只收该语言的保留/声明词（python 不认 interface/enum —— 那两个在
+/// python 是合法标识符）。
+func buildDeclTables(): HashMap<String, HashSet<String>> {
+    let tables = HashMap<String, Array<String>>()
+    tables["cangjie"] = ["func", "class", "struct", "interface", "enum", "extend"]
+    tables["swift"] = ["func", "class", "struct", "interface", "protocol", "enum", "extension", "typealias"]
+    tables["ts"] = ["function", "class", "interface", "enum", "type"]
+    tables["python"] = ["def", "class"]
+    tables["go"] = ["func", "type", "struct", "interface"]
+    tables["rust"] = ["fn", "struct", "enum", "trait", "impl", "type"]
+    tables["java"] = ["class", "interface", "enum"]
+    tables["kotlin"] = ["class", "interface", "enum"]
+    tables["c"] = ["struct", "enum", "typedef"]
+    let m = HashMap<String, HashSet<String>>()
+    for ((lang, words) in tables) {
+        let s = HashSet<String>()
+        for (w in words) { s.add(w) }
+        m[lang] = s
+    }
+    return m
+}
+
+let DECL_TABLES: HashMap<String, HashSet<String>> = buildDeclTables()
+
+/// kindOf 词表与 type 系特判（type/typealias/typedef）的并集：
+/// 「这词在**某个**受支持语言里是声明词」的全集。门控判定 = 在全集里
+/// 但不在本语言表里 ⇒ 在这门语言里它是标识符，不是声明。
+func buildCrossLangDeclWords(): HashSet<String> {
+    let s = HashSet<String>()
+    let words = ["func", "fn", "def", "function", "class", "struct", "interface",
+        "protocol", "trait", "enum", "extension", "impl", "type", "typealias", "typedef"]
+    for (w in words) { s.add(w) }
+    return s
+}
+
+let CROSS_LANG_DECL_WORDS: HashSet<String> = buildCrossLangDeclWords()
+
+/// 被门控替换掉的 token。必须是 looksLikeName 为 false 的形态
+/// （"0" 以数字开头），scanDeclLine 才既不当名字也不当声明词。
+let DECL_SENTINEL: String = "0"
 
 /// 扫一行声明。返回 Some((kind, name))。
 func scanDeclLine(tokens: ArrayList<String>): Option<(SymKind, String)> {
@@ -570,6 +747,22 @@ case Some(kind) =>
         }
     }
     return None
+}
+
+/// 带语言门控的 import 检测（scanSource 专用；原 scanImportLine 签名不动，
+/// patchconf.cj 的既有调用点行为不变）。
+///
+/// ⚠️ 前缀判定按语言门控（与 DECL_TABLES 同一原则）：
+///   · `from ` 只属 python —— 仓颉里 `from` 是合法变量名，实证
+///     graph_test.cj:1215 的 `from = hit + open.size` 被编出假 import "hit"；
+///   · `use ` 只属 rust、`#include` 只属 c —— python 的 `#include "x"`
+///     行首注释同理会被编出假 import；
+///   · `import ` 保留给全部语言（各语言保留词，import/引号形态不撞名）。
+func scanImportLineForLang(t: String, lang: String): String {
+    if (t.startsWith("#include") && lang != "c") { return "" }
+    if (t.startsWith("from ") && lang != "python") { return "" }
+    if (t.startsWith("use ") && lang != "rust") { return "" }
+    return scanImportLine(t)
 }
 
 /// 从一行里取 import 的模块名。返回空串 = 不是 import 行。
@@ -656,12 +849,115 @@ func quotedPart(t: String): String {
     return ""
 }
 
+/// (a) 局部绑定行拦截 + 声明词语言门控。scanSource 专用的 tokens 预处理。
+///
+/// 返回 None = 这行是 let/var/const 绑定行，**不产生任何符号**——符号索引的
+/// 语义是模块级声明，不是局部绑定（status.cj 的 `let def = Json.obj()`）。
+/// 判「绑定行」按 token 顺序找**第一个关键词事件**：绑定词先于声明词出现
+/// 才算绑定行；`func f() { let x = 1 }` 的 func 在前，照常按声明处理。
+///
+/// 返回 Some(tokens) = 门控后的 tokens：不在本语言表里的跨语言声明词替换成
+/// 哨兵，`Json.set(def, …)` 这类**调用行**（def 是实参）不再被编成声明。
+/// scanDeclLine 签名未动 —— patchconf.cj / confidence_detect.cj 的四个
+/// 既有调用点行为不变。
+func gateDeclTokens(toks: ArrayList<String>, lang: String): Option<ArrayList<String>> {
+    let table = match (DECL_TABLES.get(lang)) {
+        case Some(t) => t
+        case None => return Some(toks)   // 未知语言不做门控（detectLang 只产已知值）
+    }
+    var bound = false
+    var i: Int64 = 0
+    while (i < Int64(toks.size)) {
+        let w = toks[i]
+        if (table.contains(w)) { break }   // 本语言的声明词在前 → 声明行
+        if (w == "let" || w == "var" || w == "const") {
+            bound = true
+            break
+        }
+        i += 1
+    }
+    if (bound) { return None }
+    let out = ArrayList<String>()
+    for (w in toks) {
+        if (lang == "cangjie" && w == "extend") {
+            // 仓颉的扩展关键词是 extend（extension 是 swift 的拼写）。
+            // 归一化到 kindOf 认的 Extension 声明词——kindOf 是与
+            // patchconf/confidence_detect 共享的混编表，不动它
+            // （改一个 case 会改变并行调用点的运行时行为）。
+            // 实证：src/util/text.cj:478 等多处 `extend String {`
+            // 在旧词表下整条路 None，扩展声明全部漏出符号索引。
+            out.add("extension")
+        } else if (CROSS_LANG_DECL_WORDS.contains(w) && !table.contains(w)) {
+            out.add(DECL_SENTINEL)
+        } else {
+            out.add(w)
+        }
+    }
+    return Some(out)
+}
+
+/// (b) 花括号深度栈的「外层种类」：从栈顶向下找最近的声明种类。
+/// None 项（if/for/闭包等匿名块）要穿透——函数体内 if 块里的嵌套函数
+/// 仍然是嵌套函数。
+func enclosingDecl(stack: ArrayList<Option<SymKind>>): Option<SymKind> {
+    var i: Int64 = Int64(stack.size) - 1
+    while (i >= 0) {
+        match (stack[i]) {
+            case Some(k) => return Some(k)
+            case None => ()
+        }
+        i -= 1
+    }
+    return None
+}
+
+/// (b) 声明入索引判定：函数体内（栈上最近的声明种类是 Func）出现的
+/// 嵌套 func **不入符号索引**（模块级声明的语义；实证 cli_test.cj:1685 的
+/// `func line(...)` 成为符号 line 后，超通用名 + 词法吸附把全仓含 line
+/// 一词的文件都吸成了引用边）。类型体内的方法（enclosing=Class/Struct/…）
+/// 照常入索引。当前只拦 func 嵌 func——函数体内的局部 class 是既有行为，
+/// 不在本次范围。
+func admitDecl(kind: SymKind, enclosing: Option<SymKind>): Bool {
+    match (enclosing) {
+        case Some(Func) =>
+            // 仓颉 enum 无自动 !=（cjc 实证），按项目惯例用 match
+            match (kind) {
+                case Func => return false
+                case _ => return true
+            }
+        case _ => return true
+    }
+}
+
+/// 剥后文本的字节计数（`{` / `}` 用），零分配。必须喂 stripCode 的输出：
+/// 三引号字符串/注释里的 `{` 与声明样文本不参与计数，否则栈被污染，
+/// 后续文件级声明会被误判成嵌套。
+func countByte(s: String, target: UInt8): Int64 {
+    var n: Int64 = 0
+    for (b in s) {
+        if (b == target) { n += 1 }
+    }
+    return n
+}
+
 /// 扫描整份源码。
+///
+/// ⚠️ (a)+(b) 两类假符号的修复都落在本函数：
+///   (a) 局部 let/var/const 绑定行不产生符号（gateDeclTokens 返回 None），
+///       且声明词按语言门控（`def` 只属于 python）——实证三假符号见
+///       DECL_TABLES 注释；
+///   (b) 花括号深度栈（braceKinds）跟踪每行的声明种类，函数体内嵌套的
+///       func 不入符号索引（admitDecl），类型体内方法照常入。
 public func scanSource(content: String, lang: String): SourceFacts {
     let symbols = ArrayList<SymDecl>()
     let imports = ArrayList<String>()
     let importLines = ArrayList<Int64>()
     let seenImports = HashSet<String>()
+    // (b) 花括号深度栈：每个已开 `{` 的所属声明种类（None = if/for/闭包等
+    // 匿名块）。记账只基于 stripCode 剥后文本——三引号字符串/注释里的
+    // 花括号与声明样文本天然出局。
+    let braceKinds = ArrayList<Option<SymKind>>()
+    let noKind: Option<SymKind> = None
     var lineNo: Int64 = 0
     var lineCount: Int64 = 0
     var strState: Int64 = 0
@@ -672,33 +968,94 @@ public func scanSource(content: String, lang: String): SourceFacts {
         // ⚠️ import 检测用**原始行**：import 是行锚定语句，go 的 import "fmt"
         // 会被 stripCode 剥成裸 "import" 而丢失模块名。行首判定保证
         // 字符串里的 "import x"（非行首）不会误报。
-        let imp = scanImportLine(raw.trimAscii())
-        if (!imp.isEmpty() && !seenImports.contains(imp)) {
-            seenImports.add(imp)
-            imports.add(imp)
-            importLines.add(lineNo)
+        // ⚠️ 但三引号字符串/块注释里的行**本身就是独立的一行**，行首判定拦不住
+        // 它们（实证 graph_test.cj:68 夹具内 `from flow.update import …` 被编成
+        // 假 import flow、命中 src/flow 目录段造出假 import 边）。上一行结束时
+        // 的跨行状态（strState，2=三引号串 3=块注释 4=三单引号串）内的行一律
+        // 不做 import 检测；state 0 时行首必是代码（单行串不跨行，行尾已复位）。
+        if (strState == 0) {
+            let imp = scanImportLineForLang(raw.trimAscii(), lang)
+            if (!imp.isEmpty() && !seenImports.contains(imp)) {
+                seenImports.add(imp)
+                imports.add(imp)
+                importLines.add(lineNo)
+            }
         }
         // stripCode 同时剥注释与字符串字面量（含跨行状态）——见函数头的三个坑
         let (t, nextState) = stripCode(raw, strState)
         strState = nextState
         if (blankLine(t)) { continue }
-        // 前置过滤：不含声明关键词的行免去 tokenize 的整行分配
-        if (!mayDeclare(t)) {
-            // C 系函数没有声明关键字——形态兜底（否则同文件互调全成幻觉调用）
-            match (cStyleFuncName(t, lang)) {
-                case Some(name) => symbols.add(SymDecl(Func, name, lineNo))
+        // (b) 本行花括号记账：净开 = push（首项记本行声明种类），净收 = pop；
+        // 单行自平衡（net == 0，如 `func f() { … }`）不动栈——否则自平衡
+        // 声明的种类永远留在栈上，后续声明全被误判成嵌套（栈污染）。
+        let opens = countByte(t, 123)    // '{'
+        let closes = countByte(t, 125)   // '}'
+        // 符号判定用**记账前**的栈：本行 `{` 尚未 push，栈顶正是声明所属的外层体
+        let enclosing = enclosingDecl(braceKinds)
+        var declKind: Option<SymKind> = None
+        // ⚠️ G1：go 带接收者的方法声明必须在 scanDeclLine 之前特判——
+        // tokenize 会把接收者变量名顶到 tokens[1]，通用路径抽出的「函数名」
+        // 是接收者而不是方法（见 goReceiverMethodName 的注释）。命中即取真名、
+        // 不再走后续扫描（同一行不可能再含别的声明）。
+        if (lang == "go") {
+            match (goReceiverMethodName(t)) {
+                case Some(name) =>
+                    if (admitDecl(Func, enclosing)) {
+                        symbols.add(SymDecl(Func, name, lineNo))
+                    }
+                    declKind = Some(Func)
                 case None => ()
             }
-            continue
         }
-        match (scanDeclLine(tokenize(t))) {
-            case Some((kind, name)) =>
-                symbols.add(SymDecl(kind, name, lineNo))
-            case None =>
-                match (cStyleFuncName(t, lang)) {
-                    case Some(name) => symbols.add(SymDecl(Func, name, lineNo))
-                    case None => ()
-                }
+        if (declKind.isNone() && mayDeclare(t)) {
+            // (a) 先做绑定行拦截与语言门控，再交给 scanDeclLine
+            match (gateDeclTokens(tokenize(t), lang)) {
+                case Some(gated) =>
+                    match (scanDeclLine(gated)) {
+                        case Some((kind, name)) =>
+                            if (admitDecl(kind, enclosing)) {
+                                symbols.add(SymDecl(kind, name, lineNo))
+                            }
+                            declKind = Some(kind)
+                        case None =>
+                            // C 系函数没有声明关键字——形态兜底（否则同文件互调全成幻觉调用）
+                            match (cStyleFuncName(t, lang)) {
+                                case Some(name) =>
+                                    if (admitDecl(Func, enclosing)) {
+                                        symbols.add(SymDecl(Func, name, lineNo))
+                                    }
+                                    declKind = Some(Func)
+                                case None => ()
+                            }
+                    }
+                case None =>
+                    // let/var/const 绑定行：不产生任何符号；也不是函数定义，
+                    // C 形态兜底同样不适用
+                    ()
+            }
+        } else if (declKind.isNone()) {
+            // 不含声明关键词的行：只保留 C 形态兜底
+            match (cStyleFuncName(t, lang)) {
+                case Some(name) =>
+                    if (admitDecl(Func, enclosing)) {
+                        symbols.add(SymDecl(Func, name, lineNo))
+                    }
+                    declKind = Some(Func)
+                case None => ()
+            }
+        }
+        // (b) 记账（在符号判定之后：栈顶在判定时必须是外层体）
+        let net = opens - closes
+        if (net > 0) {
+            braceKinds.add(declKind)
+            var k: Int64 = 1
+            while (k < net) { braceKinds.add(noKind); k += 1 }
+        } else if (net < 0) {
+            var k: Int64 = 0
+            while (k < -net && braceKinds.size > 0) {
+                braceKinds.remove(at: braceKinds.size - 1)
+                k += 1
+            }
         }
     }
     return SourceFacts(symbols, imports, importLines, lineCount)

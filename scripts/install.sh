@@ -66,6 +66,28 @@ else
   sh "$DIR/scripts/build-minimal-sdk.sh" "$HOME/.local/share/sdks/_cache/macos15.5/MacOSX15.5.sdk"
   rm -rf "$HOME/.local/share/sdks/_cache" /tmp/deepgit-macos15.5.sdk.tar.xz
   export SDKROOT="$HOME/.local/share/sdks/MacOSX.minimal/latest"
+
+  # graph db / confidence db（SQLite 存储，2026-10-12 用户-directed）需要链接系统
+  # libsqlite3——极简 SDK 里没有它的 tbd，这里幂等补写（运行时由 dyld shared cache 解析）
+  SQLITETBD="$HOME/.local/share/sdks/MacOSX.minimal/latest/usr/lib/libsqlite3.tbd"
+  if [ ! -f "${SQLITETBD}" ]; then
+    mkdir -p "$(dirname "${SQLITETBD}")"
+    printf '%s\n' \
+      '--- !tapi-tbd' \
+      'tbd-version:     4' \
+      'targets:         [ x86_64-macos, arm64-macos ]' \
+      "install-name:    '/usr/lib/libsqlite3.dylib'" \
+      'current-version: 406' \
+      'compatibility-version: 9' \
+      'exports:' \
+      '  - targets:         [ x86_64-macos, arm64-macos ]' \
+      '    symbols:         [ _sqlite3_bind_int64, _sqlite3_bind_text, _sqlite3_close,' \
+      '                       _sqlite3_column_int64, _sqlite3_column_text, _sqlite3_errmsg,' \
+      '                       _sqlite3_exec, _sqlite3_finalize, _sqlite3_free,' \
+      '                       _sqlite3_open_v2, _sqlite3_prepare_v2, _sqlite3_reset,' \
+      '                       _sqlite3_step ]' \
+      > "${SQLITETBD}"
+  fi
 fi
 
 # ------------------------------- 构建引擎 -------------------------------
@@ -144,7 +166,10 @@ echo "  1. 注册项目群：moongit scan ~/dev --depth 4"
 echo "  2. 查看进度：  moongit status"
 echo "  3. 浅更新：    moongit update"
 echo "  4. 装提交钩子：moongit hook install <项目>"
-echo "  5. 配 AI（可选）：export DEEPGIT_AI_API_KEY=... && moongit config set ai.preset deepseek"
+# 注意：这里曾引导配置引擎的 AI 相关键 —— 引擎已 AI 无关，那些键在
+# 全仓库零引用（照做只会得到 config 的未知键报错）。
+# agent 接入走真实存在的入口：MCP（stdio）或 skill 教学包。
+echo "  5. 接入 agent：moongit mcp（stdio JSON-RPC）或 moongit skill install（装教学包）"
 echo
 echo "  旧命令名 deepgit 仍可用（软链到 moongit）；"
 echo "  数据目录 ~/.deepgit 与文档托管区域标记均未改动。"

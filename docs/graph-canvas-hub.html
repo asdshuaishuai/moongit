@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enterprise Modular AI Code Reliability & Multi-Tier Symbol Graph</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        darkBg: '#04070e',
+                        panelBg: '#090e1a',
+                        borderCol: '#152038',
+                        neonCyan: '#06b6d4',
+                        neonIndigo: '#6366f1',
+                        neonAmber: '#f59e0b',
+                        neonRose: '#f43f5e'
+                    }
+                }
+            }
+        }
+    </script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .mono { font-family: 'JetBrains Mono', monospace; }
+        canvas { touch-action: none; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #04070e; }
+        ::-webkit-scrollbar-thumb { background: #152038; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #223456; }
+    </style>
+</head>
+<body class="bg-darkBg text-slate-100 h-screen flex flex-col overflow-hidden">
+
+    <!-- Header with Composite Reliability Index -->
+    <header class="bg-panelBg border-b border-borderCol px-6 py-3.5 flex items-center justify-between shrink-0 shadow-xl z-20">
+        <div class="flex items-center space-x-3.5">
+            <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-600 via-indigo-600 to-purple-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
+                <i class="fa-solid fa-layer-group text-white text-lg animate-pulse"></i>
+            </div>
+            <div>
+                <div class="flex items-center space-x-2.5">
+                    <h1 class="font-bold text-base tracking-tight text-slate-100">Enterprise Multi-Tier Architecture [AI Reliability Matrix]</h1>
+                    <span class="text-[10px] px-2.5 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 mono" id="engineModeBadge">多层架构版 v5.0</span>
+                </div>
+                <p class="text-xs text-slate-400">基于模块化多层架构（网关、业务、持久层、基础设施）与综合置信度指数评估系统</p>
+            </div>
+        </div>
+
+        <!-- Composite Reliability Index & Telemetry Bar -->
+        <div class="hidden xl:flex items-center space-x-5 text-xs bg-slate-900/80 px-4 py-2 rounded-xl border border-slate-800 shadow-inner">
+            <div class="flex items-center space-x-2.5">
+                <div class="w-3 h-3 rounded-full bg-cyan-400 animate-ping"></div>
+                <span class="text-slate-400">企业综合可靠度指数:</span>
+                <span class="font-bold text-emerald-400 text-sm mono" id="compositeTrustScore">87.6% (Grade A-)</span>
+            </div>
+            <div class="h-4 w-[1px] bg-slate-800"></div>
+            <div>
+                <span class="text-slate-400">激活模块/符号:</span>
+                <span class="font-bold text-slate-200 mono" id="statNodeCount">1,250 节点</span>
+            </div>
+            <div class="h-4 w-[1px] bg-slate-800"></div>
+            <div>
+                <span class="text-slate-400">渲染帧率:</span>
+                <span class="font-bold text-cyan-300 mono" id="statFps">60 FPS</span>
+            </div>
+        </div>
+
+        <!-- Header Actions -->
+        <div class="flex items-center space-x-3">
+            <button onclick="openCompositeReportModal()" class="px-3.5 py-1.5 bg-cyan-600/20 hover:bg-cyan-600/30 border border-cyan-500/40 text-cyan-300 rounded-xl text-xs font-medium transition flex items-center space-x-2 shadow-sm">
+                <i class="fa-solid fa-chart-pie text-cyan-400"></i>
+                <span>查看综合置信度汇总报告</span>
+            </button>
+            <div class="relative">
+                <input type="text" id="searchInput" placeholder="搜索架构符号..." oninput="handleSearch(this.value)" class="bg-slate-900/90 border border-slate-700/80 text-xs rounded-xl px-3.5 py-1.5 pl-9 text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500 w-44 transition">
+                <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-slate-500 text-xs"></i>
+            </div>
+        </div>
+    </header>
+
+    <div class="flex-1 flex relative overflow-hidden">
+        
+        <!-- Canvas Graph Viewport -->
+        <div class="flex-1 relative bg-[#03050a] overflow-hidden" id="canvasContainer">
+            <canvas id="graphCanvas" class="w-full h-full block cursor-grab active:cursor-grabbing"></canvas>
+
+            <!-- Floating Multi-Tier Module Cluster HUD -->
+            <div class="absolute top-4 left-4 bg-panelBg/95 backdrop-blur-md border border-borderCol rounded-2xl p-4 shadow-2xl z-10 flex flex-col space-y-3.5 text-xs w-80">
+                <div class="font-semibold text-slate-200 flex items-center justify-between">
+                    <span><i class="fa-solid fa-sitemap mr-1.5 text-cyan-400"></i> 多层架构模块聚类与可靠度</span>
+                    <span class="text-[10px] text-slate-500 mono">TIERED LOD</span>
+                </div>
+                <div class="space-y-2.5">
+                    <label class="flex items-center justify-between cursor-pointer hover:text-white transition group">
+                        <div class="flex items-center space-x-2.5">
+                            <input type="checkbox" checked onchange="toggleTier('gateway')" id="filterGateway" class="rounded bg-slate-800 border-slate-700 text-cyan-600 focus:ring-0">
+                            <span class="w-2.5 h-2.5 rounded-full bg-cyan-400 inline-block shadow-sm"></span>
+                            <span class="font-medium">Tier 1: 表现与网关层 (API/Gateway)</span>
+                        </div>
+                        <span class="text-[10px] mono text-emerald-400 font-bold">92%</span>
+                    </label>
+                    <label class="flex items-center justify-between cursor-pointer hover:text-white transition group">
+                        <div class="flex items-center space-x-2.5">
+                            <input type="checkbox" checked onchange="toggleTier('service')" id="filterService" class="rounded bg-slate-800 border-slate-700 text-cyan-600 focus:ring-0">
+                            <span class="w-2.5 h-2.5 rounded-full bg-indigo-400 inline-block shadow-sm"></span>
+                            <span class="font-medium">Tier 2: 核心业务与领域层 (Service)</span>
+                        </div>
+                        <span class="text-[10px] mono text-amber-400 font-bold">84%</span>
+                    </label>
+                    <label class="flex items-center justify-between cursor-pointer hover:text-white transition group">
+                        <div class="flex items-center space-x-2.5">
+                            <input type="checkbox" checked onchange="toggleTier('repository')" id="filterRepo" class="rounded bg-slate-800 border-slate-700 text-cyan-600 focus:ring-0">
+                            <span class="w-2.5 h-2.5 rounded-full bg-purple-400 inline-block shadow-sm"></span>
+                            <span class="font-medium">Tier 3: 持久化与数据层 (Repository)</span>
+                        </div>
+                        <span class="text-[10px] mono text-emerald-400 font-bold">94%</span>
+                    </label>
+                    <label class="flex items-center justify-between cursor-pointer hover:text-white transition group">
+                        <div class="flex items-center space-x-2.5">
+                            <input type="checkbox" checked onchange="toggleTier('mq')" id="filterMq" class="rounded bg-slate-800 border-slate-700 text-cyan-600 focus:ring-0">
+                            <span class="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block shadow-sm"></span>
+                            <span class="font-medium">Tier 4: 消息与基础设施 (MQ/Infra)</span>
+                        </div>
+                        <span class="text-[10px] mono text-amber-300 font-bold">81%</span>
+                    </label>
+                    <label class="flex items-center space-x-2.5 cursor-pointer hover:text-white transition pt-1 border-t border-slate-800">
+                        <input type="checkbox" onchange="toggleRiskOnly()" id="filterRisk" class="rounded bg-slate-800 border-slate-700 text-rose-600 focus:ring-0">
+                        <span class="w-2.5 h-2.5 rounded-full bg-rose-500 inline-block shadow-sm"></span>
+                        <span class="text-rose-400 font-semibold">🚨 仅展示高危低置信度热点 (&lt;70%)</span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Canvas Navigation HUD -->
+            <div class="absolute bottom-6 left-6 bg-panelBg/95 backdrop-blur-md border border-borderCol rounded-2xl p-1.5 shadow-2xl z-10 flex items-center space-x-1">
+                <button onclick="zoomIn()" class="p-2.5 hover:bg-slate-800 text-slate-300 rounded-xl transition" title="放大">
+                    <i class="fa-solid fa-magnifying-glass-plus text-xs"></i>
+                </button>
+                <button onclick="zoomOut()" class="p-2.5 hover:bg-slate-800 text-slate-300 rounded-xl transition" title="缩小">
+                    <i class="fa-solid fa-magnifying-glass-minus text-xs"></i>
+                </button>
+                <div class="w-[1px] h-5 bg-slate-800 mx-1"></div>
+                <button onclick="resetView()" class="p-2.5 hover:bg-slate-800 text-slate-300 rounded-xl transition" title="重置多层架构视图">
+                    <i class="fa-solid fa-compress text-xs"></i>
+                </button>
+            </div>
+
+            <!-- Notification Toast -->
+            <div id="toast" class="absolute bottom-6 right-6 bg-slate-900/95 border border-cyan-500/40 text-slate-200 px-4.5 py-3 rounded-2xl shadow-2xl z-30 transform translate-y-24 opacity-0 transition-all duration-300 flex items-center space-x-3">
+                <div class="w-8 h-8 rounded-xl bg-cyan-500/20 flex items-center justify-center text-cyan-400">
+                    <i class="fa-solid fa-check-circle"></i>
+                </div>
+                <div>
+                    <div class="font-semibold text-xs text-slate-100" id="toastTitle">提示</div>
+                    <div class="text-xs text-slate-400" id="toastMsg">操作成功完成。</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Inspector Sidebar (Reliability Assessment Report) -->
+        <div class="w-[440px] bg-panelBg border-l border-borderCol flex flex-col shrink-0 z-20 shadow-2xl transition-all" id="inspectorSidebar">
+            <div class="p-4.5 border-b border-borderCol flex items-center justify-between">
+                <div class="flex items-center space-x-2.5">
+                    <div class="w-7 h-7 rounded-lg bg-cyan-500/20 flex items-center justify-center text-cyan-400">
+                        <i class="fa-solid fa-shield-halved text-xs"></i>
+                    </div>
+                    <h2 class="font-semibold text-sm text-slate-100">多层架构符号 AI 可靠度评估报告</h2>
+                </div>
+                <button onclick="closeInspector()" class="text-slate-500 hover:text-slate-300 p-1.5 rounded-lg hover:bg-slate-800 transition">
+                    <i class="fa-solid fa-xmark text-sm"></i>
+                </button>
+            </div>
+
+            <!-- Sidebar Content Area -->
+            <div id="inspectorContent" class="flex-1 overflow-y-auto p-5 space-y-5 text-xs">
+                
+                <!-- Default Empty State -->
+                <div id="emptyInspector" class="h-full flex flex-col items-center justify-center text-center text-slate-500 space-y-4 py-24">
+                    <div class="w-20 h-20 rounded-2xl bg-slate-900/80 border border-slate-800 flex items-center justify-center text-slate-600 text-3xl shadow-inner">
+                        <i class="fa-solid fa-cube"></i>
+                    </div>
+                    <div class="space-y-1 max-w-[260px]">
+                        <p class="font-medium text-slate-300">请点击多层架构图谱中的任意符号节点</p>
+                        <p class="text-[11px] text-slate-500">支持万级符号点选。深度透视该符号在企业架构层中的大模型幻觉风险、语义漂移度、线程安全与上下文留存指数。</p>
+                    </div>
+                </div>
+
+                <!-- Populated Reliability Report -->
+                <div id="activeInspector" class="hidden space-y-5">
+                    
+                    <!-- Header Card -->
+                    <div class="bg-slate-900/90 border border-slate-800/80 rounded-2xl p-4.5 space-y-3.5 shadow-lg">
+                        <div class="flex items-center justify-between">
+                            <span id="nodeTierBadge" class="px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">TIER 2: SERVICE</span>
+                            <span class="text-[10px] text-slate-400 mono" id="nodeLocation">OrderServiceImpl.java : L84</span>
+                        </div>
+                        <h3 class="font-bold text-sm text-slate-100 font-mono break-all" id="nodeName">public Order createOrder(...)</h3>
+                        
+                        <div class="flex items-center justify-between pt-2.5 border-t border-slate-800/80">
+                            <span class="text-slate-400 font-medium">AI 可靠度综合评分:</span>
+                            <span class="font-bold text-base mono" id="nodeScore">86%</span>
+                        </div>
+                        <div class="w-full bg-slate-800 rounded-full h-2.5 overflow-hidden p-0.5 border border-slate-700/50">
+                            <div id="nodeScoreBar" class="bg-cyan-400 h-full rounded-full transition-all duration-700 shadow-sm" style="width: 86%"></div>
+                        </div>
+                    </div>
+
+                    <!-- Reliability Evaluation Matrix -->
+                    <div class="space-y-2.5">
+                        <h4 class="font-semibold text-slate-300 uppercase tracking-wider text-[10px] flex items-center space-x-1.5">
+                            <i class="fa-solid fa-chart-bar text-cyan-400"></i>
+                            <span>大模型生成代码可靠度多维评估矩阵</span>
+                        </h4>
+                        <div class="space-y-2 bg-slate-900/50 p-4 rounded-2xl border border-slate-800/80 shadow-sm">
+                            <div class="flex justify-between items-center">
+                                <span class="text-slate-400">幻觉与虚构依赖阻断度 (Hallucination)</span>
+                                <span class="font-mono text-cyan-300 font-bold" id="metricHallucination">94% (无虚构调用)</span>
+                            </div>
+                            <div class="flex justify-between items-center">
+                                <span class="text-slate-400">语义对齐与上下文一致性</span>
+                                <span class="font-mono text-indigo-300 font-bold" id="metricContext">91%</span>
+                            </div>
+                            <div class="flex justify-between items-center">
+                                <span class="text-slate-400">并发事务与线程安全性 (Thread-Safe)</span>
+                                <span class="font-mono text-amber-300 font-bold" id="metricThread">78% (需关注锁)</span>
+                            </div>
+                            <div class="flex justify-between items-center">
+                                <span class="text-slate-400">字节码复杂度与可维护性</span>
+                                <span class="font-mono text-emerald-300 font-bold" id="metricComplexity">3 (极低风险)</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- AI Reliability Reason -->
+                    <div class="space-y-2.5">
+                        <h4 class="font-semibold text-slate-300 uppercase tracking-wider text-[10px] flex items-center space-x-1.5">
+                            <i class="fa-solid fa-robot text-cyan-400"></i>
+                            <span>AI 可靠度诊断说明与归因分析</span>
+                        </h4>
+                        <div id="nodeAiReason" class="bg-cyan-500/10 border border-cyan-500/25 text-cyan-100/90 p-4 rounded-2xl leading-relaxed text-[11px] shadow-sm">
+                            该函数符合 Spring Cloud 领域驱动设计规范。大模型生成时的注意力权重集中，依赖注入符合接口契约。
+                        </div>
+                    </div>
+
+                    <!-- Cross-Tier CodeGraph Dependencies -->
+                    <div class="space-y-2.5">
+                        <h4 class="font-semibold text-slate-300 uppercase tracking-wider text-[10px] flex items-center space-x-1.5">
+                            <i class="fa-solid fa-code-merge text-cyan-400"></i>
+                            <span>跨架构层级依赖拓扑链 (Cross-Tier Callgraph)</span>
+                        </h4>
+                        <div id="nodeRelationsList" class="bg-slate-950 rounded-2xl p-4 border border-slate-800 mono text-[11px] text-slate-300 space-y-1.5 shadow-inner">
+                            <div>↳ 上层调用源: <span class="text-cyan-400">OrderController.process()</span></div>
+                            <div>↳ 下层持久依赖: <span class="text-indigo-400">OrderRepository.save()</span></div>
+                        </div>
+                    </div>
+
+                    <!-- Copy Report Action -->
+                    <div class="pt-2">
+                        <button onclick="copyReliabilityReport()" class="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl font-medium transition text-center border border-slate-700 text-xs flex items-center justify-center space-x-2 shadow-md">
+                            <i class="fa-regular fa-copy text-cyan-400"></i>
+                            <span>复制该多层架构符号 AI 可靠度评估报告</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Composite Reliability Report Modal -->
+    <div id="compositeModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-panelBg border border-borderCol rounded-3xl max-w-2xl w-full p-6 shadow-2xl space-y-6 animate-in fade-in zoom-in duration-200">
+            <div class="flex items-center justify-between border-b border-borderCol pb-4">
+                <div class="flex items-center space-x-3">
+                    <div class="w-10 h-10 rounded-xl bg-cyan-500/20 flex items-center justify-center text-cyan-400">
+                        <i class="fa-solid fa-chart-pie text-lg"></i>
+                    </div>
+                    <div>
+                        <h3 class="font-bold text-base text-slate-100">企业级多层架构综合置信度汇总报告</h3>
+                        <p class="text-xs text-slate-400">Enterprise Composite AI Code Reliability Index Summary</p>
+                    </div>
+                </div>
+                <button onclick="closeCompositeReportModal()" class="text-slate-400 hover:text-white p-2 rounded-xl hover:bg-slate-800 transition">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+
+            <!-- Modal Body Content -->
+            <div class="space-y-4 text-xs">
+                <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex items-center justify-between">
+                    <div>
+                        <div class="text-slate-400">企业整体 AI 置信度加权总分</div>
+                        <div class="text-2xl font-bold text-emerald-400 mono mt-1">87.6% <span class="text-xs text-slate-400 font-normal">/ 级别: Grade A- (高可信)</span></div>
+                    </div>
+                    <div class="text-right">
+                        <span class="text-slate-400">符号总数:</span> <span class="font-mono text-slate-200 font-bold">1,250</span><br>
+                        <span class="text-slate-400">高危热点数:</span> <span class="font-mono text-rose-400 font-bold">38 (3.04%)</span>
+                    </div>
+                </div>
+
+                <div class="space-y-2">
+                    <div class="font-semibold text-slate-300">各架构层级（Tier）可靠度均值看板：</div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div class="bg-slate-900/60 p-3.5 rounded-xl border border-slate-800 space-y-1">
+                            <div class="flex justify-between font-medium"><span>Tier 1: 表现与网关层</span><span class="text-cyan-400 mono font-bold">92.4%</span></div>
+                            <div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden"><div class="bg-cyan-400 h-full rounded-full" style="width: 92.4%"></div></div>
+                        </div>
+                        <div class="bg-slate-900/60 p-3.5 rounded-xl border border-slate-800 space-y-1">
+                            <div class="flex justify-between font-medium"><span>Tier 2: 核心业务层</span><span class="text-indigo-400 mono font-bold">84.2%</span></div>
+                            <div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden"><div class="bg-indigo-400 h-full rounded-full" style="width: 84.2%"></div></div>
+                        </div>
+                        <div class="bg-slate-900/60 p-3.5 rounded-xl border border-slate-800 space-y-1">
+                            <div class="flex justify-between font-medium"><span>Tier 3: 持久化数据层</span><span class="text-purple-400 mono font-bold">94.8%</span></div>
+                            <div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden"><div class="bg-purple-400 h-full rounded-full" style="width: 94.8%"></div></div>
+                        </div>
+                        <div class="bg-slate-900/60 p-3.5 rounded-xl border border-slate-800 space-y-1">
+                            <div class="flex justify-between font-medium"><span>Tier 4: 消息与基础设施</span><span class="text-amber-400 mono font-bold">81.5%</span></div>
+                            <div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden"><div class="bg-amber-400 h-full rounded-full" style="width: 81.5%"></div></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-cyan-500/10 border border-cyan-500/20 p-3.5 rounded-xl text-cyan-200/90 leading-relaxed">
+                    <span class="font-semibold"><i class="fa-solid fa-circle-info mr-1"></i> 架构师评估结论：</span> 本项目由大模型辅助生成的代码在持久层与网关表现极佳（>92%），核心业务层涉及多线程并发的部分存在少量置信度波动（~84%），建议对 Tier 2 中的并发扣库存逻辑进行人工走查。
+                </div>
+            </div>
+
+            <div class="flex justify-end pt-2">
+                <button onclick="closeCompositeReportModal()" class="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl font-medium transition text-xs border border-slate-700">
+                    关闭汇总报告
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- Multi-Tier Architecture Dataset Generation ---
+        let nodes = [];
+        let edges = [];
+
+        function generateMultiTierDataset() {
+            const generatedNodes = [];
+            const generatedEdges = [];
+            
+            // Define Tiers with distinct cluster coordinates (Multi-tier layout)
+            const tiers = [
+                { id: 'gateway', name: 'Tier 1: API Gateway', centerX: -1200, centerY: 0, color: '#06b6d4' },
+                { id: 'service', name: 'Tier 2: Core Service', centerX: -400, centerY: 0, color: '#6366f1' },
+                { id: 'repository', name: 'Tier 3: Persistence', centerX: 400, centerY: 0, color: '#a855f7' },
+                { id: 'mq', name: 'Tier 4: Infrastructure & MQ', centerX: 1200, centerY: 0, color: '#f59e0b' }
+            ];
+
+            let idCounter = 1;
+            // Generate 1,250 symbols distributed evenly across the 4 architectural tiers
+            for (let i = 0; i < 1250; i++) {
+                const tier = tiers[i % tiers.length];
+                const type = i % 3 === 0 ? 'method' : (i % 3 === 1 ? 'variable' : 'param');
+                const score = Math.floor(Math.random() * 45) + 55; // 55 to 100
+
+                generatedNodes.push({
+                    id: `n_${idCounter}`,
+                    name: `${type === 'method' ? 'public void exec_' : (type === 'variable' ? 'field_' : 'param_')}${idCounter}()`,
+                    type: type,
+                    tier: tier.id,
+                    tierName: tier.name,
+                    parent: `${tier.id.toUpperCase()}_Component_${(i % 10) + 1}.java`,
+                    line: Math.floor(Math.random() * 250) + 1,
+                    score: score,
+                    complexity: Math.floor(Math.random() * 7) + 1,
+                    hallucination: score > 80 ? '96%' : '72%',
+                    context: '大模型上下文留存稳健，类型擦除符合 Java 泛型规范。',
+                    threadSafe: score > 75 ? '92%' : '65%',
+                    deps: [],
+                    x: tier.centerX + (Math.random() - 0.5) * 600,
+                    y: tier.centerY + (Math.random() - 0.5) * 900,
+                    vx: 0,
+                    vy: 0
+                });
+                idCounter++;
+            }
+
+            // Generate cross-tier dependency edges
+            for (let i = 0; i < generatedNodes.length; i++) {
+                const targetIdx = Math.floor(Math.random() * generatedNodes.length);
+                if (targetIdx !== i) {
+                    generatedEdges.push({ from: generatedNodes[i].id, to: generatedNodes[targetIdx].id });
+                    generatedNodes[i].deps.push(generatedNodes[targetIdx].id);
+                }
+            }
+
+            nodes = generatedNodes;
+            edges = generatedEdges;
+        }
+
+        generateMultiTierDataset();
+
+        let canvas, ctx;
+        let scale = 0.5;
+        let offsetX = 0;
+        let offsetY = 0;
+        let isDragging = false;
+        let startX, startY;
+        let selectedNode = null;
+        let hoveredNode = null;
+        let searchQuery = '';
+        let lastTime = performance.now();
+        let frameCount = 0;
+
+        const tierFilters = {
+            gateway: true,
+            service: true,
+            repository: true,
+            mq: true,
+            riskOnly: false
+        };
+
+        window.addEventListener('DOMContentLoaded', () => {
+            canvas = document.getElementById('graphCanvas');
+            ctx = canvas.getContext('2d');
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+
+            offsetX = canvas.width / 2;
+            offsetY = canvas.height / 2;
+
+            canvas.addEventListener('mousedown', onMouseDown);
+            canvas.addEventListener('mousemove', onMouseMove);
+            canvas.addEventListener('mouseup', onMouseUp);
+            canvas.addEventListener('wheel', onWheel, { passive: false });
+            canvas.addEventListener('click', onClick);
+
+            requestAnimationFrame(mainLoop);
+        });
+
+        function resizeCanvas() {
+            const container = document.getElementById('canvasContainer');
+            canvas.width = container.clientWidth;
+            canvas.height = container.clientHeight;
+        }
+
+        function getConfidenceColor(score) {
+            if (score >= 85) return { bg: '#06b6d4', glow: 'rgba(6, 182, 212, 0.4)', text: '#22d3ee' };
+            if (score >= 70) return { bg: '#f59e0b', glow: 'rgba(245, 158, 11, 0.4)', text: '#fbbf24' };
+            return { bg: '#f43f5e', glow: 'rgba(244, 63, 94, 0.6)', text: '#fb7185' };
+        }
+
+        function getTierColor(tier) {
+            switch(tier) {
+                case 'gateway': return '#06b6d4';
+                case 'service': return '#6366f1';
+                case 'repository': return '#a855f7';
+                case 'mq': return '#f59e0b';
+                default: return '#64748b';
+            }
+        }
+
+        function mainLoop(now) {
+            frameCount++;
+            if (now - lastTime >= 1000) {
+                const fps = Math.round((frameCount * 1000) / (now - lastTime));
+                document.getElementById('statFps').innerText = `${fps} FPS`;
+                frameCount = 0;
+                lastTime = now;
+            }
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            ctx.save();
+            ctx.translate(offsetX, offsetY);
+            ctx.scale(scale, scale);
+
+            drawGrid();
+
+            // Draw Tier Background Macro Zones
+            drawTierZones();
+
+            // Viewport culling bounds
+            const viewMinX = -offsetX / scale;
+            const viewMinY = -offsetY / scale;
+            const viewMaxX = viewMinX + canvas.width / scale;
+            const viewMaxY = viewMinY + canvas.height / scale;
+
+            let visibleCount = 0;
+
+            // Render Edges if scale permits
+            if (scale > 0.35) {
+                ctx.strokeStyle = 'rgba(21, 32, 56, 0.35)';
+                ctx.lineWidth = 1 / scale;
+                ctx.beginPath();
+                edges.forEach(edge => {
+                    const source = nodes.find(n => n.id === edge.from);
+                    const target = nodes.find(n => n.id === edge.to);
+                    if (source && target && isNodeVisible(source)) {
+                        ctx.moveTo(source.x, source.y);
+                        ctx.lineTo(target.x, target.y);
+                    }
+                });
+                ctx.stroke();
+            }
+
+            // Render Nodes with LOD
+            nodes.forEach(node => {
+                if (!isNodeVisible(node)) return;
+                if (node.x + 120 < viewMinX || node.x - 120 > viewMaxX ||
+                    node.y + 50 < viewMinY || node.y - 50 > viewMaxY) {
+                    return;
+                }
+                visibleCount++;
+                drawNodeLOD(node, scale);
+            });
+
+            document.getElementById('statNodeCount').innerText = `${visibleCount} 节点`;
+
+            ctx.restore();
+            requestAnimationFrame(mainLoop);
+        }
+
+        function drawTierZones() {
+            const zones = [
+                { name: 'TIER 1: API Gateway', x: -1200, color: 'rgba(6, 182, 212, 0.03)' },
+                { name: 'TIER 2: Core Service', x: -400, color: 'rgba(99, 102, 241, 0.03)' },
+                { name: 'TIER 3: Persistence Layer', x: 400, color: 'rgba(168, 85, 247, 0.03)' },
+                { name: 'TIER 4: MQ & Infrastructure', x: 1200, color: 'rgba(245, 158, 11, 0.03)' }
+            ];
+
+            zones.forEach(zone => {
+                ctx.fillStyle = zone.color;
+                ctx.beginPath();
+                ctx.roundRect(zone.x - 320, -600, 640, 1200, 24);
+                ctx.fill();
+
+                ctx.strokeStyle = 'rgba(21, 32, 56, 0.5)';
+                ctx.lineWidth = 2 / scale;
+                ctx.stroke();
+
+                ctx.fillStyle = '#64748b';
+                ctx.font = 'bold 16px Inter, sans-serif';
+                ctx.fillText(zone.name, zone.x - 140, -550);
+            });
+        }
+
+        function isNodeVisible(node) {
+            if (searchQuery.trim() !== '') {
+                const q = searchQuery.toLowerCase();
+                if (!node.name.toLowerCase().includes(q) && !node.parent.toLowerCase().includes(q)) return false;
+            }
+            if (tierFilters.riskOnly && node.score >= 70) return false;
+            if (!tierFilters[node.tier]) return false;
+            return true;
+        }
+
+        function drawNodeLOD(node, currentScale) {
+            const isSelected = selectedNode && selectedNode.id === node.id;
+            const tierColor = getTierColor(node.tier);
+            const conf = getConfidenceColor(node.score);
+
+            // LOD Macro View (Scale < 0.45) -> Glowing Dot
+            if (currentScale < 0.45) {
+                ctx.fillStyle = node.score < 70 ? '#f43f5e' : tierColor;
+                ctx.beginPath();
+                ctx.arc(node.x, node.y, isSelected ? 7 : 3.5, 0, Math.PI * 2);
+                ctx.fill();
+                return;
+            }
+
+            // LOD Detail View
+            const width = 180;
+            const height = 60;
+            const x = node.x - width / 2;
+            const y = node.y - height / 2;
+            const radius = 8;
+
+            ctx.fillStyle = '#090e1a';
+            ctx.beginPath();
+            ctx.roundRect(x, y, width, height, radius);
+            ctx.fill();
+
+            ctx.strokeStyle = isSelected ? '#06b6d4' : (node.score < 70 ? '#f43f5e' : '#152038');
+            ctx.lineWidth = isSelected ? 2 : 1;
+            ctx.stroke();
+
+            ctx.fillStyle = tierColor;
+            ctx.beginPath();
+            ctx.roundRect(x, y, 5, height, [radius, 0, 0, radius]);
+            ctx.fill();
+
+            ctx.fillStyle = '#f8fafc';
+            ctx.font = '600 11px Inter, sans-serif';
+            ctx.fillText(node.name.length > 20 ? node.name.substring(0, 18) + '...' : node.name, x + 14, y + 20);
+
+            ctx.fillStyle = '#64748b';
+            ctx.font = '9px JetBrains Mono, monospace';
+            ctx.fillText(`${node.parent} [L${node.line}]`, x + 14, y + 36);
+
+            // Score badge
+            const badgeW = 38;
+            const badgeH = 18;
+            const badgeX = x + width - badgeW - 10;
+            const badgeY = y + 20;
+
+            ctx.fillStyle = node.score < 70 ? 'rgba(244, 63, 94, 0.2)' : 'rgba(6, 182, 212, 0.15)';
+            ctx.beginPath();
+            ctx.roundRect(badgeX, badgeY, badgeW, badgeH, 4);
+            ctx.fill();
+
+            ctx.fillStyle = conf.text;
+            ctx.font = 'bold 10px JetBrains Mono, monospace';
+            ctx.fillText(`${node.score}%`, badgeX + 5, badgeY + 13);
+        }
+
+        function drawGrid() {
+            const gridSize = 100;
+            ctx.strokeStyle = 'rgba(21, 32, 56, 0.25)';
+            ctx.lineWidth = 1 / scale;
+            
+            const startX = -offsetX / scale;
+            const startY = -offsetY / scale;
+            const endX = startX + canvas.width / scale;
+            const endY = startY + canvas.height / scale;
+
+            for (let x = Math.floor(startX / gridSize) * gridSize; x <= endX; x += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(x, startY);
+                ctx.lineTo(x, endY);
+                ctx.stroke();
+            }
+            for (let y = Math.floor(startY / gridSize) * gridSize; y <= endY; y += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(startX, y);
+                ctx.lineTo(endX, y);
+                ctx.stroke();
+            }
+        }
+
+        function onMouseDown(e) {
+            isDragging = true;
+            startX = e.clientX - offsetX;
+            startY = e.clientY - offsetY;
+        }
+
+        function onMouseMove(e) {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = (e.clientX - rect.left - offsetX) / scale;
+            const mouseY = (e.clientY - rect.top - offsetY) / scale;
+
+            if (isDragging) {
+                offsetX = e.clientX - startX;
+                offsetY = e.clientY - startY;
+                return;
+            }
+
+            let found = null;
+            nodes.forEach(node => {
+                if (!isNodeVisible(node)) return;
+                const w = 180, h = 60;
+                if (mouseX >= node.x - w/2 && mouseX <= node.x + w/2 &&
+                    mouseY >= node.y - h/2 && mouseY <= node.y + h/2) {
+                    found = node;
+                }
+            });
+
+            if (found !== hoveredNode) {
+                hoveredNode = found;
+                canvas.style.cursor = found ? 'pointer' : 'grab';
+            }
+        }
+
+        function onMouseUp() {
+            isDragging = false;
+        }
+
+        function onWheel(e) {
+            e.preventDefault();
+            const zoomIntensity = 0.12;
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            const prevScale = scale;
+            if (e.deltaY < 0) {
+                scale *= (1 + zoomIntensity);
+            } else {
+                scale /= (1 + zoomIntensity);
+            }
+            scale = Math.max(0.15, Math.min(3.0, scale));
+
+            offsetX = mouseX - (mouseX - offsetX) * (scale / prevScale);
+            offsetY = mouseY - (mouseY - offsetY) * (scale / prevScale);
+        }
+
+        function onClick(e) {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = (e.clientX - rect.left - offsetX) / scale;
+            const mouseY = (e.clientY - rect.top - offsetY) / scale;
+
+            let clickedNode = null;
+            nodes.forEach(node => {
+                if (!isNodeVisible(node)) return;
+                const w = 180, h = 60;
+                if (mouseX >= node.x - w/2 && mouseX <= node.x + w/2 &&
+                    mouseY >= node.y - h/2 && mouseY <= node.y + h/2) {
+                    clickedNode = node;
+                }
+            });
+
+            if (clickedNode) {
+                selectNode(clickedNode);
+            }
+        }
+
+        function selectNode(node) {
+            selectedNode = node;
+            document.getElementById('emptyInspector').classList.add('hidden');
+            document.getElementById('activeInspector').classList.remove('hidden');
+
+            document.getElementById('nodeTierBadge').innerText = node.tierName.toUpperCase();
+            document.getElementById('nodeLocation').innerText = `${node.parent} : L${node.line}`;
+            document.getElementById('nodeName').innerText = node.name;
+            document.getElementById('nodeScore').innerText = `${node.score}%`;
+            document.getElementById('nodeScoreBar').style.width = `${node.score}%`;
+            document.getElementById('nodeScoreBar').className = `h-full rounded-full transition-all duration-500 ${node.score >= 85 ? 'bg-cyan-400' : node.score >= 70 ? 'bg-amber-400' : 'bg-rose-500'}`;
+
+            document.getElementById('metricHallucination').innerText = node.hallucination;
+            document.getElementById('metricContext').innerText = `${Math.floor(node.score * 0.95)}% 稳定`;
+            document.getElementById('metricThread').innerText = node.threadSafe;
+            document.getElementById('metricComplexity').innerText = `${node.complexity} (低风险)`;
+
+            document.getElementById('nodeAiReason').innerText = `该符号位于 [${node.tierName}]。大模型在生成时注意力对齐度良好，无幻觉虚构外部依赖。`;
+
+            const relationsContainer = document.getElementById('nodeRelationsList');
+            if (node.deps && node.deps.length > 0) {
+                let html = '';
+                node.deps.slice(0, 3).forEach(depId => {
+                    const depNode = nodes.find(n => n.id === depId);
+                    if (depNode) {
+                        html += `<div>↳ 架构依赖符号: <span class="text-cyan-400">${depNode.name}</span></div>`;
+                    }
+                });
+                relationsContainer.innerHTML = html;
+            } else {
+                relationsContainer.innerHTML = '<div class="text-slate-500">无直接跨层依赖。</div>';
+            }
+        }
+
+        function closeInspector() {
+            selectedNode = null;
+            document.getElementById('activeInspector').classList.add('hidden');
+            document.getElementById('emptyInspector').classList.remove('hidden');
+        }
+
+        function toggleTier(tier) {
+            tierFilters[tier] = !tierFilters[tier];
+        }
+
+        function toggleRiskOnly() {
+            tierFilters.riskOnly = !tierFilters.riskOnly;
+        }
+
+        function handleSearch(val) {
+            searchQuery = val;
+        }
+
+        function zoomIn() {
+            scale = Math.min(3.0, scale * 1.25);
+        }
+
+        function zoomOut() {
+            scale = Math.max(0.15, scale / 1.25);
+        }
+
+        function resetView() {
+            scale = 0.5;
+            offsetX = canvas.width / 2;
+            offsetY = canvas.height / 2;
+            showToast('多层架构视图已重置', '回归宏观多层架构全景。');
+        }
+
+        function openCompositeReportModal() {
+            document.getElementById('compositeModal').classList.remove('hidden');
+        }
+
+        function closeCompositeReportModal() {
+            document.getElementById('compositeModal').classList.add('hidden');
+        }
+
+        function copyReliabilityReport() {
+            const text = `【多层架构 AI 可靠度评估报告】\n符号: ${selectedNode.name}\n架构层级: ${selectedNode.tierName}\n文件: ${selectedNode.parent}\n置信度评分: ${selectedNode.score}%`;
+            const textArea = document.createElement("textarea");
+            textArea.value = text;
+            document.body.appendChild(textArea);
+            textArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textArea);
+            showToast('复制成功', '架构符号可靠度评估报告已成功复制到剪贴板。');
+        }
+
+        function showToast(title, msg) {
+            const toast = document.getElementById('toast');
+            document.getElementById('toastTitle').innerText = title;
+            document.getElementById('toastMsg').innerText = msg;
+            toast.classList.remove('translate-y-24', 'opacity-0');
+            setTimeout(() => {
+                toast.classList.add('translate-y-24', 'opacity-0');
+            }, 3000);
+        }
+    </script>
+</body>
+</html>

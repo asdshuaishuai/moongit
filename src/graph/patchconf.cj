@@ -257,9 +257,16 @@ public func analyzePatchConfidence(graph: CodeGraph, patchText: String): PatchCo
     // 补丁里有没有先用后声明」，答案需要全量表，不能问「到目前为止」。
     let allPatchDecls = HashMap<String, (String, Int64)>()
     for (pf0 in pfiles) {
+        // ⚠️ G3：注释状态按文件携带。上下文行（kind 0）也是新文件的内容，
+        // 参与状态推进；删除行（kind 2）不属于新文件，跳过不推进。
+        // 原实现每行独立以状态 0 调 stripCode —— 多行块注释里的声明
+        // 被抽成 patchconf 实体。
+        var st0: Int64 = 0
         for (pl0 in pf0.lines) {
+            if (pl0.kind == 2) { continue }
+            let (t0, st0Next) = stripCode(pl0.text, st0)
+            st0 = st0Next
             if (pl0.kind != 1) { continue }
-            let (t0, _) = stripCode(pl0.text, 0)
             if (blankLine(t0)) { continue }
             match (scanDeclLine(tokenize(t0))) {
                 case Some((_, name0)) =>
@@ -276,11 +283,18 @@ public func analyzePatchConfidence(graph: CodeGraph, patchText: String): PatchCo
     for (pf in pfiles) {
         // 文件在 repo 中的模块（S4 用）：能被 moduleIndex 命中即可
         var addedInFile: Int64 = 0
+        // ⚠️ G3：主循环与 allPatchDecls 同一套状态纪律（上下文行推进、
+        // 删除行跳过）——原实现每行独立状态 0，块注释里的声明/调用
+        // 全被当成活代码抽进实体与引用统计。
+        var pState: Int64 = 0
         for (pl in pf.lines) {
+            if (pl.kind == 2) { continue }
+            let (lineT, lineNext) = stripCode(pl.text, pState)
+            pState = lineNext
             if (pl.kind != 1) { continue }
             addedLines += 1
             addedInFile += 1
-            let (t, _) = stripCode(pl.text, 0)
+            let t = lineT
             if (blankLine(t)) { continue }
             // 新增声明 → entity + patchDecls
             match (scanDeclLine(tokenize(t))) {
@@ -306,11 +320,23 @@ public func analyzePatchConfidence(graph: CodeGraph, patchText: String): PatchCo
                     var relCount: Int64 = 0
                     var li = indexOfLine(pf.lines, pl)
                     var look = 0
+                    // ⚠️ G3：前窥行的注释状态从**当前行之后**的状态延续——
+                    // 这些行随后会被主循环按同一序列再处理一遍，两处状态一致。
+                    var lookState: Int64 = pState
                     while (look < 15 && li + look + 1 < Int64(pf.lines.size)) {
                         let nl = pf.lines[li + look + 1]
                         look += 1
+                        // ⚠️ 与主循环同一套推进纪律（缺一不可）：
+                        //   · 删除行（kind 2）不属于新文件——跳过且**不推进**状态；
+                        //   · 上下文行（kind 0）先 stripCode **推进**状态，只是不产出关系。
+                        // 原先这里对一切非新增行 `continue` 且不推进 lookState——
+                        // 块注释横跨「上下文行 → 新增行」时，主循环（状态 3，注释
+                        // 残段被剥掉）与前窥（状态 0，残段当活代码）两遍发散，
+                        // 注释残段里的 `name(` 被算进 entity 的关系分。
+                        if (nl.kind == 2) { continue }
+                        let (nt, ntNext) = stripCode(nl.text, lookState)
+                        lookState = ntNext
                         if (nl.kind != 1) { continue }
-                        let (nt, _) = stripCode(nl.text, 0)
                         if (blankLine(nt)) { continue }
                         // 到下一个声明为止
                         if (scanDeclLine(tokenize(nt)).isSome()) { break }

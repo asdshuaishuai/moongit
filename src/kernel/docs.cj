@@ -1806,9 +1806,9 @@ func __lintBackupKeepThresholdHasOneSource(): Unit {
     for (f in ["src/kernel/docs.cj", "src/cli/cli.cj"]) {
         let raw = readFileTextChecked(f).getOrThrow()
         let sb = StringBuilder()
-        var blk = false
+        var blk = CjStripState.Normal
         for (r in raw.split("\n")) {
-            let (l, nb) = stripCjComment(r, blk)
+            let (l, nb) = stripCjCommentEx(r, blk)
             blk = nb
             sb.append(l)
             sb.append("\n")

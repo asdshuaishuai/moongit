@@ -227,9 +227,18 @@ public func runDeep(project: ProjectEntry, config: Config, opts: DeepOptions): D
         // deep 不做逐分支基线，因此不对「追踪分支数 vs 仓库分支数」下判断；
         // 恒发 false 表示「本条目不对分支数作任何声称」，而不是「没截断」。
         Json.set(entry, "branchCountTruncated", Json.of(false))
-        // 分母仍然要给：collectFacts 的「读到 0」守卫保证非空，
-        // 拿不到时按约定报 -1（读不出来），不是 0。
-        Json.set(entry, "repoBranchCount", Json.of(facts.branches.size))
+        // 分母仍然要给，且必须与 update 出口（update.cj 的 match repoBranchCount）
+        // 走**同一个判据**：repoBranchTotal(facts) 的 Option 语义 ——
+        // Some(n) → n；None（非 git 项目 / for-each-ref 读不出来）→ -1，不是 0。
+        //
+        // ⚠️ 原来这里写的是 `facts.branches.size`：dir 项目（非 git）的 branches
+        // 恒为空数组，deep 条目于是报 **0** —— 被消费方读成「仓库共 0 个分支」，
+        // 而同一场景 update 出口报 -1（读不出来）。同一个键两套约定，
+        // 正是上面那条注释声称「拿不到时按约定报 -1」而代码兑现不了的地方。
+        match (repoBranchTotal(facts)) {
+            case Some(n) => Json.set(entry, "repoBranchCount", Json.of(n))
+            case None => Json.set(entry, "repoBranchCount", Json.of(-1))
+        }
         let summary = if (highlights.size > 0) {
             highlights[0]
         } else {
@@ -322,22 +331,8 @@ func renderPreview(regions: ArrayList<(String, String)>): String {
     return sb.toString()
 }
 
-/// 把提示词中的完整事实 JSON 替换为裁剪版（避免重复序列化两遍）
-func replaceFactsInPrompt(user: String, fittedJson: String): String {
-    let open = "## 仓库事实（JSON）\n```json\n"
-    let startIdx = user.indexOf(open)
-    match (startIdx) {
-        case None => return user
-        case Some(si) =>
-            let contentStart = si + open.size
-            let closeIdx = user.indexOf("\n```", contentStart)
-            match (closeIdx) {
-                case None => return user
-                case Some(ci) =>
-                    return user[..contentStart] + fittedJson + user[ci..]
-            }
-    }
-}
+// src/ai 残留，2026-10-11 清理：replaceFactsInPrompt 与其测试 testReplaceFactsInPrompt
+// 已删除（名字含 Prompt、全仓零生产调用；深更新现在走确定性规则引擎）。
 
 // ------------------------------ 测试 ------------------------------
 
@@ -533,16 +528,6 @@ func testRunDeepRefusesToWriteWhenRepoUnreadable(): Unit {
 }
 
 @Test
-func testReplaceFactsInPrompt(): Unit {
-    let prompt = "before\n## 仓库事实（JSON）\n```json\n{\"big\":1}\n```\nafter"
-    let out = replaceFactsInPrompt(prompt, "{\"small\":2}")
-    @Assert(out.contains("{\"small\":2}"))
-    @Assert(!out.contains("{\"big\":1}"))
-    @Assert(out.contains("before"))
-    @Assert(out.contains("after"))
-}
-
-@Test
 func testRunDeepRecordsBranchBaselineLikeUpdate(): Unit {
     // 回归：deep 从不记录分支进度，journal 却声称记录过。
     //
@@ -727,6 +712,41 @@ func testDeepEntryAlwaysCarriesItsScopeAndTruncationFields(): Unit {
     } finally {
         exitTestHome()
         removePathIfExists(base)
+        removePathIfExists(testHome)
+    }
+}
+
+/// repoBranchCount 的「读不出来」约定回归：dir 项目（非 git）跑 deep，
+/// journal 条目必须报 **-1**，不是 0 —— 与 update 出口（update.cj）同一判据
+/// （repoBranchTotal 的 Option 语义：None → -1）。
+///
+/// 原来 deep 侧写的是 `facts.branches.size`，而 collectDirFacts 的 branches
+/// 恒为空数组，于是 dir 项目报 0，被消费方读成「仓库共 0 个分支」；
+/// 同一场景 update 出口报 -1。同一个键两套约定。
+/// 走真实 runDeep（不能用 store.cj 里那份手搓 deep 夹具 —— 夹具比现实
+/// 更完整就测不出真实路径漏写，同 #188 的教训）。
+@Test
+func testDeepDirProjectReportsUnknownBranchCountAsMinusOne(): Unit {
+    let base = "/tmp/deepgit-deepdir-${nowMillis()}"
+    let testHome = "${base}-home"
+    try {
+        ensureDir(base)
+        writeFileAtomic("${base}/README.md", "# dir proj\n\n用户手写内容\n")
+        writeFileAtomic("${base}/a.txt", "1")
+        enterTestHome(testHome)
+        let p = ProjectEntry("p_deepdir", "deepdir", base, "dir", "", nowIso(), ArrayList<String>(), false)
+        let r = runDeep(p, Config.defaults(), DeepOptions())
+        @Assert(r.ok)
+        // 前提自证（不变量 18）：这确实是 dir 项目，不是 git
+        @Assert(r.facts.kind != "git")
+        @Assert(r.facts.branches.isEmpty())
+        // 核心断言：-1（读不出来），不是 0（会被读成「仓库共 0 个分支」）
+        @Assert(Json.intAt(r.journalEntry, "repoBranchCount", -99) == -1)
+    } finally {
+        removePathIfExists(base)
+        removePathIfExists(deepgitPath(["store", "p_deepdir"]))
+        // 复位必须排在所有 deepgitPath(...) 之后：提前复位会让上面的清理打到真实 store
+        exitTestHome()
         removePathIfExists(testHome)
     }
 }

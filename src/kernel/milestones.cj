@@ -465,7 +465,17 @@ public func milestoneProgress(m: Milestone, repoPath: String, defaultBranch: Str
         //
         // --all 才是这个指标该有的语义（用户问的是「这个里程碑立项以来做了多少事」），
         // 也正是注释一直承诺的那个。
-        if (!m.createdAt.isEmpty() && m.createdAt.size >= 10) {
+        // ⚠️ 切片前必须先过 isIsoDate（对齐 targetDate 的 #180 判例）。
+        //
+        // 原来只查「非空且长度 ≥ 10」就裸切 `m.createdAt[..10]`：
+        // 仓颉字符串按**字节**索引，手改 milestones.json 写
+        // 「2026年1月1日」「２０２６－０１－０１」（全角）这类值时，
+        // 第 10 个字节正好落在多字节 UTF-8 序列中间，
+        // `Invalid utf8 byte sequence` 一路冒泡 ——
+        // milestone list / dashboard / milestone done 三条出口全灭。
+        // isIsoDate 逐字节校验前 10 位是 ASCII 数字/连字符（外加真实月长），
+        // 过了它再切，切片永远落在 ASCII 边界内。
+        if (isIsoDate(m.createdAt)) {
             let since = m.createdAt[..10]
             let r = gitTry(repoPath, ["rev-list", "--count", "--since=" + since + "T00:00:00", "--all"])
             if (r.ok() && !r.stdout.isBlank()) {
@@ -485,8 +495,9 @@ public func milestoneProgress(m: Milestone, repoPath: String, defaultBranch: Str
                 commitsSince = -1
             }
         } else {
-            // 没有 createdAt 或长度不足 10，连日期都取不出来：
-            // 这是「没查」，不是「查了是 0」
+            // 没有 createdAt，或日期部分不是合法 YYYY-MM-DD
+            // （长度不足、手改成中文/全角、或日历上不存在 —— 见 #180），
+            // 连日期都取不出来：这是「没查」，不是「查了是 0」
             commitsSince = -1
         }
     }
@@ -1070,6 +1081,74 @@ func testCommitsSinceIsUnknownNotZeroWhenNotQueryable(): Unit {
     } finally {
         exitTestHome()
         removePathIfExists(home)
+    }
+}
+
+/// K2 回归：手改 milestones.json 的 createdAt 不许让出口全灭。
+///
+/// 原实现只查「非空且长度 ≥ 10」就裸切 `m.createdAt[..10]` ——
+/// 仓颉字符串按**字节**索引，「2026年1月1日」的第 10 个字节正好落在
+/// 「月」这个 UTF-8 序列中间，`Invalid utf8 byte sequence` 一路冒泡，
+/// milestone list / dashboard / milestone done 三条出口全部崩掉。
+/// 同文件的 targetDate 早就由 isIsoDate 把住（#180 判例），createdAt 漏了同一道闸门。
+///
+/// 测试走**真实路径**：真 git 仓库（切片那一行只在 gitReadable && isRepoRoot
+/// 时执行）+ 手写 milestones.json + loadMilestones + milestoneProgress。
+@Test
+func testMilestoneProgressSurvivesNonIsoCreatedAtFromStore(): Unit {
+    let base = "/tmp/deepgit-msutf8-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    let repo = base + "-repo"
+    try {
+        ensureDir(repo)
+        gitRun(repo, ["init", "-b", "main"], false)
+        writeFileAtomic(repo + "/a.txt", "a\n")
+        gitRun(repo, ["add", "."], false)
+        gitRun(repo, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "feat: a"], false)
+
+        // 前提必须自己钉住（不变量 18/22 的纪律）：
+        // 合法 createdAt 在这个仓库上确实查得出来 —— 否则「没炸」
+        // 可能只是压根没走到切片那一行（repo 不是根 / git 不可读）。
+        _ = addMilestone("p_utf8", "clean", "对照", "", "")
+        var clean = Milestone("x", "p_utf8", "clean", "", "2027-01-01", "", "open", "", "")
+        for (x in loadMilestones()) {
+            if (x.name == "clean") {
+                clean = x
+            }
+        }
+        @Assert(!clean.createdAt.isEmpty())          // 写路径确实给了 createdAt
+        let sanity = milestoneProgress(clean, repo, "main")
+        @Assert(sanity.gitReadable)
+        @Assert(sanity.commitsSince >= 0)            // 合法日期：这条分支真的会切 [..10]
+
+        // 手改 milestones.json：中文日期与全角数字 ——
+        // 两者的第 10 个字节都落在多字节 UTF-8 序列中间
+        writeFileAtomic(deepgitPath(["milestones.json"]),
+            "{\"milestones\":[" +
+            "{\"id\":\"m1\",\"projectId\":\"p_utf8\",\"name\":\"cn\",\"description\":\"\"," +
+            "\"targetDate\":\"2027-01-01\",\"tag\":\"\",\"status\":\"open\"," +
+            "\"createdAt\":\"2026年1月1日\",\"completedAt\":\"\"}," +
+            "{\"id\":\"m2\",\"projectId\":\"p_utf8\",\"name\":\"fullwidth\",\"description\":\"\"," +
+            "\"targetDate\":\"2027-01-01\",\"tag\":\"\",\"status\":\"open\"," +
+            "\"createdAt\":\"２０２６－０１－０１\",\"completedAt\":\"\"}" +
+            "],\"updatedAt\":\"2026-01-01T00:00:00Z\"}")
+
+        // 真实读路径：loadMilestones → milestoneProgress。
+        // 修复前 String 构造在 [..10] 处直接抛 Invalid utf8，测试走不到任何断言。
+        var seen = 0
+        for (m in loadMilestones()) {
+            let p = milestoneProgress(m, repo, "main")
+            @Assert(p.commitsSince == -1)   // 「没查」，不是「查了是 0」
+            @Assert(p.gitReadable)          // 日期脏 ≠ 仓库坏，两个事实分开
+            seen += 1
+        }
+        @Assert(seen == 2)
+    } finally {
+        exitTestHome()
+        removePathIfExists(repo)
+        removePathIfExists(testHome)
     }
 }
 

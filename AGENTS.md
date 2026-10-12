@@ -1293,6 +1293,12 @@ util → (kernel | graph) → flow → cli
       不是让取模把两段涂成同色。
 
 58. **传输层只有 CLI 子进程与 MCP(stdio) 两面；进程内 FFI 是「已决定不做」，不是待办。**
+    > **2026-10-12 修正（用户-directed，边界不变）**：新增 `src/util/sqlite.cj`
+    > （系统 libsqlite3 的存储层 FFI，承载 `graph db` / `confidence db` 两个单文件库）。
+    > 它**不是**传输面：不连接客户端与引擎，只是引擎读写单文件存储库的系统库调用；
+    > 传输层「CLI 子进程 + MCP(stdio)」的纪律原样成立。传输 lint
+    > （`__lintTransportLayerHasOnlyTwoSurfaces`）对该文件整文件豁免，豁免边界 =
+    > 仅此一个文件——往 sqlite.cj 之外再加任何 FFI 都必须先回到这里改决定。
     这条把一个长期挂着的问题**结案**：原计划要让引擎编成 dylib、被客户端直接链接、
     在同一进程里调用（`docs/deepgit-redesign-plan.md` 的 D1）。
     在仓颉 **1.0.5** 上它做不成 —— 五条路径全部失败于 `Check failed: runtime != nullptr`：
@@ -1331,7 +1337,7 @@ util → (kernel | graph) → flow → cli
     消费方自己 `prefix(N)` 砍了一层，零披露。**
     #207 实测：1 个项目 8 条进行中里程碑，`dashboard --json` 给
     `counts.open = 8` / `readCount = 8` / `items` 8 条（items **无上限**，
-    且引擎侧有对账等式 `readCount = open+done+dropped+unknown+excludedDisabled+orphaned`），
+    且引擎侧有对账等式 `readCount = open+done+dropped+unknown+other+excludedDisabled+orphaned`），
     而卡片标题按 counts 说话（「进行中 8」）、列表只画 5 条 ——
     v6.0 / v7.0 / v8.0 静默消失，退出码 0，没有任何字段提示。
     三次复发说明**这不是个案，是这个架构的默认失败模式**，所以规则按家族写：

@@ -112,10 +112,35 @@ public struct FileEntry {
 public class CodeGraph {
     public let root: String
     public let files: ArrayList<FileEntry>
-    /// fileA 的 import 解析到 fileB
+    /// fileA 的 import 解析到 fileB。只收「剥后仍在」的 import 行——
+    /// scanSource 的 import 检测用原始行（行锚定），字符串里的
+    /// `from x import y` 会被当成真 import；行号不在剥后集合里的一律丢弃。
     public let importEdges: ArrayList<(String, String)>
     /// fileA 里有 fileB 所定义符号的标识符（weight = 命中的不同符号数）
     public let refEdges: ArrayList<(String, String, Int64)>
+    /// 架构口径的引用边：**架构上可能成立的**词法引用（weight = 命中的不同符号数）。
+    ///
+    /// 【为什么要有两份——引用语义 vs 架构语义】
+    /// refEdges 是「引用语义」：剥后标识符命中他文件定义即计，服务影响面、
+    /// 孤儿检测辅助与 fullGraphJson/overview 的 referenceEdges（对外契约，维持现状）。
+    /// 它的假边形态对架构聚合是灾难：引擎自身 9/9 模块对「全违规」，实测成因全部
+    /// 是同名噪音而非真依赖（paths.cj 的 doc 注释提到 stripCode、strx.cj 每包
+    /// 一份的合法重名 isBlank、泛型占位符 T 撞 lang.cj 的翻译函数 T、局部变量
+    /// size/t 撞他包成员方法……）。archRefEdges 只认架构上可能成立的跨模块依赖：
+    ///   ① 目标是**顶格且公开**的声明（cangjie/swift/ts/rust/java 的 public/open/
+    ///      export/pub；go 的首字母大写导出；python 的非下划线前缀）——语言可见性
+    ///      语义下跨包引用只能指向公开符号，私有/成员方法的「命中」100% 是撞名；
+    ///   ② 定义分布在 **>1 个模块**的同名符号（跨模块歧义）不产生边——词法无法
+    ///      分辨引用的是哪一份，宁可漏边不造假边（strx.cj 同族）；
+    ///   ③ 接收者调用（a.b 的前导点）豁免——方法归属需要类型信息，词法不可判；
+    ///   ④ 声明行的**泛型类型参数**（`func f<T>` 的 T）豁免——那是声明不是引用；
+    ///   ⑤ **泛型实参位置**（前导 `<`，如 `Option<T>` / `wrapFn<Int64>`）豁免——
+    ///      类型实参的归属同样需要类型信息；lock.cj 函数体内的 `Option<T>` 曾
+    ///      因此残留 kernel→cli 假边。比较运算符 `a < b` 的 b 右侧是变量/
+    ///      字面量，误豁免的代价是漏边不是假边。
+    /// 剥注释+字符串的口径与 refEdges 同源（同一次扫描的 stripCode 文本）。
+    /// **不进任何 JSON 出口**：仅 buildArch（模块聚合/治理信号/drilldown）消费。
+    public let archRefEdges: ArrayList<(String, String, Int64)>
     /// 文件数超上限被截断（总量照数，样本截断 —— 与引擎其它披露同一纪律）
     public let truncated: Bool
     /// 因超限/无法读取而跳过的文件数
@@ -132,6 +157,11 @@ public class CodeGraph {
     /// 因超限被跳过的文件数（> GRAPH_MAX_FILE_BYTES）。**恒发**——「没扫描到」
     /// 与「这里没有文件」在响应里完全不同，缺这个键下游只能当成没有（M7）。
     public let oversizeSkipped: Int64
+    /// 遍历时**读不出来**的目录（相对路径，根为空串；至多
+    /// GRAPH_MAX_UNREADABLE_DIRS 条）。读不到的子树里的所有文件会静默
+    /// 缺席——与「空目录」在图谱里完全同构（契约A：出口必须恒发
+    /// unreadableDirs / unreadableDirsTruncated 披露这一事实）。
+    public let unreadableDirs: ArrayList<String>
 
     public init(root: String, files: ArrayList<FileEntry>,
                 importEdges: ArrayList<(String, String)>,
@@ -140,17 +170,21 @@ public class CodeGraph {
                 referencedNames: HashSet<String>,
                 unresolvedCalls: ArrayList<(String, String, Int64)>,
                 unusedImports: ArrayList<(String, String, Int64)>,
-                oversizeSkipped: Int64) {
+                oversizeSkipped: Int64,
+                unreadableDirs: ArrayList<String>,
+                archRefEdges: ArrayList<(String, String, Int64)>) {
         this.root = root
         this.files = files
         this.importEdges = importEdges
         this.refEdges = refEdges
+        this.archRefEdges = archRefEdges
         this.truncated = truncated
         this.skipped = skipped
         this.referencedNames = referencedNames
         this.unresolvedCalls = unresolvedCalls
         this.unusedImports = unusedImports
         this.oversizeSkipped = oversizeSkipped
+        this.unreadableDirs = unreadableDirs
     }
 
     /// 符号名 → 定义处列表（同名符号可能多处定义，全部列出，不装作唯一）。

@@ -53,6 +53,25 @@ mkdir -p "$DST"
 mkdir -p "$DST/usr/lib"
 for TBD in libSystem.tbd libSystem.B.tbd libc.tbd libm.tbd libdl.tbd libpthread.tbd; do
   [ -f "$SRC/usr/lib/$TBD" ] && cp "$SRC/usr/lib/$TBD" "$DST/usr/lib/"
+# SQLite 存储（graph db / confidence db，2026-10-12）：极简 SDK 补手写 tbd
+# （系统 libsqlite3.dylib 在 dyld shared cache，源 SDK 无 tbd 可拷）
+if [ ! -f "$DST/usr/lib/libsqlite3.tbd" ]; then
+  printf '%s\n' \
+    '--- !tapi-tbd' \
+    'tbd-version:     4' \
+    'targets:         [ x86_64-macos, arm64-macos ]' \
+    "install-name:    '/usr/lib/libsqlite3.dylib'" \
+    'current-version: 406' \
+    'compatibility-version: 9' \
+    'exports:' \
+    '  - targets:         [ x86_64-macos, arm64-macos ]' \
+    '    symbols:         [ _sqlite3_bind_int64, _sqlite3_bind_text, _sqlite3_close,' \
+    '                       _sqlite3_column_int64, _sqlite3_column_text, _sqlite3_errmsg,' \
+    '                       _sqlite3_exec, _sqlite3_finalize, _sqlite3_free,' \
+    '                       _sqlite3_open_v2, _sqlite3_prepare_v2, _sqlite3_reset,' \
+    '                       _sqlite3_step ]' \
+    > "$DST/usr/lib/libsqlite3.tbd"
+fi
 done
 
 # 2) SDK 元数据
