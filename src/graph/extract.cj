@@ -112,10 +112,69 @@ func declKeywordBytes(): Array<(UInt8, Array<UInt8>)> {
 
 let DECL_KEYWORDS: Array<(UInt8, Array<UInt8>)> = declKeywordBytes()
 
+/// C 系函数名的**唯一取法**：**紧跟参数列表 `(` 的那个标识符**。
+///
+/// ⚠ 为什么不能按「第二个 token」取：C++ 的函数名前面可以带
+///   · **作用域限定**：`EngineCli::EngineResult classifyResult(…)`
+///   · **const / 指针 / 引用限定**：`const EngineDoctor::Report *doctorReport() const`
+///   · **类名（成员函数定义）**：`bool AgentCore::runEngineRaw(…)`
+///   这三种形态里「第二个 token」都是**类型名的一部分**（`EngineResult` /
+///   `Report` / `AgentCore`），不是函数名 ⇒ 按第二个 token 取会把真函数名判丢。
+///   ⇒ 后果不是「少一个符号」那么简单：**函数体边界是按「本符号行 → 下一个
+///   符号行」算的**（置信度的圈复杂度/参数滥用都靠它）⇒ 中间那些没被认出的
+///   定义不占边界 ⇒ 前一个函数的「函数体」把中间函数的 if/for 全吞进去
+///   ⇒ **凭空多出高复杂度告警**（实测：`clipNote`（2 行）被判「圈复杂度 13」，
+///   因为它后面那个 `AgentCore::runEngineRaw` 没被认出来）。
+///
+/// 判定：
+///   · 只对 C 系语言生效（M8 纪律）；
+///   · 预处理器行不算（`#define FOO(x)` 长得像函数）；
+///   · `(` 紧跟标识符（允许空白）；**`(` 紧跟在 `>` 之后是模板实参转换**
+///     （`static_cast<QString>(x)`）⇒ 不算；
+///   · 名字**前面至少要有一个标识符**（返回类型）——`foo(1);` 是调用不是定义；
+///   · 名字前面那个标识符**不能是关键字**（return / if / while / for / catch …）
+///     ——`return foo(x);` 是返回语句不是定义；
+///   · 名字本身不能是关键字。
+func cFuncNameBeforeParen(line: String, lang: String): Option<String> {
+    if (lang != "c") { return None }
+    // 预处理器行不是函数定义
+    if (line.trimAscii().startsWith("#")) { return None }
+    let lb = line.toArray()
+    let n = Int64(lb.size)
+    var i: Int64 = 0
+    var lastIdent: String = ""
+    var hasLast = false
+    while (i < n) {
+        let b = lb[i]
+        if (isIdentByte(b)) {
+            let st = i
+            while (i < n && isIdentByte(lb[i])) { i += 1 }
+            let tok = fromUtf8Lossy(lb[st..i])
+            // 跳过空白，看下一个字节是不是 '('
+            var j = i
+            while (j < n && (lb[j] == 32 || lb[j] == 9)) { j += 1 }
+            if (j < n && lb[j] == 40) {
+                // `(` 紧跟在 '>' 之后 = 模板实参转换（static_cast<T>(x)）⇒ 不是定义
+                if (j > 0 && lb[j - 1] == 62) { return None }
+                if (!hasLast) { return None }                       // 前面没有返回类型
+                if (KEYWORDS.contains(lastIdent)) { return None }    // return / if / …
+                if (KEYWORDS.contains(tok)) { return None }
+                if (!looksLikeName(tok)) { return None }
+                return Some(tok)
+            }
+            lastIdent = tok
+            hasLast = true
+        } else {
+            i += 1
+        }
+    }
+    return None
+}
+
 /// C 系函数定义的词法识别：C 没有函数关键字（`type name(args) {`），
 /// 关键词表扫不到 ⇒ 同文件函数互调全被幻觉调用误报（实测 conc-demo）。
-/// 形态判定：剥注释后行匹配「返回类型 name(」，即 `标识符 标识符(` 开头
-/// 且首个标识符非关键字、行含 `{`（定义而非声明）。声明（以 ; 结尾）不算。
+/// 形态判定：剥注释后行匹配「返回类型 name(」且行含 `{`（定义而非声明）。
+/// 声明（以 ; 结尾）不算。
 func cStyleFuncName(line: String, lang: String): Option<String> {
     // ⚠️ M8：C 形态兜底只对 **C 系**语言生效。原来它对全部 9 种语言都生效，
     // 而形态判定只看「首 token 非关键字 + 次 token 后跟 ( + 行含 {」——
@@ -124,27 +183,46 @@ func cStyleFuncName(line: String, lang: String): Option<String> {
     // 把真实的调用点掩盖掉，让 unresolved 检测漏报。
     // 与 extract.cj 自己写的那句「误截的后果是少一个符号，不会编一个」相反。
     // 只有 C/C++（无函数关键字）需要这个兜底；其余语言有 func/fn/def/...
-    if (lang != "c") {
-        return None
-    }
-    let toks = tokenize(line)
-    if (toks.size < 2) { return None }
-    // 首 token = 返回类型（非关键字）；次 token = 函数名；其后必须紧跟 "("
-    // tokenize 丢掉了括号——用原始字节判定 name 后是否紧跟 '('
-    let name = toks[1]
-    if (KEYWORDS.contains(toks[0])) { return None }
-    if (KEYWORDS.contains(name)) { return None }
-    if (!looksLikeName(name)) { return None }
-    // 原始行找 "name("（name 后紧跟 '('，允许空白）
-    let idx = findSubstr(line, name + "(")
-    if (idx.isNone()) {
-        // name ( 带空格
-        if (findSubstr(line, name + " (").isNone()) { return None }
-    }
+    // ⚠️ 函数名的取法见 cFuncNameBeforeParen（限定名/限定返回类型都在那里处理）
     // 必须是定义（含 {）而非声明（; 结尾）
     if (!line.contains("{")) { return None }
-    // static inline 等多词返回类型：把首关键词剥掉再看一次
-    return Some(name)
+    match (cFuncNameBeforeParen(line, lang)) {
+        case Some(name) => return Some(name)
+        case None => return None
+    }
+}
+
+/// C 系函数**签名**（行内**没有** `{`）的词法识别 —— 支撑 **Allman 风格**
+/// （`{` 另起一行）。
+///
+/// ⚠ 为什么必须有它：cStyleFuncName 要求**行内含 `{`**，那是 K&R 风格
+///   （`Type name(args) {`）。而 Allman 风格把 `{` 放到**下一行**：
+///   ```
+///   Type name(args)
+///   {
+///   ```
+///   ⇒ 签名行里没有 `{` ⇒ cStyleFuncName 判否 ⇒ **自由函数整个不进符号表**。
+///   ⇒ 后果不是「少一个符号」那么简单：置信度的 unresolved-call（幻觉调用）
+///   判据是「调用了全仓没有定义的名字」⇒ **对真实自由函数的调用被误报成幻觉 API**。
+///   ⇒ 实测（deepin 客户端，`src/**/*.cpp` 顶层自由函数 364 个）：**只有 1 个**
+///   是 `{` 同行，其余 **363 个（99.7%）全部漏扫** ⇒ 置信度报告里 295 条
+///   「幻觉调用」是假的（实测 `clipNote` / `runOne` / `defaultToolName`
+///   这些**确实存在**的函数被点名）。
+///
+/// 判定与 cStyleFuncName **同源**（同一个取名函数 cFuncNameBeforeParen ⇒
+/// 两种写法（`{` 同行 / `{` 另起一行）的口径**必须一致**），但：
+///   · **不要求行内含 `{`**（那是下一行的事 —— 由调用方的待定状态定性）；
+///   · **要求行不以 `;` 结尾**（`;` 结尾 = 原型声明，不是定义）。
+///
+/// 返回 Some(name) = 这一行**疑似**函数签名的开头；「是不是定义」由调用方看
+/// 下一行是不是 `{` 来定（见 scanSource 的 pendingCSig 状态）。
+func cStyleFuncSignature(line: String, lang: String): Option<String> {
+    if (lang != "c") { return None }
+    // 行内已有 `{` ⇒ 那是 cStyleFuncName 的同行形态，不走这条
+    if (line.contains("{")) { return None }
+    // 以 `;` 结尾 = 声明（原型），不是定义
+    if (line.trimAscii().endsWith(";")) { return None }
+    return cFuncNameBeforeParen(line, lang)
 }
 
 /// Go **带接收者**的方法声明：`func (r *Rect) Area() float64`。
@@ -678,7 +756,15 @@ func buildDeclTables(): HashMap<String, HashSet<String>> {
     tables["rust"] = ["fn", "struct", "enum", "trait", "impl", "type"]
     tables["java"] = ["class", "interface", "enum"]
     tables["kotlin"] = ["class", "interface", "enum"]
-    tables["c"] = ["struct", "enum", "typedef"]
+    // ⚠ C 系的表**必须含 `class`**：C++ 的类声明 `class Foo {` 用的就是
+    //   这个词，而 C++ 的 .h/.cpp 与 C 共用这张表（detectLang 把 .c/.h/.cc/.cpp/.hpp
+    //   一律判成 "c"）⇒ 漏了 `class` ⇒ **C++ 的类整个不进符号表**。
+    //   实测（deepin 客户端 479 个 C++ 符号）：加之前 `class` 计数为 **0**，
+    //   而 `struct` 有 165 个 —— 客户端的 `TrayController` / `PanelWindow` /
+    //   `AppModel` 这些类在图谱里**根本不存在**。
+    //   ⚠ 代价：C 源码里 `class` 会从普通标识符变成声明词 —— C 里没有
+    //   名为 `class` 的标识符（C++ 里它是保留字），实际无碰撞。
+    tables["c"] = ["struct", "enum", "typedef", "class"]
     let m = HashMap<String, HashSet<String>>()
     for ((lang, words) in tables) {
         let s = HashSet<String>()
@@ -958,6 +1044,10 @@ public func scanSource(content: String, lang: String): SourceFacts {
     // 花括号与声明样文本天然出局。
     let braceKinds = ArrayList<Option<SymKind>>()
     let noKind: Option<SymKind> = None
+    // ⚠ C 系函数签名的**待定状态**（Allman 风格：签名行与 `{` 行不在同一行）。
+    //   Some((函数名, 签名行号, 括号余额))；余额 > 0 = 签名还没写完（跨行）。
+    //   ⚠ 跨行迭代器（lazySplit）没有前瞻 ⇒ 用「上一行留状态、这一行定性」实现。
+    var pendingCSig: Option<(String, Int64, Int64)> = None
     var lineNo: Int64 = 0
     var lineCount: Int64 = 0
     var strState: Int64 = 0
@@ -993,6 +1083,40 @@ public func scanSource(content: String, lang: String): SourceFacts {
         // 符号判定用**记账前**的栈：本行 `{` 尚未 push，栈顶正是声明所属的外层体
         let enclosing = enclosingDecl(braceKinds)
         var declKind: Option<SymKind> = None
+        // ── 待定的 C 系函数签名（Allman 风格）────────────────────────────
+        //   上一行疑似「返回类型 name(」的签名头 ⇒ 这一行若是 `{` 就是函数定义。
+        //   ⚠ 空行/纯注释行在上面的 `continue` 就走了 ⇒ 签名与 `{` 之间夹着
+        //   注释行也不影响判定（待定状态跨空行保留）。
+        if (pendingCSig.isSome()) {
+            let (pname, pline, pbal) = pendingCSig.getOrThrow()
+            let tt = t.trimAscii()
+            if (tt.startsWith("{")) {
+                // 定义成立（不论签名此前写完没有）
+                if (admitDecl(Func, enclosing)) {
+                    symbols.add(SymDecl(Func, pname, pline))
+                }
+                // ⚠ 花括号记账要记成 Func —— 与「`{` 同行」形态保持一致，
+                //   否则函数体里的嵌套声明会被误当成外层声明（栈污染）
+                declKind = Some(Func)
+                pendingCSig = None
+            } else if (pbal > 0) {
+                // 签名跨行：这一行是续行
+                let nbal = pbal + countByte(t, 40) - countByte(t, 41)
+                if (nbal <= 0) {
+                    // 签名收口：以 `;` 结尾 ⇒ 那是**声明**（原型）⇒ 丢弃
+                    if (tt.endsWith(";")) {
+                        pendingCSig = None
+                    } else {
+                        pendingCSig = Some((pname, pline, 0))
+                    }
+                } else {
+                    pendingCSig = Some((pname, pline, nbal))
+                }
+            } else {
+                // 签名已写完但下一行不是 `{` ⇒ 不是定义（丢弃待定状态）
+                pendingCSig = None
+            }
+        }
         // ⚠️ G1：go 带接收者的方法声明必须在 scanDeclLine 之前特判——
         // tokenize 会把接收者变量名顶到 tokens[1]，通用路径抽出的「函数名」
         // 是接收者而不是方法（见 goReceiverMethodName 的注释）。命中即取真名、
@@ -1025,7 +1149,14 @@ public func scanSource(content: String, lang: String): SourceFacts {
                                         symbols.add(SymDecl(Func, name, lineNo))
                                     }
                                     declKind = Some(Func)
-                                case None => ()
+                                case None =>
+                                    // Allman 风格：签名行没有 `{` ⇒ 留待下一行定性
+                                    match (cStyleFuncSignature(t, lang)) {
+                                        case Some(name) =>
+                                            pendingCSig = Some((name, lineNo,
+                                                countByte(t, 40) - countByte(t, 41)))
+                                        case None => ()
+                                    }
                             }
                     }
                 case None =>
@@ -1041,7 +1172,14 @@ public func scanSource(content: String, lang: String): SourceFacts {
                         symbols.add(SymDecl(Func, name, lineNo))
                     }
                     declKind = Some(Func)
-                case None => ()
+                case None =>
+                    // Allman 风格：签名行没有 `{` ⇒ 留待下一行定性
+                    match (cStyleFuncSignature(t, lang)) {
+                        case Some(name) =>
+                            pendingCSig = Some((name, lineNo,
+                                countByte(t, 40) - countByte(t, 41)))
+                        case None => ()
+                    }
             }
         }
         // (b) 记账（在符号判定之后：栈顶在判定时必须是外层体）

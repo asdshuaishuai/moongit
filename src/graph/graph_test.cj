@@ -971,6 +971,115 @@ func testCStyleFuncNameIsRestrictedToC(): Unit {
     @Assert(hasAdd)
 }
 
+// MARK: - 批 Z：C++ 图谱符号提取补全（Allman 风格 / 限定名 / 接收者豁免）
+
+/// 批 Z ①：**Allman 风格**（`{` 另起一行）的 C++ 自由函数必须进符号表。
+///
+/// ⚠ 修前：cStyleFuncName 要求**行内含 `{`**（那是 K&R 形态）⇒ Allman 的签名行
+///   判否 ⇒ 自由函数整个不进符号表 ⇒ 置信度的「幻觉调用」把**对真实自由函数的
+///   调用**误报成「全仓无此定义」（实测 deepin 客户端 364 个顶层自由函数漏 363 个）。
+@Test
+func testAllmanStyleCFunctionIsScanned(): Unit {
+    let src = "int add(int a, int b)\n" +
+        "{\n" +
+        "    return a + b;\n" +
+        "}\n" +
+        "\n" +
+        "int sub(int a, int b)\n" +
+        "{\n" +
+        "    return a - b;\n" +
+        "}\n"
+    let facts = scanSource(src, "c")
+    var hasAdd = false
+    var hasSub = false
+    for (sym in facts.symbols) {
+        // ⚠ 行号必须是**签名行**（不是 `{` 那一行）—— 符号行号是函数体的起点
+        if (sym.name == "add") { hasAdd = true; @Assert(sym.line == 1) }
+        if (sym.name == "sub") { hasSub = true; @Assert(sym.line == 6) }
+    }
+    @Assert(hasAdd)
+    @Assert(hasSub)
+}
+
+/// 批 Z ①的**负向防线**：原型声明（`;` 结尾）不许进符号表 —— 它不是定义。
+@Test
+func testAllmanStyleCPrototypeIsNotScanned(): Unit {
+    let src = "int add(int a, int b);\n" +
+        "\n" +
+        "int add(int a, int b)\n" +
+        "{\n" +
+        "    return a + b;\n" +
+        "}\n"
+    let facts = scanSource(src, "c")
+    var addCount = 0
+    for (sym in facts.symbols) {
+        if (sym.name == "add") { addCount += 1 }
+    }
+    @Assert(addCount == 1)   // 只认定义，不认原型
+}
+
+/// 批 Z ②：**限定名**的函数定义必须进符号表。
+///
+/// ⚠ 修前：函数名按「第二个 token」取 ⇒ `bool AgentCore::runEngineRaw(…)` 的
+///   第二个 token 是 `AgentCore`（类名）⇒ 真函数名判丢。
+///   ⇒ 后果是**函数体边界算错**（边界 = 本符号行 → 下一个符号行）⇒ 中间那些
+///   没被认出的定义不占边界 ⇒ 前一个函数的「函数体」把中间函数的 if/for 全吞
+///   ⇒ **凭空多出高复杂度告警**（实测 `clipNote`（2 行）被判「圈复杂度 13」）。
+@Test
+func testQualifiedCFunctionNameIsScanned(): Unit {
+    let src = "bool AgentCore::runEngineRaw(const QStringList &args)\n" +
+        "{\n" +
+        "    return true;\n" +
+        "}\n" +
+        "\n" +
+        "EngineCli::EngineResult classifyResult(QProcess *proc)\n" +
+        "{\n" +
+        "    return EngineCli::EngineResult();\n" +
+        "}\n"
+    let facts = scanSource(src, "c")
+    var hasRun = false
+    var hasClassify = false
+    for (sym in facts.symbols) {
+        if (sym.name == "runEngineRaw") { hasRun = true }
+        if (sym.name == "classifyResult") { hasClassify = true }
+    }
+    @Assert(hasRun)
+    @Assert(hasClassify)
+}
+
+/// 批 Z ③：`::` 与 `->` 限定的调用**不许**被报成「幻觉调用」。
+///
+/// ⚠ 修前：接收者豁免只认 `.`（且**差一位**——读的是前一个 token 的标记），
+///   `->` 与 `::` 两种隔断**根本没有豁免规则** ⇒ `QDateTime::currentMSecsSinceEpoch()`
+///   这类标准库静态调用被逐条指控（实测 deepin 客户端 106 条）。
+///   负向防线：真幻觉名（**裸**自由调用）仍要报。
+@Test
+func testQualifiedAndArrowCallsAreNotUnresolved(): Unit {
+    let root = "${tempDirPath()}/moongit-scan-qualified-${getpid()}-${nowMillis()}"
+    ensureDir(root)
+    let src = "int main(void) {\n" +
+        "    QDateTime::currentMSecsSinceEpoch();\n" +
+        "    obj->doThing();\n" +
+        "    ghostCall();\n" +
+        "    return 0;\n" +
+        "}\n"
+    writeFileAtomic("${root}/demo.cpp", src)
+    try {
+        let g = buildGraph(root)
+        var sawGhost = false
+        for ((_, name, _) in g.unresolvedCalls) {
+            // 限定/箭头调用豁免
+            @Assert(name != "currentMSecsSinceEpoch")
+            @Assert(name != "doThing")
+            // 负向防线：真幻觉名照报
+            if (name == "ghostCall") { sawGhost = true }
+        }
+        @Assert(sawGhost)
+    } finally {
+        removePathIfExists(root)
+    }
+}
+
 // MARK: - 审查回归（audit-2026-10-09）：置信度渲染层
 
 /// M5：渲染层原先**零测试**。三个出口（text/json/llmPrompt）里最容易烂掉的是

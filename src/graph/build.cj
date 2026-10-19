@@ -591,10 +591,13 @@ public func buildGraphProbed(root: String): (CodeGraph, SourceProbe) {
                 // 未解析调用（幻觉 API）检测的逐文件缓存
                 let seenUnresolved = HashSet<String>()
                 // 每行 token 缓冲（复用容量；带前导点标志，供接收者调用豁免；
-                // 带前导 < 标志，供泛型实参豁免——archRef 判据⑤）
+                // 带前导 < 标志，供泛型实参豁免——archRef 判据⑤；
+                // 带 `->` 与 `::` 隔断标志，供箭头/限定调用豁免）
                 let tokBuf = ArrayList<String>()
                 let dotBuf = ArrayList<Bool>()
                 let ltBuf = ArrayList<Bool>()
+                let arrowBuf = ArrayList<Bool>()
+                let scopeBuf = ArrayList<Bool>()
                 for (line in text.lazySplit("\n")) {
                     lineNo += 1
                     // 注释与字符串内的标识符都不算引用（与 scanSource 同一套）
@@ -626,12 +629,21 @@ public func buildGraphProbed(root: String): (CodeGraph, SourceProbe) {
                     tokBuf.clear()
                     dotBuf.clear()
                     ltBuf.clear()
+                    arrowBuf.clear()
+                    scopeBuf.clear()
                     parenBuf.clear()
                     let lb = t.toArray()
                     let ln2 = Int64(lb.size)
                     var i2: Int64 = 0
                     var prevDot = false
                     var prevLt = false
+                    // ⚠ 接收者/限定调用的三种隔断形态（豁免口径见下面那处判定）：
+                    //   `.`  obj.m(   ·  `->`  obj->m(   ·  `::`  Scope::m(
+                    //   判据用**紧邻的前一个字节**（不跳空白）：`a -> b(` 少写空格时
+                    //   不算箭头调用（保守：宁可多报一条，也不放过真幻觉）。
+                    var prevArrow = false
+                    var prevScope = false
+                    var prevByte: UInt8 = 0
                     while (i2 < ln2) {
                         let b = lb[i2]
                         if (isIdentByte(b)) {
@@ -640,12 +652,20 @@ public func buildGraphProbed(root: String): (CodeGraph, SourceProbe) {
                             tokBuf.add(fromUtf8Lossy(lb[st..i2]))
                             dotBuf.add(prevDot)
                             ltBuf.add(prevLt)
+                            arrowBuf.add(prevArrow)
+                            scopeBuf.add(prevScope)
                             parenBuf.add(i2 < ln2 && lb[i2] == 40)   // '('
                             prevDot = false
                             prevLt = false
+                            prevArrow = false
+                            prevScope = false
+                            prevByte = lb[i2 - 1]
                         } else {
                             prevDot = (b == 46)   // '.'
-                            prevLt = (b == 60)   // '<'
+                            prevLt = (b == 60)    // '<'
+                            prevArrow = (b == 62 && prevByte == 45)   // '>' 紧跟在 '-' 后
+                            prevScope = (b == 58 && prevByte == 58)   // ':' 紧跟在 ':' 后
+                            prevByte = b
                             i2 += 1
                         }
                     }
@@ -653,8 +673,15 @@ public func buildGraphProbed(root: String): (CodeGraph, SourceProbe) {
                     while (ti < Int64(tokBuf.size)) {
                         let tok = tokBuf[ti]
                         let isCall = parenBuf[ti]
-                        let prevDotTok = if (ti > 0) { dotBuf[ti - 1] } else { false }
-                        if (isCall && !prevDotTok && !isBuiltinName(tok)
+                        // ⚠⚠ **读当前 token 自己的隔断标记**（不是前一个 token 的）。
+                        //   原实现写的是 `dotBuf[ti - 1]` ⇒ 差一位 ⇒ 注释里承诺的
+                        //   「接收者调用（a.b()）豁免」**对最常见的一层成员调用不生效**：
+                        //   `a.b(` 的 "b" 去看 "a" 的标记（a 前面没有点）⇒ 被当自由调用指控。
+                        //   只有链式的 `a.b.c(` 恰好命中 ⇒ 掩盖了这条 bug。
+                        //   ⇒ 实测（deepin 客户端）：仅此一处就让 41 条 `obj.m(` 被误报成
+                        //   「幻觉调用」（连同 `->` 与 `::` 两种形态共 106 条）。
+                        let isReceiver = dotBuf[ti] || arrowBuf[ti] || scopeBuf[ti]
+                        if (isCall && !isReceiver && !isBuiltinName(tok)
                             && !KEYWORDS.contains(tok)
                             && defFiles.get(tok).isNone()) {
                             let ukey = f.relPath + "|" + tok
