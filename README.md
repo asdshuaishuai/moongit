@@ -308,6 +308,29 @@ scripts/      install.sh / moongit.sh / build-minimal-sdk.sh / package-release.s
   （留最重的依赖），并在每个视图里**恒发** `edgesDropped`（0 = 完整）—— 截断会披露，不会静默；
   常规仓库（≤560 边/视图）`edgesDropped` 全为 0，不受影响。
 
+## 发版（GitHub Releases）
+
+**打 tag 即发版**：`.github/workflows/release.yml` 监听 `v*` tag，**并行**构建
+macOS arm64 与 Linux x64 两个平台的 `moongit-<tag>-<平台>.tar.gz`，再由 release job
+把两个资产挂到同一条 release 上。资产名带版本号（`moongit-v0.2.0-linux-x64.tar.gz`）。
+
+- **客户端怎么取**：deepin 客户端的引擎下载链（`logic/EngineDownload`）走
+  GitHub Releases「最新版本」API，按**平台后缀**挑资产（`linux-x64` / `darwin-arm64`），
+  **不认死版本号** ⇒ 发了新 tag，客户端下一次检查就能拿到新引擎。
+  mac 侧曾用固定 URL `releases/latest/download/moongit-darwin-arm64.tar.gz`
+  （**无版本号**）⇒ 与实际资产名 `moongit-v0.1.0-darwin-arm64.tar.gz` 对不上 ⇒ 404。
+  ⇒ **mac 侧要改成和 deepin 同一套「查 API + 按平台挑资产」**（已知待修）。
+- **从哪条分支发**：⚠ **从 `dev` 发**（不是 `main`）。`main` 落后 `dev` 49 个提交
+  （代码图谱 × 置信度热力图重做 + SQLite 图库/置信度库那批）⇒ 从 `main` 发的包
+  **比客户端本机装的还旧**，客户端下载完反而降级。
+  ⇒ 判据：**发布出去的引擎必须 ≥ 客户端当前使用的引擎**。
+  （本条是 2026-10-20 自行拍板的：发版属「可逆的公开发布」，按协作规约第 2 条
+  直接定，不停下来提问；理由与影响面记在这里。）
+- **版本号是单一真相源**：`src/util/version.cj` 的 `ENGINE_VERSION` 是代码侧唯一出处；
+  `cjpm.toml` 的 `version` 字段没法引用代码常量，由**测试**钉死两处同值
+  （改一处忘另一处，测试立刻红）。CLI `version` 输出与 MCP `server.version`
+  都取同一个常量。
+
 <!-- deepgit:begin progress -->
 ## 项目进度
 
