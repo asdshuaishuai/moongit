@@ -3525,3 +3525,99 @@ func testMcpGraphToolFaceReceipts(): Unit {
         removePathIfExists(base)
     }
 }
+
+// MARK: - 版本号单一真相源（引擎侧）
+
+/// 版本串必须只有**一个**出处：`src/util/version.cj` 的常量。
+///
+/// ⚠️ 为什么：版本原来散在三处（cjpm.toml / CLI `version` 输出 / MCP server.version），
+///   改一处忘一处 ⇒ 用户看到的版本与实际能力对不上。
+/// ⚠️ cjpm.toml 那一处**没法**引用代码（Cangjie 无编译期常量注入），
+///   所以「两处同值」由**本测试**钉死。
+@Test
+func testEngineVersionIsSingleSourced(): Unit {
+    // —— cjpm.toml 的 version / cjc-version 必须与常量同值 ——
+    let toml = readFileTextChecked("cjpm.toml").getOrThrow()
+    var versionLine = ""
+    var cjcLine = ""
+    for (line in toml.split("\n")) {
+        let t = line.trimAscii()
+        if (t.startsWith("version = ")) {
+            versionLine = t
+        }
+        if (t.startsWith("cjc-version = ")) {
+            cjcLine = t
+        }
+    }
+    @Assert(versionLine == "version = \"" + ENGINE_VERSION + "\"")
+    @Assert(cjcLine == "cjc-version = \"" + CANGJIE_SDK_VERSION + "\"")
+
+    // —— 源码里不许再有写死的版本字面量（改一处忘一处的复发点）——
+    let cliSrc = readFileTextChecked("src/cli/cli.cj").getOrThrow()
+    @Assert(cliSrc.contains("ENGINE_VERSION"))
+    @Assert(cliSrc.contains("CANGJIE_SDK_VERSION"))
+    @Assert(!cliSrc.contains("\"" + ENGINE_VERSION + "\""))
+    let mcpSrc = readFileTextChecked("src/cli/mcp.cj").getOrThrow()
+    @Assert(mcpSrc.contains("ENGINE_VERSION"))
+    @Assert(!mcpSrc.contains("\"" + ENGINE_VERSION + "\""))
+}
+
+/// MCP `initialize` 回包里的 server.version 必须等于**同一个**常量
+/// （不是「某个看起来对的版本串」）。
+@Test
+func testMcpInitializeReportsEngineVersion(): Unit {
+    let req = Json.obj()
+    Json.set(req, "jsonrpc", Json.of("2.0"))
+    Json.set(req, "id", Json.of(1))
+    Json.set(req, "method", Json.of("initialize"))
+    let r = mcpHandle(req).getOrThrow()
+    let result = Json.getOr(r, "result")
+    let server = Json.getOr(result, "serverInfo")
+    @Assert(Json.strAt(server, "version", "") == ENGINE_VERSION)
+}
+
+// MARK: - 旧名别名的**机器可读**废弃标记
+
+/// 旧名别名（`codegraph_*` 中 patch 两工具除外）必须带**机器可读**的废弃标记：
+/// `deprecated: true` + `replacedBy: "<继任工具名>"`。
+///
+/// ⚠️ 为什么：描述里那句「（旧名别名，将移除）」只有**人**看得见；
+///   客户端/宿主要「别再推荐这个工具」必须有机器可读字段。
+/// ⚠️ 标记**不改变行为**：别名仍可用（既有测试钉住）。
+/// ⚠️ `replacedBy` 指向的工具**必须真的在清单里**（拼错名字的标记等于没标记）。
+@Test
+func testAliasToolsCarryMachineReadableDeprecation(): Unit {
+    let aliases = ["codegraph_overview", "codegraph_tree", "codegraph_symbol",
+                   "codegraph_impact", "codegraph_arch", "codegraph_confidence"]
+    // patch 两工具**不是**别名：它们没有新面对位物，不该被标废弃
+    let notAliases = ["codegraph_patch_confidence", "codegraph_patch_merge"]
+
+    for (list in [mcpToolList(), agentToolsManifest()]) {
+        let tools = Json.arrAt(list, "tools")
+        let names = HashSet<String>()
+        for (t in tools) {
+            names.add(Json.strAt(t, "name", ""))
+        }
+        for (t in tools) {
+            let n = Json.strAt(t, "name", "")
+            if (aliases.contains(n)) {
+                @Assert(Json.has(t, "deprecated"))
+                match (Json.getOr(t, "deprecated")) {
+                    case JBool(b) => @Assert(b)
+                    case _ => @Assert(false)
+                }
+                let rep = Json.strAt(t, "replacedBy", "")
+                @Assert(!rep.isEmpty())                 // 必须说出继任者
+                @Assert(names.contains(rep))            // 继任者必须真的在清单里
+                @Assert(!rep.startsWith("codegraph_"))  // 继任者不能是另一个别名
+            } else {
+                @Assert(!Json.has(t, "deprecated"))     // 非别名不许带标记
+                @Assert(!Json.has(t, "replacedBy"))
+            }
+        }
+        // patch 两工具仍在清单里（没被误标废弃）
+        for (n in notAliases) {
+            @Assert(names.contains(n))
+        }
+    }
+}

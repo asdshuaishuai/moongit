@@ -587,6 +587,23 @@ public func agentToolsManifest(): JsonValue {
         arr.add(t)
     }
 
+    /// 旧名别名的清单条目（**机器可读**的废弃标记）。
+    ///
+    /// ⚠️ 为什么要有这个：描述里那句「（旧名别名，将移除）」只有**人**看得见；
+    ///   客户端/宿主要「别再推荐这个工具」就得有**机器可读**的字段
+    ///   ⇒ `deprecated: true` + `replacedBy: "<新工具名>"`。
+    /// ⚠️ **行为不变**：别名仍走各自原有的 handler（已配好的客户端不断）——
+    ///   标记只影响「推荐谁」，不影响「还能不能用」。
+    func addToolDeprecated(name: String, desc: String, params: String, replacedBy: String) {
+        let t = Json.obj()
+        Json.set(t, "name", Json.of(name))
+        Json.set(t, "description", Json.of(desc))
+        Json.set(t, "params", Json.of(params))
+        Json.set(t, "deprecated", Json.of(true))
+        Json.set(t, "replacedBy", Json.of(replacedBy))
+        arr.add(t)
+    }
+
     addTool("get_group_context", "获取整个项目群的总览上下文（活跃度/改动/分支/待合入）", "")
     addTool("get_project_context", "获取单个项目的深度上下文（分支进度/脉搏/日志/里程碑）。params: name", "name")
     addTool("get_project_docs", "读取项目内 README/AGENTS/CLAUDE 原文。params: name", "name")
@@ -609,14 +626,14 @@ public func agentToolsManifest(): JsonValue {
     addTool("confidence_query", "置信度快照查询：只读持久化 confidence.json 绝不重算（缺席报错，提示先 confidence_gen）；过滤 file/symbol/kind/weight/top；回执恒带快照元信息。params: name, file, symbol, kind, weight, top", "name,file,symbol,kind,weight,top")
     addTool("render", "渲染交付物：持久化 payload → 单文件交互 HTML（落盘，回执带路径与复用/新绘判定，不带 HTML 全文）。params: name, target(arch|index), confidence, force", "name,target,confidence,force")
     // ── 改名期兼容：旧 codegraph_*（patch 两工具除外）保留为别名，将移除 ──
-    addTool("codegraph_overview", "代码图谱概览（文件/符号/引用边统计）（旧名别名，将移除——新面用 index_overview / index_gen）。params: name", "name")
-    addTool("codegraph_tree", "索引关系树 / 全量图 JSON（文件+import边+引用边）（旧名别名，将移除——新面用 index_gen / index_query）。params: name", "name")
-    addTool("codegraph_symbol", "符号定位：定义处 + 词法引用（旧名别名，将移除——新面用 index_query）。params: name, symbol", "name,symbol")
-    addTool("codegraph_impact", "影响面：改这个符号会波及哪些文件与符号（词法文件级粒度）（旧名别名，将移除）。params: name, symbol", "name,symbol")
-    addTool("codegraph_arch", "技术架构图：模块分层依赖（Canvas 交互 HTML / mermaid / dot / json）（旧名别名，将移除——新面用 arch_gen / render）。params: name, format", "name,format")
+    addToolDeprecated("codegraph_overview", "代码图谱概览（文件/符号/引用边统计）（旧名别名，将移除——新面用 index_overview / index_gen）。params: name", "name", "index_overview")
+    addToolDeprecated("codegraph_tree", "索引关系树 / 全量图 JSON（文件+import边+引用边）（旧名别名，将移除——新面用 index_gen / index_query）。params: name", "name", "index_query")
+    addToolDeprecated("codegraph_symbol", "符号定位：定义处 + 词法引用（旧名别名，将移除——新面用 index_query）。params: name, symbol", "name,symbol", "index_query")
+    addToolDeprecated("codegraph_impact", "影响面：改这个符号会波及哪些文件与符号（词法文件级粒度）（旧名别名，将移除）。params: name, symbol", "name,symbol", "index_query")
+    addToolDeprecated("codegraph_arch", "技术架构图：模块分层依赖（Canvas 交互 HTML / mermaid / dot / json）（旧名别名，将移除——新面用 arch_gen / render）。params: name, format", "name,format", "arch_gen")
     addTool("codegraph_patch_confidence", "补丁级置信度 Layer 1：S1..S10 信号 + uncertain 待办清单（配合 skill 做 Layer 2 复核）。params: name, patch_path", "name,patch_path")
     addTool("codegraph_patch_merge", "补丁级置信度 Layer 3：合并 algorithm+agent 输出。params: algorithm_json, agent_json", "algorithm_json,agent_json")
-    addTool("codegraph_confidence", "代码置信度报告：结构性疑点（孤儿/占位/吞错/魔法数/重复体）。被动能力，仅显式调用时分析（旧名别名，将移除——新面用 confidence_gen / confidence_query）。params: name, format(json|text|llm)", "name,format")
+    addToolDeprecated("codegraph_confidence", "代码置信度报告：结构性疑点（孤儿/占位/吞错/魔法数/重复体）。被动能力，仅显式调用时分析（旧名别名，将移除——新面用 confidence_gen / confidence_query）。params: name, format(json|text|llm)", "name,format", "confidence_gen")
 
     let o = Json.obj()
     Json.set(o, "tools", JArr(arr))
