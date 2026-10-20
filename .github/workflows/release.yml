@@ -4,8 +4,23 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发的 tag（如 v0.2.0）；留空则用触发源的名字'
+        required: false
+        default: ''
+
+# ⚠⚠ 必须显式给 **contents: write** ——
+#   仓库的默认 GITHUB_TOKEN 权限可能是 read-only ⇒ softprops/action-gh-release
+#   建 release 时被 API 拒 **403**（实测 run 39354029077：两个构建 job 全绿，
+#   就挂在「Create Release」上，3 次重试全是 403）。
+permissions:
+  contents: write
 
 env:
+  # 发哪个 tag —— 手动触发时取 inputs.tag，tag 推送时取 ref_name。
+  # ⚠ 手动触发**不写** tag 名会把 release 建在**分支**上（错的）⇒ 必须显式传。
+  TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
   # 仓颉 SDK 版本（与引擎 cjpm.toml 的 cjc-version 一致）
   CJ_VERSION: '1.0.5'
   CJ_NSID: '142267'
@@ -25,6 +40,9 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+        with:
+          # ⚠ 手动触发时默认 checkout **分支** ⇒ 打的包不是 tag 对应的代码 ⇒ 显式按 tag checkout
+          ref: ${{ env.TAG_NAME }}
       - name: Install Cangjie SDK
         run: |
           set -euo pipefail
@@ -53,7 +71,7 @@ jobs:
           #   · 裸二进制离开构建机就 Library not loaded（runtime 没跟过去）；
           #   · 根部必须有 `moongit` 启动器（注入 cjHeapSize=1gb）——
           #     客户端的安装器按这个布局找可执行文件（tarball 根部的 `moongit`）。
-          sh scripts/package-release.sh "${GITHUB_REF_NAME#v}" darwin-arm64
+          sh scripts/package-release.sh "${TAG_NAME#v}" darwin-arm64
       - uses: actions/upload-artifact@v4
         with:
           name: moongit-darwin-arm64
@@ -63,6 +81,9 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          # ⚠ 手动触发时默认 checkout **分支** ⇒ 打的包不是 tag 对应的代码 ⇒ 显式按 tag checkout
+          ref: ${{ env.TAG_NAME }}
       - name: Install build deps
         run: |
           # ⚠ 引擎用 C 互操作链 libsqlite3 ⇒ 链接期需要 **dev** 包（只有运行时
@@ -91,7 +112,7 @@ jobs:
       - name: Package
         run: |
           # 同 macOS：用引擎自己的打包脚本（自带 runtime + 根部启动器）。
-          sh scripts/package-release.sh "${GITHUB_REF_NAME#v}" linux-x64
+          sh scripts/package-release.sh "${TAG_NAME#v}" linux-x64
       - uses: actions/upload-artifact@v4
         with:
           name: moongit-linux-x64
@@ -107,3 +128,6 @@ jobs:
         with:
           files: moongit-*/moongit-*.tar.gz
           generate_release_notes: true
+          # ⚠ 必须显式给 tag_name：手动触发时默认 ref 是**分支**，
+          #   不给就会把 release 建在分支上（tag 指向空、latest 取不到）。
+          tag_name: ${{ env.TAG_NAME }}

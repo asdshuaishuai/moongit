@@ -330,6 +330,15 @@ macOS arm64 与 Linux x64 两个平台的 `moongit-<tag>-<平台>.tar.gz`，再�
   `cjpm.toml` 的 `version` 字段没法引用代码常量，由**测试**钉死两处同值
   （改一处忘另一处，测试立刻红）。CLI `version` 输出与 MCP `server.version`
   都取同一个常量。
+- **重发同一个 tag**（改了 workflow 想重跑，或某个平台构建挂了）：用
+  `workflow_dispatch` **显式填 tag**（如 `v0.2.0`）—— 手动触发时 `github.ref` 是**分支**，
+  不显式指定就会 checkout 到分支的代码、还把 release 建在分支上（tag 指向空，
+  客户端按 `releases/latest` 取不到）。
+- **发版流水线的两个易踩点**（都实测踩过）：
+  ① 仓库默认 `GITHUB_TOKEN` 权限可能是 read-only ⇒ 建 release 会被 API 拒 **403**
+  ⇒ workflow 显式声明 `permissions: contents: write`；
+  ② 产物必须是**自包含**布局（`moongit` 启动器 + `bin/moongit-cli` + `runtime/lib/`），
+  验收口径 = `tar xzf <产物> -C /tmp/x && env -i /tmp/x/moongit --help`（`env -i` 是关键）。
 
 <!-- deepgit:begin progress -->
 ## 项目进度

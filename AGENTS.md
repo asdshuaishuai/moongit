@@ -3212,3 +3212,20 @@ _未检测到标准构建清单，请参考 README。_
 ⇒ 同族的一条：CI 里下载外部依赖（如仓颉 SDK）**必须核校验和** ——
 官网的 objectKey 是**按文件**的，拿错版本会**静默**下到别的版本（实测：拿 1.0.0 的
 objectKey 要 1.0.5 的文件 ⇒ 下到 1.0.0，压缩包照样能解开、编译照样过）。
+
+### 不变量 139 · 发版流水线「建 release」需要显式 `contents: write`；手动触发必须显式指定 tag
+
+2026-10-20 发 v0.2.0 实测（run 39354029077）：SDK 下载修好后，**两个构建 job 全绿**
+（build-linux / build-macos 都打出了产物），只有 `release` job 挂在「Create Release」上，
+**3 次重试全是 403** ⇒ 根因是仓库的默认 `GITHUB_TOKEN` 权限是 **read-only**，
+`softprops/action-gh-release` 调 API 建 release 被拒。
+⇒ 判据（可复用）：workflow 里**创建 release / 推 tag / 写 issue** 这类动作，
+必须显式声明 `permissions: contents: write`；别指望仓库默认权限（它由仓库设置决定，
+workflow 文件里看不到 ⇒ 只能在**别的仓库**上炸出来）。
+
+⇒ 同族的一条：**`workflow_dispatch` 手动触发时，`github.ref` 是分支不是 tag** ——
+不显式处理就会：① `checkout` 到的不是 tag 对应的代码（打的包与 tag 不符）；
+② release 被建在**分支**上（`tag_name` 指向空）⇒ 客户端按 `releases/latest` 取资产时取不到。
+⇒ 做法：`env: TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}`，
+checkout 用 `ref: ${{ env.TAG_NAME }}`，`softprops/action-gh-release` 用 `tag_name: ${{ env.TAG_NAME }}`。
+⇒ 推广：**凡是「按 tag 产出」的东西**，都要问一句「手动触发时它还对吗？」。
