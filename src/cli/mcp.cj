@@ -49,6 +49,20 @@ func mcpTool(name: String, desc: String, schema: JsonValue): JsonValue {
     return t
 }
 
+/// 旧名别名工具的 schema（**机器可读**的废弃标记）。
+///
+/// ⚠️ 为什么要有这个：描述里那句「（旧名别名，将移除）」只有**人**看得见；
+///   宿主/客户端要「别再推荐这个工具」就得有**机器可读**的字段
+///   ⇒ `deprecated: true` + `replacedBy: "<新工具名>"`。
+/// ⚠️ **行为不变**：别名仍走各自原有的 handler（已配好的客户端不断）——
+///   标记只影响「推荐谁」，不影响「还能不能用」。
+func mcpToolDeprecated(name: String, desc: String, schema: JsonValue, replacedBy: String): JsonValue {
+    let t = mcpTool(name, desc, schema)
+    Json.set(t, "deprecated", Json.of(true))
+    Json.set(t, "replacedBy", Json.of(replacedBy))
+    return t
+}
+
 /// MCP 工具全集（与 `moongit tools --json` 同源能力，进程内直连）
 public func mcpToolList(): JsonValue {
     let arr = ArrayList<JsonValue>()
@@ -107,14 +121,14 @@ public func mcpToolList(): JsonValue {
     // ⚠️ 改名期兼容：旧 codegraph_*（patch 两工具除外）保留为**别名**——
     //    执行仍走各自原有的 handler（行为不变，已配好的客户端不断），
     //    描述尾注「（旧名别名，将移除）」提醒模型优先用新工具面。
-    arr.add(mcpTool("codegraph_overview", "代码图谱概览：文件/符号/引用边统计，按语言与符号种类分桶（旧名别名，将移除——新面用 index_overview / index_gen）", mcpSchemaObject([("name", "string", "项目名或 ID")], ["name"])))
-    arr.add(mcpTool("codegraph_tree", "索引关系树：目录→文件→符号（JSON 形态为全量图：文件事实 + import 边 + 引用边）（旧名别名，将移除——新面用 index_gen / index_query）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("depth", "integer", "目录深度，默认 6")], ["name"])))
-    arr.add(mcpTool("codegraph_symbol", "符号定位：定义处 + 词法引用文件（旧名别名，将移除——新面用 index_query）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"])))
-    arr.add(mcpTool("codegraph_impact", "影响面分析：符号定义 + 引用文件 + 受影响符号（词法文件级粒度，非语义调用图）（旧名别名，将移除）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"])))
-    arr.add(mcpTool("codegraph_arch", "技术架构图：模块聚合 + 分层判定（治理信号：分层违规/依赖环）。format=scene 出 moongit-graph-scene v1——主题 token/形状/粒子/hits 点击区/panels 详情面板的交互契约，任何 Canvas2D 移植（浏览器/Swift/Skia）按 docs/graph-scene-schema.md 驱动；html=零依赖单文件交互图；另有 mermaid / dot / json（旧名别名，将移除——新面用 arch_gen / render）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "scene|html|mermaid|dot|json，默认 html")], ["name"])))
+    arr.add(mcpToolDeprecated("codegraph_overview", "代码图谱概览：文件/符号/引用边统计，按语言与符号种类分桶（旧名别名，将移除——新面用 index_overview / index_gen）", mcpSchemaObject([("name", "string", "项目名或 ID")], ["name"]), "index_overview"))
+    arr.add(mcpToolDeprecated("codegraph_tree", "索引关系树：目录→文件→符号（JSON 形态为全量图：文件事实 + import 边 + 引用边）（旧名别名，将移除——新面用 index_gen / index_query）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("depth", "integer", "目录深度，默认 6")], ["name"]), "index_query"))
+    arr.add(mcpToolDeprecated("codegraph_symbol", "符号定位：定义处 + 词法引用文件（旧名别名，将移除——新面用 index_query）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"]), "index_query"))
+    arr.add(mcpToolDeprecated("codegraph_impact", "影响面分析：符号定义 + 引用文件 + 受影响符号（词法文件级粒度，非语义调用图）（旧名别名，将移除）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"]), "index_query"))
+    arr.add(mcpToolDeprecated("codegraph_arch", "技术架构图：模块聚合 + 分层判定（治理信号：分层违规/依赖环）。format=scene 出 moongit-graph-scene v1——主题 token/形状/粒子/hits 点击区/panels 详情面板的交互契约，任何 Canvas2D 移植（浏览器/Swift/Skia）按 docs/graph-scene-schema.md 驱动；html=零依赖单文件交互图；另有 mermaid / dot / json（旧名别名，将移除——新面用 arch_gen / render）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "scene|html|mermaid|dot|json，默认 html")], ["name"]), "arch_gen"))
     arr.add(mcpTool("codegraph_patch_confidence", "补丁级置信度 Layer 1（算法层）：S1..S10 信号 + certain/uncertain 分层。uncertain 是给 Agent 的待办清单（配合 --skill 的任务说明）。name=项目名，patch_path=diff 文件路径", mcpSchemaObject([("name", "string", "项目名或 ID"), ("patch_path", "string", "unified diff 文件路径")], ["name", "patch_path"])))
     arr.add(mcpTool("codegraph_patch_merge", "补丁级置信度 Layer 3（合并器）：algorithm.json + agent.json → final.json。规则：agent resolved ×0.9 / unresolved 计负分 / ambiguous 0.5 / 未处理 deferred 0.5", mcpSchemaObject([("algorithm_json", "string", "Layer 1 输出的 JSON 文本"), ("agent_json", "string", "Layer 2 输出的 JSON 文本")], ["algorithm_json", "agent_json"])))
-    arr.add(mcpTool("codegraph_confidence", "代码置信度：结构性疑点（孤儿/占位/吞错/魔法数/重复体…）的确定性度量。被动能力——只在本工具被显式调用时分析。format=json|text|llm（llm 产出可直接喂模型的逐条复核提示词）（旧名别名，将移除——新面用 confidence_gen / confidence_query）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "json|text|llm，默认 json")], ["name"])))
+    arr.add(mcpToolDeprecated("codegraph_confidence", "代码置信度：结构性疑点（孤儿/占位/吞错/魔法数/重复体…）的确定性度量。被动能力——只在本工具被显式调用时分析。format=json|text|llm（llm 产出可直接喂模型的逐条复核提示词）（旧名别名，将移除——新面用 confidence_gen / confidence_query）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "json|text|llm，默认 json")], ["name"]), "confidence_gen"))
     let o = Json.obj()
     Json.set(o, "tools", JArr(arr))
     return o
@@ -941,7 +955,7 @@ public func mcpHandle(req: JsonValue): Option<JsonValue> {
         case "initialize" =>
             let server = Json.obj()
             Json.set(server, "name", Json.of("moongit"))
-            Json.set(server, "version", Json.of("0.1.0"))
+            Json.set(server, "version", Json.of(ENGINE_VERSION))
             let caps = Json.obj()
             let toolsCap = Json.obj()
             Json.set(toolsCap, "listChanged", Json.of(false))

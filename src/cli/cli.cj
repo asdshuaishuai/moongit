@@ -184,7 +184,7 @@ public func main2(argv: ArrayList<String>): Int64 {
     match (command) {
         case "--help" => printHelp(); return 0
         case "help" => printHelp(); return 0
-        case "version" => printOut("moonGit Engine 0.1.0 (Cangjie 1.0.5 LTS)"); return 0
+        case "version" => printOut("moonGit Engine " + ENGINE_VERSION + " (Cangjie " + CANGJIE_SDK_VERSION + " LTS)"); return 0
         case "list" => return cmdList(rest, ctx)
         case "add" => return cmdAdd(rest, ctx)
         case "remove" => return cmdRemove(rest, ctx)
