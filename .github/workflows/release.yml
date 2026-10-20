@@ -5,6 +5,21 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+env:
+  # 仓颉 SDK 版本（与引擎 cjpm.toml 的 cjc-version 一致）
+  CJ_VERSION: '1.0.5'
+  CJ_NSID: '142267'
+  # ⚠⚠ 仓颉 SDK 的「直链」`/packages/<ver>/<file>` **已失效**：
+  #   它返回 404 页面（HTTP 200 + HTML，1.7KB），tar 必然失败
+  #   —— 本 workflow 之前**从来没跑通过**（v0.1.0 的资产是手工上传的）。
+  # ⇒ 改用官网**实际在用**的下载端点：
+  #   /v1/files/auth/downLoad?nsId=…&fileName=…&objectKey=…
+  # ⚠ objectKey 是**按文件**的：拿别的版本的 objectKey 去要这个文件，会下到**那个版本**
+  #   （实测：拿 1.0.0 的 objectKey 要 1.0.5 的文件 ⇒ 静默下到 1.0.0！）⇒
+  #   下面两个 URL 与 sha256 取自官网下载页的数据（https://cangjie-lang.cn/download/1.0.5）。
+  CJ_SDK_SHA_LINUX_X64: 'BACAD84DF8E0281C5395BAB4C40E481E3EA6CC712EED5C953903B0D561A14562'
+  CJ_SDK_SHA_MAC_AARCH64: 'E07D22584237F065B30A771B7110A87A8931334C40BE3A148090944AE916ED1F'
+
 jobs:
   build-macos:
     runs-on: macos-14
@@ -12,20 +27,33 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Cangjie SDK
         run: |
-          curl -fsSL "https://cangjie-lang.cn/packages/1.0.5/cangjie-sdk-mac-aarch64-1.0.5.tar.gz" -o /tmp/cj.tar.gz
-          mkdir -p $HOME/.local/share/cangjie/1.0.5
-          tar xzf /tmp/cj.tar.gz -C $HOME/.local/share/cangjie/1.0.5 --strip-components=1
-          echo "$HOME/.local/share/cangjie/1.0.5/bin" >> $GITHUB_PATH
-          echo "CANGJIE_HOME=$HOME/.local/share/cangjie/1.0.5" >> $GITHUB_ENV
+          set -euo pipefail
+          curl -fsSL "https://cangjie-lang.cn/v1/files/auth/downLoad?nsId=${CJ_NSID}&fileName=cangjie-sdk-mac-aarch64-${CJ_VERSION}.tar.gz&objectKey=698acea5bd66ae22b62330ae" -o /tmp/cj.tar.gz
+          # ⚠ 校验和必须核：objectKey 拿错会**静默**下到别的版本（见 env 里的说明）
+          echo "${CJ_SDK_SHA_MAC_AARCH64}  /tmp/cj.tar.gz" | shasum -a 256 -c -
+          mkdir -p "$HOME/.local/share/cangjie/${CJ_VERSION}"
+          tar xzf /tmp/cj.tar.gz -C "$HOME/.local/share/cangjie/${CJ_VERSION}" --strip-components=1
+          # 压缩包顶层目录是 `cangjie/`；strip 一层后 SDK 根 = .../1.0.5。
+          # 兜底：万一顶层结构变了，按 envsetup.sh 的实际位置定根（不写死层级）。
+          CJ_HOME="$HOME/.local/share/cangjie/${CJ_VERSION}"
+          if [ ! -f "$CJ_HOME/envsetup.sh" ]; then
+            CJ_HOME="$(dirname "$(find "$HOME/.local/share/cangjie/${CJ_VERSION}" -maxdepth 3 -name envsetup.sh | head -1)")"
+          fi
+          echo "CANGJIE_HOME=$CJ_HOME" >> $GITHUB_ENV
+          echo "$CJ_HOME/bin" >> $GITHUB_PATH
+          echo "$CJ_HOME/tools/bin" >> $GITHUB_PATH
       - name: Build
         run: |
-          source $CANGJIE_HOME/envsetup.sh
+          source "$CANGJIE_HOME/envsetup.sh"
+          cjc -v
           cjpm build
-          cp target/release/bin/moongit moongit-cli
       - name: Package
         run: |
-          chmod +x moongit-cli
-          tar czf moongit-${{ github.ref_name }}-darwin-arm64.tar.gz moongit-cli
+          # ⚠ 用引擎**自己的**打包脚本（不是 tar 一下裸二进制）：
+          #   · 裸二进制离开构建机就 Library not loaded（runtime 没跟过去）；
+          #   · 根部必须有 `moongit` 启动器（注入 cjHeapSize=1gb）——
+          #     客户端的安装器按这个布局找可执行文件（tarball 根部的 `moongit`）。
+          sh scripts/package-release.sh "${GITHUB_REF_NAME#v}" darwin-arm64
       - uses: actions/upload-artifact@v4
         with:
           name: moongit-darwin-arm64
@@ -35,22 +63,35 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+      - name: Install build deps
+        run: |
+          # ⚠ 引擎用 C 互操作链 libsqlite3 ⇒ 链接期需要 **dev** 包（只有运行时
+          #   库时没有 libsqlite3.so，链接直接失败）。
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev
       - name: Install Cangjie SDK
         run: |
-          curl -fsSL "https://cangjie-lang.cn/packages/1.0.5/cangjie-sdk-linux-x64-1.0.5.tar.gz" -o /tmp/cj.tar.gz
-          mkdir -p $HOME/.local/share/cangjie/1.0.5
-          tar xzf /tmp/cj.tar.gz -C $HOME/.local/share/cangjie/1.0.5 --strip-components=1
-          echo "$HOME/.local/share/cangjie/1.0.5/bin" >> $GITHUB_PATH
-          echo "CANGJIE_HOME=$HOME/.local/share/cangjie/1.0.5" >> $GITHUB_ENV
+          set -euo pipefail
+          curl -fsSL "https://cangjie-lang.cn/v1/files/auth/downLoad?nsId=${CJ_NSID}&fileName=cangjie-sdk-linux-x64-${CJ_VERSION}.tar.gz&objectKey=698acf46bd66ae22b62330b0" -o /tmp/cj.tar.gz
+          echo "${CJ_SDK_SHA_LINUX_X64}  /tmp/cj.tar.gz" | sha256sum -c -
+          mkdir -p "$HOME/.local/share/cangjie/${CJ_VERSION}"
+          tar xzf /tmp/cj.tar.gz -C "$HOME/.local/share/cangjie/${CJ_VERSION}" --strip-components=1
+          CJ_HOME="$HOME/.local/share/cangjie/${CJ_VERSION}"
+          if [ ! -f "$CJ_HOME/envsetup.sh" ]; then
+            CJ_HOME="$(dirname "$(find "$HOME/.local/share/cangjie/${CJ_VERSION}" -maxdepth 3 -name envsetup.sh | head -1)")"
+          fi
+          echo "CANGJIE_HOME=$CJ_HOME" >> $GITHUB_ENV
+          echo "$CJ_HOME/bin" >> $GITHUB_PATH
+          echo "$CJ_HOME/tools/bin" >> $GITHUB_PATH
       - name: Build
         run: |
-          source $CANGJIE_HOME/envsetup.sh
+          source "$CANGJIE_HOME/envsetup.sh"
+          cjc -v
           cjpm build
-          cp target/release/bin/moongit moongit-cli
       - name: Package
         run: |
-          chmod +x moongit-cli
-          tar czf moongit-${{ github.ref_name }}-linux-x64.tar.gz moongit-cli
+          # 同 macOS：用引擎自己的打包脚本（自带 runtime + 根部启动器）。
+          sh scripts/package-release.sh "${GITHUB_REF_NAME#v}" linux-x64
       - uses: actions/upload-artifact@v4
         with:
           name: moongit-linux-x64

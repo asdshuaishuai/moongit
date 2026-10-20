@@ -3191,3 +3191,24 @@ _未检测到标准构建清单，请参考 README。_
 - `5764d2b1` feat: AI 出口补齐——MCP codegraph_arch 出 scene 画布契约 + skill 教学包全能力面重写（2026-10-10）
 - `abaf1126` fix: dogfood 实测三连修——引擎对自己的文档不再无能为力（2026-10-10）
 <!-- deepgit:end progress -->
+
+### 不变量 138 · 发布产物的**布局与内容**必须与「收件人的安装器」对齐
+
+2026-10-20 发 v0.2.0 时照出来的：发版 workflow **从来没跑通过**（SDK 直链已失效，
+两个 job 都在装 SDK 那步就红），而 workflow 里的打包步骤**即使跑通也是错的**：
+`tar czf moongit-<tag>-<平台>.tar.gz moongit-cli` —— ① 只有裸二进制，**仓颉 runtime
+没跟过去**（离开构建机就 Library not loaded）；② 根部的可执行文件叫 `moongit-cli`，
+而客户端安装器找的是根部那个 **`moongit`**（启动器）⇒ 装下来「找不到可执行文件」。
+⇒ 正确做法是**用引擎自己的 `scripts/package-release.sh`**：它产出自包含布局
+（`moongit` 启动器 + `bin/moongit-cli` + `runtime/lib/`），且 macOS 侧还做 rpath 治理
+与 ad-hoc 重签。
+
+⇒ 判据（可复用）：**发布前先在收件人的环境里解包跑一次**
+`tar xzf <产物> -C /tmp/x && env -i /tmp/x/moongit --help` ——
+`env -i` 是关键（清空环境变量 ⇒ 暴露「靠构建机绝对路径/环境变量才跑得起来」的包）。
+⇒ 推广：任何「产出给别人用」的制品，验收都应该是**在别人的环境里从零跑起来**，
+不是「在构建机上跑通了」。
+
+⇒ 同族的一条：CI 里下载外部依赖（如仓颉 SDK）**必须核校验和** ——
+官网的 objectKey 是**按文件**的，拿错版本会**静默**下到别的版本（实测：拿 1.0.0 的
+objectKey 要 1.0.5 的文件 ⇒ 下到 1.0.0，压缩包照样能解开、编译照样过）。
