@@ -114,19 +114,55 @@ if [ "$IS_DARWIN" = true ] && [ "${PLATFORM#darwin}" != "$PLATFORM" ]; then
     exit 1
   fi
 else
-  # Linux：ELF 没有 codesign/otool；依赖清单用 ldd 实测，运行期靠启动器的 LD_LIBRARY_PATH。
-  # ⚠️ ldd 缺失必须显式失败（含从 macOS 显式交叉打 linux 包的场景 —— 那里本来就没有 ldd）：
-  # 原来静默跳过整段拷贝，产出一个不含仓颉 runtime 的包且仍打印「✓」——
-  # 与 macOS 侧「找不到依赖就 exit 1」不对称，坏包要到用户机器上才炸（不变量 7/9 同族）。
-  if ! command -v ldd >/dev/null 2>&1; then
-    echo "[错误] linux 平台打包需要 ldd 探测运行时依赖（未找到 ldd）；请在 linux 上打包或先安装 binutils"
+  # Linux：ELF 没有 codesign/otool。
+  # ⚠⚠ **不能靠 ldd 找仓颉库** —— ldd 解析依赖靠的是**运行时的库搜索路径**
+  #   （LD_LIBRARY_PATH / ld.so.conf）：在刚 source 过 envsetup.sh 的 shell 里能找到，
+  #   在「CI 的另一个 step（没 source）」里就**全部 not found**
+  #   ⇒ 旧实现静默产出**不含仓颉 runtime 的坏包**（实测 v0.2.0：CI 产物的
+  #   runtime/lib 是空的，装到用户机器上 exec 报 "not found"，
+  #   而流水线全绿、release 照发、客户端照下载 —— 坏包一路到用户手里才炸）。
+  # ⇒ 两处改法：
+  #   ① 依赖清单用 **readelf -d 的 DT_NEEDED**（读二进制本身，**不依赖运行时环境**）；
+  #   ② 库来源用 **SDK 目录**（权威），找不到就 exit 1（不再静默跳过）。
+  #   ⚠ macOS 分支不受影响（它用 otool -L + find $CJ_HOME/runtime/lib）——
+  #     同一份脚本里两个平台两套依赖探测，正是「同名多处互相顶替」的温床。
+  if ! command -v readelf >/dev/null 2>&1; then
+    echo "[错误] linux 平台打包需要 readelf 探测依赖（未找到）；请安装 binutils"
     exit 1
   fi
-  for dep in $(ldd "$CLI" | awk '$3 ~ /^\// { print $3 }'); do
-    case "$dep" in
-      */libcangjie-*|*/libboundscheck*) cp "$dep" "$STAGE/runtime/lib/" ;;
+  RUNTIME_ROOT="$CJ_HOME/runtime/lib"
+  if [ ! -d "$RUNTIME_ROOT" ]; then
+    echo "[错误] 找不到仓颉 runtime 目录：${RUNTIME_ROOT}"
+    exit 1
+  fi
+  # DT_NEEDED：直接从二进制里读，不看运行时的库搜索路径。
+  NEEDED="$(readelf -d "$CLI" | sed -n 's/.*(NEEDED).*\[\(.*\)\].*/\1/p')"
+  BUNDLED=""
+  MISSING=""
+  for lib in $NEEDED; do
+    # 只有仓颉自己的 runtime 库需要进包；系统库（libc/libm/libsqlite3.so.0…）
+    # 由发行版提供 —— 强行塞一份进包反而可能与用户系统里的版本打架。
+    case "$lib" in
+      libcangjie-*|libboundscheck*) ;;
+      *) continue ;;
     esac
+    SRC_LIB="$(find "$RUNTIME_ROOT" -name "$lib" -type f 2>/dev/null | head -1)"
+    if [ -z "$SRC_LIB" ]; then
+      MISSING="${MISSING} ${lib}"
+      continue
+    fi
+    cp "$SRC_LIB" "$STAGE/runtime/lib/$lib"
+    BUNDLED="${BUNDLED} ${lib}"
   done
+  if [ -n "$MISSING" ]; then
+    echo "[错误] 在 ${RUNTIME_ROOT} 下找不到这些仓颉 runtime 库：${MISSING}"
+    exit 1
+  fi
+  if [ -z "$BUNDLED" ]; then
+    echo "[错误] 一个仓颉 runtime 库都没打进包（产物必然跑不起来）"
+    exit 1
+  fi
+  echo "  捆绑的 runtime：${BUNDLED}"
 fi
 
 # ------------------------------ 根部启动器（cjHeapSize，对齐 moongit.sh / install.sh） ------------------------------
@@ -151,5 +187,20 @@ chmod 755 "$STAGE/moongit"
 tar czf "$OUT" -C "$STAGE" moongit bin runtime
 echo "✓ $OUT"
 echo "  布局：moongit（启动器，注入 cjHeapSize=1gb）/ bin/moongit-cli / runtime/lib/"
-echo "  自验（离开构建机也能跑的判据）："
-echo "    tar xzf ${OUT} -C /tmp/pkgtest && env -i /tmp/pkgtest/moongit --help"
+
+# ------------------------------ 打包后自验（**真的跑**，不是打印口令） ------------------------------
+# ⚠⚠ 原来这里只**打印**自验口令、从不执行 ⇒ 坏包照样「✓」出厂（实测 v0.2.0：
+#   CI 产物缺仓颉 runtime，脚本仍打印「✓」，流水线全绿，坏包一路发布到用户手里）。
+# ⇒ 现在自己解包 + 在**空环境**里跑起来；跑不起来就 exit 1（让流水线红，别发出去）。
+VERIFY_DIR="$(mktemp -d /tmp/moongit-verify.XXXXXX)"
+tar xzf "$OUT" -C "$VERIFY_DIR"
+# ⚠ env -i：清空环境变量 ⇒ 暴露「靠构建机绝对路径/环境变量才跑得起来」的包。
+if ! env -i "$VERIFY_DIR/moongit" --help >/dev/null 2>&1; then
+  echo "[错误] 产物自验失败：解包后在**空环境**里跑不起来"
+  echo "       判据：env -i ${VERIFY_DIR}/moongit --help"
+  echo "       包内容："
+  tar tzf "$OUT" | sed 's/^/         /'
+  exit 1
+fi
+rm -rf "$VERIFY_DIR"
+echo "  ✓ 自验通过：解包后能在空环境里跑起来（runtime 齐全）"

@@ -334,11 +334,17 @@ macOS arm64 与 Linux x64 两个平台的 `moongit-<tag>-<平台>.tar.gz`，再�
   `workflow_dispatch` **显式填 tag**（如 `v0.2.0`）—— 手动触发时 `github.ref` 是**分支**，
   不显式指定就会 checkout 到分支的代码、还把 release 建在分支上（tag 指向空，
   客户端按 `releases/latest` 取不到）。
-- **发版流水线的两个易踩点**（都实测踩过）：
+- **发版流水线的三个易踩点**（都实测踩过）：
   ① 仓库默认 `GITHUB_TOKEN` 权限可能是 read-only ⇒ 建 release 会被 API 拒 **403**
   ⇒ workflow 显式声明 `permissions: contents: write`；
   ② 产物必须是**自包含**布局（`moongit` 启动器 + `bin/moongit-cli` + `runtime/lib/`），
-  验收口径 = `tar xzf <产物> -C /tmp/x && env -i /tmp/x/moongit --help`（`env -i` 是关键）。
+  验收口径 = `tar xzf <产物> -C /tmp/x && env -i /tmp/x/moongit --help`（`env -i` 是关键）；
+  ③ **Linux 打包的依赖探测不能依赖构建环境** —— `ldd` 靠运行时的库搜索路径解析依赖，
+  在 CI 的另一个 step（没 `source envsetup.sh`）里全部 `not found` ⇒ 会**静默**产出
+  没有仓颉 runtime 的坏包，而流水线照样全绿 ⇒ 现在依赖清单改用 `readelf -d` 的
+  `DT_NEEDED`、库来源改用 SDK 目录、找不到就 `exit 1`，且打包后**真的**解包跑一次。
+- ⚠ **v0.2.0 的 Linux 资产是坏包**（`runtime/lib/` 是空的，装下来跑不起来；
+  mac 资产是好的）—— 已在 **v0.2.1** 修好，用 v0.2.1。
 
 <!-- deepgit:begin progress -->
 ## 项目进度

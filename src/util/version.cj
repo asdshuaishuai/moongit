@@ -16,7 +16,7 @@ package moongit.util
 /// 引擎版本号（语义化版本）。
 ///
 /// ⚠ 与 cjpm.toml 的 `version` 字段**必须同值**（测试钉死）。
-public const ENGINE_VERSION: String = "0.2.0"
+public const ENGINE_VERSION: String = "0.2.1"
 
 /// 构建时使用的仓颉 SDK 版本（CLI `version` 输出里那一段）。
 ///

@@ -2,7 +2,7 @@
   cjc-version = "1.0.5"
   name = "moongit"
   description = "moonGit 引擎 — 基于 git 历史的本地项目群进度引擎：记录各分支进度现状，浅/深更新 README 与 AGENTS/CLAUDE 文档"
-  version = "0.2.0"
+  version = "0.2.1"
   target-dir = ""
   output-type = "executable"
   compile-option = ""

@@ -71,6 +71,9 @@ jobs:
           #   · 裸二进制离开构建机就 Library not loaded（runtime 没跟过去）；
           #   · 根部必须有 `moongit` 启动器（注入 cjHeapSize=1gb）——
           #     客户端的安装器按这个布局找可执行文件（tarball 根部的 `moongit`）。
+          # ⚠ 还要 source envsetup.sh：打包脚本靠 CANGJIE_HOME 定位仓颉 runtime
+          #   目录（每个 step 是**独立 shell**，不 source 就没有这个变量）。
+          source "$CANGJIE_HOME/envsetup.sh"
           sh scripts/package-release.sh "${TAG_NAME#v}" darwin-arm64
       - uses: actions/upload-artifact@v4
         with:
@@ -112,6 +115,9 @@ jobs:
       - name: Package
         run: |
           # 同 macOS：用引擎自己的打包脚本（自带 runtime + 根部启动器）。
+          # ⚠ 还要 source envsetup.sh：打包脚本靠 CANGJIE_HOME 定位仓颉 runtime
+          #   目录（每个 step 是**独立 shell**，不 source 就没有这个变量）。
+          source "$CANGJIE_HOME/envsetup.sh"
           sh scripts/package-release.sh "${TAG_NAME#v}" linux-x64
       - uses: actions/upload-artifact@v4
         with:

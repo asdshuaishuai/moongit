@@ -3229,3 +3229,29 @@ workflow 文件里看不到 ⇒ 只能在**别的仓库**上炸出来）。
 ⇒ 做法：`env: TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}`，
 checkout 用 `ref: ${{ env.TAG_NAME }}`，`softprops/action-gh-release` 用 `tag_name: ${{ env.TAG_NAME }}`。
 ⇒ 推广：**凡是「按 tag 产出」的东西**，都要问一句「手动触发时它还对吗？」。
+
+### 不变量 140 · 依赖探测**不得依赖构建环境**；产物打包后必须**真的跑一次**才算数
+
+2026-10-20 发 v0.2.0 后，客户端端到端下载装完**引擎跑不起来**
+（`exec: .../bin/moongit-cli: not found`）。查出来是**坏包**：CI 产物的
+`runtime/lib/` 是**空的**（本地打的同一个包是好的）⇒ 仓颉 runtime 库没进去。
+根因在 `scripts/package-release.sh` 的 Linux 分支：它用 **`ldd`** 找仓颉库 ——
+而 `ldd` 解析依赖靠的是**运行时的库搜索路径**（`LD_LIBRARY_PATH` / `ld.so.conf`）：
+· 本地：同一个 shell 里 `source envsetup.sh` 过 ⇒ `ldd` 找得到 ⇒ 包是好的；
+· CI：**每个 step 是独立 shell**，`Package` 步骤没 source ⇒ `ldd` 全报 `not found`
+  ⇒ 循环里一个库都没拷 ⇒ **静默**产出坏包，且脚本照样打印「✓」、流水线照样全绿、
+  release 照样发出去、客户端照样下载 —— 坏包一路到用户手里才炸。
+
+⇒ 判据（可复用）：
+1. **依赖清单要从二进制自己读**，别用「运行一下看它找得到谁」：
+   Linux 用 `readelf -d` 的 `DT_NEEDED`，mac 用 `otool -L` —— 两者都不看运行时环境。
+2. **库来源用 SDK 目录**（权威），找不到就 `exit 1`；不许「找不到就跳过」。
+3. **打包后必须真的解包跑一次**（`env -i <解包目录>/moongit --help`），跑不通就 `exit 1`。
+   ⚠ 原来脚本只**打印**自验口令、从不执行 ⇒ 等于没有自验。
+4. `env -i` 是关键：清空环境变量，暴露「靠构建机绝对路径/环境变量才跑得起来」的包。
+
+⇒ 元教训（同族第 N 次）：**「静默降级」比「报错」危险得多** ——
+「找不到就跳过」把「缺失」变成了「成功」，而所有下游检查（流水线绿、release 已发、
+客户端已下载）都在给这个假成功背书。
+⇒ 同族的一条：**同一份脚本里两个平台两套依赖探测方式**（mac: otool+find / linux: ldd+glob）
+本身就是个雷 —— 其中一套依赖环境状态，于是只有它坏，且**只在 CI 上坏**（本地永远绿）。
