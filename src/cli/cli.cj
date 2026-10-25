@@ -373,14 +373,10 @@ func cmdGit(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let gitResults = ArrayList<JsonValue>()
     for (p in targets) {
         try {
-            if (op == "status") {
-                // 提交弹窗的数据面：全量条目（XY/文件/kind），失败体现在退出码
-                let e = gitStatusEntries(p.path)
-                Json.set(e, "project", Json.of(p.name))
-                gitResults.add(e)
-                if (!Json.boolAt(e, "ok", true)) { failed = true }
-                continue
-            }
+            // ⚠️ status 不做特殊分支：它与 pull/push/commit 走**同一个**信封
+            // {op, ok, output, project}——条目明细装在 output 字符串里。
+            // 曾在这里单独吐裸状态对象，同一命令两种形状，
+            // 契约检查当场抓住（GitOpResponse 解码 keyNotFound: op）。
             let r = runGitOp(p.path, op, message, paths.toArray())
             if (!r.ok) {
                 // 失败必须体现在退出码上，与是否 --json 无关。

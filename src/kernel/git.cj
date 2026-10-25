@@ -1951,7 +1951,7 @@ public func runGitOp(root: String, op: String, message: String, paths: Array<Str
             let e = gitStatusEntries(root)
             return GitOpResult(op, Json.boolAt(e, "ok", false), Json.pretty(e))
         case "unstash" => return gitOpExec(root, op, ["stash", "pop"])
-        case _ => return GitOpResult(op, false, "未知操作：${op}（支持 pull/push/commit/stash/unstash/fetch）")
+        case _ => return GitOpResult(op, false, "未知操作：${op}（支持 pull/push/commit/status/stash/unstash/fetch）")
     }
 }
 
