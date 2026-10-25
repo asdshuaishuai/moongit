@@ -1813,8 +1813,57 @@ func gitOpExec(root: String, op: String, args: Array<String>): GitOpResult {
 
 /// 面板级 git 操作：pull / push / commit / stash / unstash / fetch。
 /// 刻意不提供 reset/clean 等破坏性操作；commit 需要显式 message。
+/// 提交选文件的数据面：工作区全部条目（XY 状态码 + 路径 + kind），无上限截断。
+/// 与 statusSummary 的差别：① 保留 XY 码并归类 kind（staged/modified/
+/// untracked/conflict）；② 条目不截 30 条——提交弹窗要列全让用户勾选；
+/// ③ `-c core.quotepath=false` 让中文路径原样输出而非八进制转义。
+/// rename 条目（porcelain 尾部 "old -> new"）原样透出，提交侧负责拆两段暂存。
+public func gitStatusEntries(dir: String): JsonValue {
+    let r = gitTry(dir, ["-c", "core.quotepath=false", "status", "--porcelain"])
+    let o = Json.obj()
+    if (!r.ok()) {
+        Json.set(o, "ok", Json.of(false))
+        Json.set(o, "err", Json.of(gitErrorText(r)))
+        Json.set(o, "entries", JArr(ArrayList<JsonValue>()))
+        Json.set(o, "total", Json.of(0))
+        return o
+    }
+    Json.set(o, "ok", Json.of(true))
+    let arr = ArrayList<JsonValue>()
+    var total: Int64 = 0
+    for (line in r.stdout.split("\n")) {
+        if (line.isEmpty()) { continue }
+        let xy = if (line.size >= 2) { line[..2] } else { line }
+        let file = if (line.size > 3) { line[3..].trimAscii() } else { "" }
+        if (file.isEmpty()) { continue }
+        total += 1
+        let e = Json.obj()
+        Json.set(e, "xy", Json.of(xy))
+        Json.set(e, "file", Json.of(file))
+        var kind = "modified"
+        if (xy == "??") {
+            kind = "untracked"
+        } else if (xy == "DD" || xy == "AU" || xy == "UD" || xy == "UA" || xy == "DU" || xy == "AA" || xy == "UU") {
+            kind = "conflict"
+        } else if (xy.size >= 2 && xy[0..1] != " " && xy[1..2] == " ") {
+            kind = "staged"
+        }
+        Json.set(e, "kind", Json.of(kind))
+        arr.add(e)
+    }
+    Json.set(o, "entries", JArr(arr))
+    Json.set(o, "total", Json.of(total))
+    Json.set(o, "ok", Json.of(true))
+    return o
+}
+
+/// 历史签名（全量提交 add -A）。选文件提交走带 paths 的重载。
 public func runGitOp(root: String, op: String, message: String): GitOpResult {
-    let inside = gitTry(root, ["rev-parse", "--is-inside-work-tree"])
+    return runGitOp(root, op, message, [])
+}
+
+/// 选文件提交：paths 非空 = 只暂存勾选的路径。
+public func runGitOp(root: String, op: String, message: String, paths: Array<String>): GitOpResult {    let inside = gitTry(root, ["rev-parse", "--is-inside-work-tree"])
     if (!inside.ok()) {
         return GitOpResult(op, false, "不是 git 仓库：${root}")
     }
@@ -1846,23 +1895,82 @@ public func runGitOp(root: String, op: String, message: String): GitOpResult {
             if (message.isBlank()) {
                 return GitOpResult(op, false, "需要提交信息（--message）")
             }
-            let add = gitTry(root, ["add", "-A"])
+            // 提交范围：无 paths = add -A（全部改动，历史行为）；
+            // 有 paths = 只暂存勾选的路径（选文件提交，GUI 提交弹窗消费）。
+            // rename 条目的 porcelain 尾部是 "old -> new"——新旧两侧都试暂存。
+            // ⚠️ 不能无脑 add 两侧：git mv 之后的**已暂存** rename，旧路径
+            // 既不在工作区也不在索引，`git add -- old new` 直接
+            // fatal: pathspec 'old' did not match any files（实测 rc=128）。
+            // 它的删除已随 mv 暂存，跳过即可；未暂存的工作区 rename 则
+            // 旧路径仍在索引里，必须 add 旧路径才能把删除暂存进去。
+            // 判据：路径存在于工作区，或仍被索引跟踪（ls-files 非空）。
+            var addArgs = ArrayList<String>()
+            addArgs.add("add")
+            if (paths.isEmpty()) {
+                addArgs.add("-A")
+            } else {
+                addArgs.add("--")
+                for (p in paths) {
+                    var sides: Array<String>
+                    if (p.contains(" -> ")) {
+                        sides = p.split(" -> ")
+                    } else {
+                        sides = [p]
+                    }
+                    for (raw in sides) {
+                        let part = raw.trimAscii()
+                        if (part.isEmpty()) { continue }
+                        if (fileExists(root + "/" + part) || isTrackedInIndex(root, part)) {
+                            addArgs.add(part)
+                        }
+                    }
+                }
+                // 全部被过滤（如只勾了已暂存 rename 的行且两侧都已暂存）：
+                // 没有可 add 的路径就跳过 add，直接提交现有暂存区。
+                if (addArgs.size > 2) {
+                    let add = gitTry(root, addArgs.toArray())
+                    if (!add.ok()) {
+                        return GitOpResult(op, false, ("add 失败\n" + add.stderr).trimAscii())
+                    }
+                }
+                let r0 = gitTry(root, ["-c", "user.name=${gitUserName()}", "-c", "user.email=${gitUserEmail()}", "commit", "-m", message])
+                return gitOpCommitResult(op, r0)
+            }
+            let add = gitTry(root, addArgs.toArray())
             if (!add.ok()) {
                 return GitOpResult(op, false, ("add 失败\n" + add.stderr).trimAscii())
             }
             let r = gitTry(root, ["-c", "user.name=${gitUserName()}", "-c", "user.email=${gitUserEmail()}", "commit", "-m", message])
-            var out = r.stdout
-            if (!r.stderr.isEmpty()) {
-                let sep = if (out.isEmpty()) { "" } else { "\n" }
-                out = out + sep + r.stderr
-            }
-            return GitOpResult(op, r.ok() && !r.timedOut, out.trimAscii())
+            return gitOpCommitResult(op, r)
         case "stash" =>
             let m = if (message.isBlank()) { "moongit stash ${nowIso()}" } else { message }
             return gitOpExec(root, op, ["stash", "push", "-m", m])
+        case "status" =>
+            // 提交选文件的数据面（GUI 提交弹窗消费）：全量条目 JSON 文本。
+            // core.quotepath=false 让中文路径原样输出而非八进制转义。
+            let e = gitStatusEntries(root)
+            return GitOpResult(op, Json.boolAt(e, "ok", false), Json.pretty(e))
         case "unstash" => return gitOpExec(root, op, ["stash", "pop"])
         case _ => return GitOpResult(op, false, "未知操作：${op}（支持 pull/push/commit/stash/unstash/fetch）")
     }
+}
+
+/// commit 结果统一收口：stdout/stderr 拼接 + ok 判定（两条 add 路径共用）。
+func gitOpCommitResult(op: String, r: ExecResult): GitOpResult {
+    var out = r.stdout
+    if (!r.stderr.isEmpty()) {
+        let sep = if (out.isEmpty()) { "" } else { "\n" }
+        out = out + sep + r.stderr
+    }
+    return GitOpResult(op, r.ok() && !r.timedOut, out.trimAscii())
+}
+
+/// 路径能否被 `git add --` 暂存：存在于工作区，或仍被索引跟踪。
+/// 已暂存 rename（git mv 之后）的旧路径两者皆否——add 它会
+/// fatal: pathspec did not match——它的删除已随 mv 暂存，调用方应跳过。
+func isTrackedInIndex(root: String, relPath: String): Bool {
+    let t = gitTry(root, ["ls-files", "--", relPath])
+    return !t.stdout.trimAscii().isEmpty()
 }
 
 /// commit 时的身份兜底：优先全局配置，没有则用占位身份，避免 commit 直接失败
@@ -1905,6 +2013,74 @@ func testRunGitOpCommitAndStash(): Unit {
     @Assert(listStashes(base).size == 0)
     removePathIfExists(base)
 }
+
+/// 选路径提交 + status 条目（GUI 提交弹窗的数据面，用户定稿 2026-10-13）：
+/// ① paths 非空 = 只暂存勾选的路径（未勾选的保持未跟踪）；
+/// ② rename 条目 porcelain 尾部 "old -> new" 原样透出，提交侧拆两段暂存；
+/// ③ core.quotepath=false 让中文路径原样输出（不转八进制转义）；
+/// ④ kind 归类：?? = untracked，冲突码 = conflict。
+@Test
+func testRunGitOpCommitWithPathsAndStatusEntries(): Unit {
+    let base = "/tmp/deepgit-op-paths-${nowMillis()}"
+    ensureDir(base)
+    gitRun(base, ["init", "-b", "main"], false)
+    gitRun(base, ["commit", "--allow-empty", "-q", "-m", "init"], false)
+    writeFileAtomic(base + "/中文说明.txt", "中文")
+    writeFileAtomic(base + "/a.txt", "1")
+    writeFileAtomic(base + "/b.txt", "1")
+    let st = gitStatusEntries(base)
+    @Assert(Json.boolAt(st, "ok", false))
+    @Assert(Json.intAt(st, "total", -1) == 3)
+    var sawCn = false
+    var sawUntracked = false
+    for (e in Json.arrAt(st, "entries")) {
+        if (Json.strAt(e, "file", "") == "中文说明.txt") { sawCn = true }
+        if (Json.strAt(e, "kind", "") == "untracked") { sawUntracked = true }
+    }
+    @Assert(sawCn)
+    @Assert(sawUntracked)
+    // 只提交 a.txt 与中文文件：b.txt 保持未跟踪
+    let c = runGitOp(base, "commit", "feat: partial", ["a.txt", "中文说明.txt"])
+    @Assert(c.ok)
+    let st2 = gitStatusEntries(base)
+    @Assert(Json.intAt(st2, "total", -1) == 1)
+    // rename：**已跟踪**文件的 mv 才会产生 "old -> new" 条目
+    //（rename 检测要求原文件在 HEAD 里——对纯未跟踪文件 git mv 出不来 R 行）
+    let cb = runGitOp(base, "commit", "chore: track b", ["b.txt"])
+    @Assert(cb.ok)
+    gitRun(base, ["mv", "b.txt", "c.txt"], false)
+    let st3 = gitStatusEntries(base)
+    var sawRename = false
+    for (e in Json.arrAt(st3, "entries")) {
+        if (Json.strAt(e, "file", "").contains(" -> ")) { sawRename = true }
+    }
+    @Assert(sawRename)
+    // rename 条目按 " -> " 拆两侧暂存后提交干净。
+    // 这正是 git mv 后的**已暂存** rename：旧路径两侧皆无（工作区/索引），
+    // 引擎必须跳过它只 add 新路径，否则 add -- old new 直接 fatal。
+    let rc = runGitOp(base, "commit", "feat: rename", ["b.txt -> c.txt"])
+    @Assert(rc.ok)
+    let st4 = gitStatusEntries(base)
+    @Assert(Json.intAt(st4, "total", -1) == 0)
+    removePathIfExists(base)
+}
+
+/// 历史行为保持：无 paths = add -A 全量提交（agent git_commit 工具依赖此语义）。
+@Test
+func testRunGitOpCommitAllUnchanged(): Unit {
+    let base = "/tmp/deepgit-op-all-${nowMillis()}"
+    ensureDir(base)
+    gitRun(base, ["init", "-b", "main"], false)
+    gitRun(base, ["commit", "--allow-empty", "-q", "-m", "init"], false)
+    writeFileAtomic(base + "/x.txt", "1")
+    writeFileAtomic(base + "/y.txt", "1")
+    let c = runGitOp(base, "commit", "feat: all")
+    @Assert(c.ok)
+    let st = gitStatusEntries(base)
+    @Assert(Json.intAt(st, "total", -1) == 0)
+    removePathIfExists(base)
+}
+
 
 @Test
 func testRunGitOpUnknownAndPull(): Unit {

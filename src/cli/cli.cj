@@ -232,7 +232,7 @@ let HOOK_KINDS: Array<String> = ["post-commit", "post-merge"]
 let VALUE_FLAGS: Array<String> = [
     "--name", "--depth", "--docs", "--scope", "--branch",
     "--source", "--tag", "--date", "--desc", "--out", "--message", "--budget",
-    "--dir", "--limit", "--note", "--format", "--patch", "--file",
+    "--dir", "--limit", "--note", "--format", "--patch", "--file", "--paths",
     // confidence query 的过滤维度（图能力重设计第二阶段）
     "--symbol", "--kind", "--weight", "--top",
 ]
@@ -256,7 +256,7 @@ let KNOWN_FLAGS: Array<String> = [
     // 带值（与 VALUE_FLAGS 一致）
     "--name", "--depth", "--docs", "--scope", "--branch",
     "--source", "--tag", "--date", "--desc", "--out", "--message", "--budget",
-    "--dir", "--limit", "--note", "--format", "--patch", "--file",
+    "--dir", "--limit", "--note", "--format", "--patch", "--file", "--paths",
     // 布尔
     "--dry-run", "--git-only", "--purge",
     // confidence 专用（被动能力开关）
@@ -336,12 +336,22 @@ func validateValueFlags(args: ArrayList<String>): Unit {
 func cmdGit(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let refs = positionalsOnly(rest, VALUE_FLAGS)
     if (refs.size == 0) {
-        throw DgError.usage(T("Usage: moongit git <pull|push|commit|stash|unstash|fetch> [project] [--message M]", "用法：moongit git <pull|push|commit|stash|unstash|fetch> [项目] [--message M]"))
+        throw DgError.usage(T("Usage: moongit git <pull|push|commit|status|stash|unstash|fetch> [project] [--message M] [--paths a,b]", "用法：moongit git <pull|push|commit|status|stash|unstash|fetch> [项目] [--message M] [--paths 路径1,路径2]"))
     }
     let op = refs[0]
     var message = ""
     match (flagValue(rest, "--message")) {
         case Some(v) => message = v
+        case None => ()
+    }
+    // 选文件提交：逗号分隔的路径列表（GUI 提交弹窗消费）
+    var paths = ArrayList<String>()
+    match (flagValue(rest, "--paths")) {
+        case Some(v) =>
+            for (p in v.split(",")) {
+                let t = p.trimAscii()
+                if (!t.isEmpty()) { paths.add(t) }
+            }
         case None => ()
     }
     // 去掉操作词，resolveTargets 只应看到项目引用
@@ -363,7 +373,15 @@ func cmdGit(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let gitResults = ArrayList<JsonValue>()
     for (p in targets) {
         try {
-            let r = runGitOp(p.path, op, message)
+            if (op == "status") {
+                // 提交弹窗的数据面：全量条目（XY/文件/kind），失败体现在退出码
+                let e = gitStatusEntries(p.path)
+                Json.set(e, "project", Json.of(p.name))
+                gitResults.add(e)
+                if (!Json.boolAt(e, "ok", true)) { failed = true }
+                continue
+            }
+            let r = runGitOp(p.path, op, message, paths.toArray())
             if (!r.ok) {
                 // 失败必须体现在退出码上，与是否 --json 无关。
                 // 原实现在 --json 分支只打印结果、不置 failed，于是
