@@ -79,7 +79,175 @@ public func inferLayer(module: String): Int64 {
     return 4
 }
 
+// MARK: - 职责分层（技术深度：入口/界面/服务/数据/存储/支撑）
+//
+// 【是什么】按**文件名职责词**把每个文件归入技术角色，聚出「职责视图」：
+//   一个单包应用（所有文件在同一个目录模块里）在模块视图里只有一张卡、
+//   零条边——那是一张目录结构图。职责视图回答的是技术架构问题：
+//   入口在哪、界面几个、业务服务几个、数据/存储几层、谁依赖谁、
+//   哪条依赖逆着分层方向走。
+//
+// 【边界，如实说】词法级近似：依据是文件名职责词，不是类型/语义分析。
+//   归错的文件在卡片上看得见（panel 列出该角色全部文件），误归的代价是
+//   「这张图上它站错了泳道」，不是数据损坏。规则表公开、可测试、可解释。
+//
+// 【确定性】纯函数：同路径 ⇒ 同角色。规则按优先级排序，先命中先归。
+
+// 角色常量（泳道序 = 依赖健康方向：入口/界面在上、存储/支撑在下）
+public const ROLE_ENTRY: Int64 = 0
+public const ROLE_UI: Int64 = 1
+public const ROLE_SERVICE: Int64 = 2
+public const ROLE_MODEL: Int64 = 3
+public const ROLE_STORAGE: Int64 = 4
+public const ROLE_SUPPORT: Int64 = 5
+public const ROLE_OTHER: Int64 = 6
+public const ROLE_COUNT: Int64 = 7
+
+public func roleName(role: Int64, en: Bool): String {
+    if (en) {
+        match (role) {
+            case 0 => return "Entry"
+            case 1 => return "Interface"
+            case 2 => return "Service"
+            case 3 => return "Model"
+            case 4 => return "Storage"
+            case 5 => return "Support"
+            case _ => return "Other"
+        }
+    }
+    match (role) {
+        case 0 => return "入口"
+        case 1 => return "界面"
+        case 2 => return "服务"
+        case 3 => return "数据"
+        case 4 => return "存储"
+        case 5 => return "支撑"
+        case _ => return "其他"
+    }
+}
+
+/// 角色的层秩（违规判据用）：入口 4 > 界面 3 > 服务 2 > 数据 1 > 存储/支撑 0。
+/// 其他 = -1：不参与违规判定（与模块层 4 的「坐标系之外」同一纪律）。
+public func roleRank(role: Int64): Int64 {
+    match (role) {
+        case 0 => return 4
+        case 1 => return 3
+        case 2 => return 2
+        case 3 => return 1
+        case 4 => return 0
+        case 5 => return 0
+        case _ => return -1
+    }
+}
+
+/// 职责违规：低秩依赖高秩（数据 → 界面、存储 → 服务即逆流）。
+/// 任一侧为「其他」不判（坐标系之外，同 isLayerViolation 的 M12 教训）。
+public func isRoleViolation(fa: Int64, fb: Int64): Bool {
+    let ra = roleRank(fa)
+    let rb = roleRank(fb)
+    if (ra < 0 || rb < 0) { return false }
+    return ra < rb
+}
+
+func baseNameNoExt(relPath: String): String {
+    let segs = relPath.split("/")
+    let last = segs[segs.size - 1]
+    // 只剥最后一个扩展名：按 '.' 切段重拼（含多段扩展名也只留主名前的部分）
+    let parts = last.split(".")
+    let base = if (parts.size > 1) {
+        var sb = StringBuilder()
+        var i = 0
+        for (p in parts) {
+            if (i >= parts.size - 1) { break }
+            if (i > 0) { sb.append(".") }
+            sb.append(p)
+            i += 1
+        }
+        sb.toString()
+    } else {
+        last
+    }
+    return base.toAsciiLower()
+}
+
+/// 职责词表与判定。**顺序即优先级**：入口 → 界面 → 存储 → 服务 → 数据 → 支撑。
+/// （SettingsSheet 命中界面而不是数据；SessionStore 命中存储而不是服务——
+///  更具体的形态后缀先判。）
+public func fileRole(relPath: String): Int64 {
+    let base = baseNameNoExt(relPath)
+    // ── 入口：语言约定的程序起点 ──
+    if (base == "main" || base == "app" || base == "index"
+        || base.endsWith("appdelegate") || base.endsWith("app")) {
+        return ROLE_ENTRY
+    }
+    // ── 界面：视图/窗口/交互组件后缀 ──
+    let uiWords = ["view", "window", "sheet", "page", "screen", "bar", "menu",
+        "palette", "ruler", "controller", "panel", "card", "tab", "cell",
+        "toast", "dialog", "popover", "sidebar", "toolbar", "hud", "overlay",
+        "canvas", "button", "theme", "style"]
+    for (w in uiWords) {
+        if (base.endsWith(w)) { return ROLE_UI }
+    }
+    // ── 存储：持久化/缓存 ──
+    let storageWords = ["store", "database", "persist", "cache", "realm", "sqlite"]
+    for (w in storageWords) {
+        if (base.contains(w)) { return ROLE_STORAGE }
+    }
+    // ── 服务：业务逻辑/外部通道 ──
+    let serviceWords = ["service", "manager", "engine", "coordinator", "worker",
+        "runner", "client", "provider", "gateway", "fetcher", "scheduler", "queue"]
+    for (w in serviceWords) {
+        if (base.contains(w)) { return ROLE_SERVICE }
+    }
+    // ── 数据：模型/配置/文档 ──
+    let modelWords = ["model", "entity", "dto", "schema", "config", "settings",
+        "preference", "types", "constants", "state", "document", "record",
+        "response", "request", "language"]
+    for (w in modelWords) {
+        if (base.contains(w)) { return ROLE_MODEL }
+    }
+    // ── 支撑：工具/转换/扩展 ──
+    let supportWords = ["util", "helper", "extension", "common", "shared",
+        "format", "highlight", "convert", "wrapper"]
+    for (w in supportWords) {
+        if (base.contains(w)) { return ROLE_SUPPORT }
+    }
+    return ROLE_OTHER
+}
+
+/// 一个技术角色的聚合卡（职责视图的节点，字段与 ArchModule 对齐——
+/// 渲染与 panel 复用同一形状，两套字段必然漂移）。
+public class RoleGroup {
+    public let role: Int64
+    public var files: Int64 = 0
+    public var symbols: Int64 = 0
+    public var lines: Int64 = 0
+    public var langs: ArrayList<String> = ArrayList<String>()
+    /// 该角色的代表文件（按行数降序至多 8 个，panel 展示；空角色不展示）
+    public var topFiles: ArrayList<String> = ArrayList<String>()
+    public var fanIn: Int64 = 0
+    public var fanOut: Int64 = 0
+    public var instability: Int64 = 0
+    public var x: Float64 = 0.0
+    public var y: Float64 = 0.0
+    public var w: Float64 = 0.0
+    public var h: Float64 = 0.0
+
+    public init(role: Int64) {
+        this.role = role
+    }
+}
+
 // MARK: - 聚合
+
+/// 职责构成桶的零值（7 桶，0 占位）。属性默认值不能写字面量块
+///（仓颉把它当 lambda 解析），收进函数。
+func roleMixDefaults(): ArrayList<Int64> {
+    let a = ArrayList<Int64>()
+    var i: Int64 = 0
+    while (i < ROLE_COUNT) { a.add(0); i += 1 }
+    return a
+}
 
 public class ArchModule {
     public let id: String          // 目录名（root 文件 = "(root)"）
@@ -97,6 +265,11 @@ public class ArchModule {
     public var fanIn: Int64 = 0
     public var fanOut: Int64 = 0
     public var instability: Int64 = 0
+    // 职责构成（ROLE_COUNT 桶计数，下标 = 角色）：模块卡上的构成条数据。
+    // 恒发全 7 桶（0 也占位）——消费方按桶画比例，键集不随数据漂移。
+    public var roleMix: ArrayList<Int64> = roleMixDefaults()
+    // 入口文件名（role=入口 的文件 basename，升序）。空 = 该模块没有入口。
+    public var entryFiles: ArrayList<String> = ArrayList<String>()
     // 布局（引擎算好，HTML 只负责画）
     public var x: Float64 = 0.0
     public var y: Float64 = 0.0
@@ -179,13 +352,22 @@ public class ArchData {
     public let cycleEdgeCount: Int64
     public let violationPairs: ArrayList<(String, String)>
     public let cycleModules: ArrayList<String>
+    /// 职责视图：角色聚合卡（空角色也在列表里，files=0——面板按需隐藏）
+    public let roles: ArrayList<RoleGroup>
+    /// 角色间依赖边（文件级边按角色对聚合；不含角色内部边）
+    public let roleEdges: ArrayList<ArchEdge>
+    /// 职责违规边数（低秩依赖高秩，如数据 → 界面）
+    public let roleViolationCount: Int64
 
     public init(modules: ArrayList<ArchModule>, edges: ArrayList<ArchEdge>,
                 totalFiles: Int64, totalSymbols: Int64, totalLines: Int64, truncated: Bool,
                 drilldown: ArrayList<DrillGraph>,
                 violationCount: Int64, cycleEdgeCount: Int64,
                 violationPairs: ArrayList<(String, String)>,
-                cycleModules: ArrayList<String>) {
+                cycleModules: ArrayList<String>,
+                roles: ArrayList<RoleGroup>,
+                roleEdges: ArrayList<ArchEdge>,
+                roleViolationCount: Int64) {
         this.modules = modules
         this.edges = edges
         this.totalFiles = totalFiles
@@ -197,6 +379,9 @@ public class ArchData {
         this.cycleEdgeCount = cycleEdgeCount
         this.violationPairs = violationPairs
         this.cycleModules = cycleModules
+        this.roles = roles
+        this.roleEdges = roleEdges
+        this.roleViolationCount = roleViolationCount
     }
 }
 
@@ -250,12 +435,47 @@ public func buildArch(graph: CodeGraph): ArchData {
                 return m
         }
     }
+    // 职责聚合的中间态（与模块聚合同一趟循环——同一文件只走一遍）
+    let roleFiles = HashMap<String, Int64>()
+    let roleSymbols = HashMap<String, Int64>()
+    let roleLines = HashMap<String, Int64>()
+    let fileListByRole = HashMap<String, ArrayList<(String, Int64)>>()   // role → [(relPath, lines)]
+    let roleOf = HashMap<String, Int64>()                                // relPath → role（边聚合用）
     for (f in graph.files) {
         let m = modOf(moduleOfPath(f.relPath))
         m.files += 1
         m.symbols += Int64(f.symbols.size)
         m.lines += f.lines
         if (!m.langs.contains(f.lang)) { m.langs.add(f.lang) }
+        // 职责
+        let role = fileRole(f.relPath)
+        roleOf[f.relPath] = role
+        let rk = role.toString()
+        match (roleFiles.get(rk)) {
+            case Some(v) => roleFiles[rk] = v + 1
+            case None => roleFiles[rk] = 1
+        }
+        match (roleSymbols.get(rk)) {
+            case Some(v) => roleSymbols[rk] = v + Int64(f.symbols.size)
+            case None => roleSymbols[rk] = Int64(f.symbols.size)
+        }
+        match (roleLines.get(rk)) {
+            case Some(v) => roleLines[rk] = v + f.lines
+            case None => roleLines[rk] = f.lines
+        }
+        match (fileListByRole.get(rk)) {
+            case Some(l) => l.add((f.relPath, f.lines))
+            case None =>
+                let l = ArrayList<(String, Int64)>()
+                l.add((f.relPath, f.lines))
+                fileListByRole[rk] = l
+        }
+        let mi = role
+        m.roleMix[mi] = m.roleMix[mi] + 1
+        if (role == ROLE_ENTRY) {
+            let segs = f.relPath.split("/")
+            m.entryFiles.add(segs[segs.size - 1])
+        }
     }
     // 边：文件级（import + reference）按模块对聚合求和。
     // moduleOfPath 的 split 结果缓存（每条边两端各一次 ⇒ 2E 次 split → 每文件一次）
@@ -270,6 +490,7 @@ public func buildArch(graph: CodeGraph): ArchData {
         }
     }
     let weight = HashMap<String, Int64>()
+    let roleWeight = HashMap<String, (Int64, Int64, Int64)>()
     func bump(a: String, b: String, w: Int64): Unit {
         let da = modAt2(a)
         let db = modAt2(b)
@@ -280,7 +501,38 @@ public func buildArch(graph: CodeGraph): ArchData {
             case None => weight[key] = w
         }
     }
-    for ((from, to) in graph.importEdges) { bump(from, to, 1) }
+    // 角色对聚合（职责视图专用，与模块聚合**分开一个循环**）：
+    // 数据源 = refEdges（引用口径）+ importEdges（显式导入）——不能用
+    // archRefEdges：那是「跨模块才成立」的架构口径，单包应用恒空，
+    // 而职责分层恰恰是为单包应用准备的深度（实测 d2note 首版恒空）。
+    // 去噪：词法引用要求 **≥2 个不同符号**（w>=2）才算角色依赖——
+    // 单符号命中里同名噪音占比最高；显式 import 行无豁免必要（行锚定，
+    // 剥后仍在才算，本身就是强信号）。同角色内部的边不算角色依赖。
+    func roleBump(a: String, b: String, w: Int64, strong: Bool): Unit {
+        if (!strong && w < 2) { return }
+        match (roleOf.get(a)) {
+            case Some(ra) =>
+                match (roleOf.get(b)) {
+                    case Some(rb) =>
+                        if (ra != rb) {
+                            let rk = "${ra}|${rb}"
+                            match (roleWeight.get(rk)) {
+                                case Some(v) => roleWeight[rk] = (ra, rb, v[2] + w)
+                                case None => roleWeight[rk] = (ra, rb, w)
+                            }
+                        }
+                    case None => ()
+                }
+            case None => ()
+        }
+    }
+    for ((from, to) in graph.importEdges) {
+        bump(from, to, 1)
+        roleBump(from, to, 1, true)   // 显式 import = 强信号
+    }
+    for ((from, to, w) in graph.refEdges) {
+        roleBump(from, to, w, false)  // 词法引用：≥2 个符号才算
+    }
     // 架构聚合用 archRefEdges（架构口径），不是 refEdges（引用口径）——
     // 引用口径对架构聚合是满屏假违规：引擎自身 9/9 模块对「全违规」，实测
     // 成因全是同名噪音（doc 注释提及他包符号、strx.cj 每包一份的合法重名、
@@ -400,8 +652,86 @@ public func buildArch(graph: CodeGraph): ArchData {
     }
 
     let drill = buildDrilldown(graph, list)
+
+    // ── 职责视图装配（角色卡 + 角色边 + 治理信号）──
+    let roles = ArrayList<RoleGroup>()
+    var ri: Int64 = 0
+    while (ri < ROLE_COUNT) {
+        let g = RoleGroup(ri)
+        let rk = ri.toString()
+        match (roleFiles.get(rk)) {
+            case Some(v) => g.files = v
+            case None => ()
+        }
+        match (roleSymbols.get(rk)) {
+            case Some(v) => g.symbols = v
+            case None => ()
+        }
+        match (roleLines.get(rk)) {
+            case Some(v) => g.lines = v
+            case None => ()
+        }
+        match (fileListByRole.get(rk)) {
+            case Some(l) =>
+                // 代表文件：行数降序，平局按路径升序（确定性），至多 8 个
+                insertionSortBy(l, { a, b =>
+                    if (a[1] != b[1]) { return a[1] > b[1] }
+                    return a[0] < b[0]
+                })
+                var k = 0
+                for (item in l) {
+                    if (k >= 8) { break }
+                    g.topFiles.add(item[0])
+                    k += 1
+                }
+            case None => ()
+        }
+        roles.add(g)
+        ri += 1
+    }
+    // 角色边：物化 + 全序排定（HashMap 迭代序不可依赖——M11 同一纪律）
+    let rawRolePairs = ArrayList<(Int64, Int64, Int64)>()
+    for ((_, trio) in roleWeight) {
+        rawRolePairs.add(trio)
+    }
+    insertionSortBy(rawRolePairs, { a, b =>
+        if (a[0] != b[0]) { return a[0] < b[0] }
+        if (a[1] != b[1]) { return a[1] < b[1] }
+        return a[2] < b[2]
+    })
+    let roleEdges = ArrayList<ArchEdge>()
+    var roleViolationCount: Int64 = 0
+    let roleFan = HashMap<String, Int64>()
+    for ((ra, rb, w) in rawRolePairs) {
+        let isViol = isRoleViolation(ra, rb)
+        if (isViol) { roleViolationCount += 1 }
+        roleEdges.add(ArchEdge(ra.toString(), rb.toString(), w, isViol, false))
+        match (roleFan.get("out:${ra}")) {
+            case Some(v) => roleFan["out:${ra}"] = v + w
+            case None => roleFan["out:${ra}"] = w
+        }
+        match (roleFan.get("in:${rb}")) {
+            case Some(v) => roleFan["in:${rb}"] = v + w
+            case None => roleFan["in:${rb}"] = w
+        }
+    }
+    for (g in roles) {
+        match (roleFan.get("in:${g.role}")) {
+            case Some(v) => g.fanIn = v
+            case None => ()
+        }
+        match (roleFan.get("out:${g.role}")) {
+            case Some(v) => g.fanOut = v
+            case None => ()
+        }
+        let total = g.fanIn + g.fanOut
+        g.instability = if (total == 0) { 0 } else { (200 * g.fanOut + total) / (2 * total) }
+    }
+    layoutRoles(roles)
+
     return ArchData(list, edges, totalFiles, totalSymbols, totalLines, graph.truncated, drill,
-                    violationCount, cycleEdgeCount, violationPairs, cycleModules)
+                    violationCount, cycleEdgeCount, violationPairs, cycleModules,
+                    roles, roleEdges, roleViolationCount)
 }
 
 // MARK: - 下钻子图（模块 → 文件级）
@@ -666,6 +996,102 @@ public func archLaneRects(data: ArchData, en: Bool): ArrayList<JsonValue> {
 }
 
 
+// MARK: - 职责视图布局（角色泳道：入口/界面在上、存储/支撑在下）
+//
+// 与 layoutArch 同一几何（同一组常量、同一排布式）——两份代码不是漂移：
+// 一个排 ArchModule（模块层泳道），一个排 RoleGroup（角色泳道），数据类型
+// 不同无法共用；几何常量是共享的（编译期同一来源）。
+//
+// 泳道顺序（上→下）= 依赖健康方向：入口(4) 界面(3) 服务(2) 数据(1)
+// 存储(0) 支撑(0) 其他(-1，坐标系之外，压底）。同秩（存储/支撑）按角色 id。
+
+/// 泳道序：角色 id 的绘制顺序（上→下）。确定性：显式列表，不靠排序推。
+func roleLaneOrder(): ArrayList<Int64> {
+    let l = ArrayList<Int64>()
+    l.add(ROLE_ENTRY)
+    l.add(ROLE_UI)
+    l.add(ROLE_SERVICE)
+    l.add(ROLE_MODEL)
+    l.add(ROLE_STORAGE)
+    l.add(ROLE_SUPPORT)
+    l.add(ROLE_OTHER)
+    return l
+}
+
+public func layoutRoles(roles: ArrayList<RoleGroup>): Unit {
+    let order = roleLaneOrder()
+    var maxSlots: Int64 = 1
+    var countByRole = HashMap<Int64, Int64>()
+    for (r in order) {
+        var count: Int64 = 0
+        for (g in roles) { if (g.role == r && g.files > 0) { count += 1 } }
+        if (count > maxSlots) { maxSlots = count }
+        countByRole[r] = count
+    }
+    let laneH = ARCH_CARD_H + ARCH_LANE_PAD_V * 2.0
+    let innerW = Float64(maxSlots) * ARCH_SLOT_W
+    var row: Int64 = 0
+    for (r in order) {
+        var count: Int64 = 0
+        match (countByRole.get(r)) {
+            case Some(c) => count = c
+            case None => ()
+        }
+        if (count > 0) {
+            let members = ArrayList<RoleGroup>()
+            for (g in roles) { if (g.role == r && g.files > 0) { members.add(g) } }
+            let sp = innerW / Float64(members.size)
+            let cardY = ARCH_MARGIN + Float64(row) * (laneH + ARCH_LANE_GAP) + ARCH_LANE_PAD_V
+            var i: Int64 = 0
+            for (g in members) {
+                g.w = ARCH_CARD_W
+                g.h = ARCH_CARD_H
+                g.x = ARCH_MARGIN + ARCH_LANE_LABEL_W + Float64(i) * sp + (sp - ARCH_CARD_W) / 2.0
+                g.y = cardY
+                i += 1
+            }
+            row += 1
+        }
+    }
+}
+
+/// 职责泳道矩形（archJson 的 roleLanes 唯一来源；与 archLaneRects 同式）。
+public func archRoleLaneRects(data: ArchData, en: Bool): ArrayList<JsonValue> {
+    let order = roleLaneOrder()
+    var maxSlots: Int64 = 1
+    var countByRole = HashMap<Int64, Int64>()
+    for (r in order) {
+        var count: Int64 = 0
+        for (g in data.roles) { if (g.role == r && g.files > 0) { count += 1 } }
+        if (count > maxSlots) { maxSlots = count }
+        countByRole[r] = count
+    }
+    let laneH = ARCH_CARD_H + ARCH_LANE_PAD_V * 2.0
+    let laneW = ARCH_LANE_LABEL_W + Float64(maxSlots) * ARCH_SLOT_W
+    let out = ArrayList<JsonValue>()
+    var row: Int64 = 0
+    for (r in order) {
+        var count: Int64 = 0
+        match (countByRole.get(r)) {
+            case Some(c) => count = c
+            case None => ()
+        }
+        if (count > 0) {
+            let o = Json.obj()
+            Json.set(o, "role", Json.of(r))
+            Json.set(o, "name", Json.of(roleName(r, en)))
+            Json.set(o, "x", Json.of(ARCH_MARGIN))
+            Json.set(o, "y", Json.of(ARCH_MARGIN + Float64(row) * (laneH + ARCH_LANE_GAP)))
+            Json.set(o, "w", Json.of(laneW))
+            Json.set(o, "h", Json.of(laneH))
+            Json.set(o, "groups", Json.of(count))
+            out.add(o)
+        }
+        row += 1
+    }
+    return out
+}
+
 // MARK: - JSON
 
 public func archJson(data: ArchData, en: Bool): JsonValue {
@@ -697,6 +1123,12 @@ public func archJson(data: ArchData, en: Bool): JsonValue {
         Json.set(o, "fanOut", Json.of(m.fanOut))
         Json.set(o, "instability", Json.of(m.instability))
         Json.set(o, "layerName", Json.of(layerName(m.layer, en)))
+        // 职责构成（7 桶恒发，0 也占位）：模块卡的构成条数据。空数组 =
+        // 「旧版本没有这个键」，消费方分不出来——恒发纪律同 violation/cycle。
+        let mixArr = ArrayList<JsonValue>()
+        for (c in m.roleMix) { mixArr.add(Json.of(c)) }
+        Json.set(o, "roleMix", JArr(mixArr))
+        Json.set(o, "entryFiles", Json.strArray(m.entryFiles.toArray()))
         Json.set(o, "x", Json.of(m.x))
         Json.set(o, "y", Json.of(m.y))
         Json.set(o, "w", Json.of(m.w))
@@ -784,6 +1216,43 @@ public func archJson(data: ArchData, en: Bool): JsonValue {
     // 泳道矩形（恒发；空仓库给空数组）：分层泳道的几何唯一来源，
     // 驱动按它画淡底泳道与左端层标签，不许从模块坐标反推（那是第二份布局）。
     Json.set(o, "lanes", JArr(archLaneRects(data, en)))
+    // ── 职责视图（技术深度）：角色卡 / 角色泳道 / 角色边 / 职责违规数。
+    // 恒发（空仓库给空数组）——驱动按数据画，缺席键会被读成旧版本。
+    let roleArr = ArrayList<JsonValue>()
+    for (g in data.roles) {
+        if (g.files <= 0) { continue }   // 空角色不进数据（泳道也不画）
+        let ro = Json.obj()
+        // id = 角色号字符串：驱动的 findNode/依赖面板按 id 找节点（与模块 id 同一约定），
+        // 没有 id 的节点，边端点解析全部落空（首测职责边一条都没画出来）。
+        Json.set(ro, "id", Json.of(g.role.toString()))
+        Json.set(ro, "role", Json.of(g.role))
+        Json.set(ro, "name", Json.of(roleName(g.role, en)))
+        Json.set(ro, "files", Json.of(g.files))
+        Json.set(ro, "symbols", Json.of(g.symbols))
+        Json.set(ro, "lines", Json.of(g.lines))
+        Json.set(ro, "fanIn", Json.of(g.fanIn))
+        Json.set(ro, "fanOut", Json.of(g.fanOut))
+        Json.set(ro, "instability", Json.of(g.instability))
+        Json.set(ro, "x", Json.of(g.x))
+        Json.set(ro, "y", Json.of(g.y))
+        Json.set(ro, "w", Json.of(g.w))
+        Json.set(ro, "h", Json.of(g.h))
+        Json.set(ro, "topFiles", Json.strArray(g.topFiles.toArray()))
+        roleArr.add(ro)
+    }
+    Json.set(o, "roles", JArr(roleArr))
+    Json.set(o, "roleLanes", JArr(archRoleLaneRects(data, en)))
+    let reArr = ArrayList<JsonValue>()
+    for (e in data.roleEdges) {
+        let eo = Json.obj()
+        Json.set(eo, "from", Json.of(e.fromId))
+        Json.set(eo, "to", Json.of(e.toId))
+        Json.set(eo, "weight", Json.of(e.weight))
+        Json.set(eo, "violation", Json.of(e.violation))
+        reArr.add(eo)
+    }
+    Json.set(o, "roleEdges", JArr(reArr))
+    Json.set(o, "roleViolations", Json.of(data.roleViolationCount))
     Json.set(o, "warnings", warns)
     Json.set(o, "drilldown", dd)
     Json.set(o, "totalFiles", Json.of(data.totalFiles))
