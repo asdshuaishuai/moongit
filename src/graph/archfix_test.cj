@@ -181,49 +181,9 @@ public func fn${i}(t: Text): Int64 { return 1 }
     }
 }
 
-// MARK: - R4：arch 的截断披露要进 html 与 scene 两个出口
+// MARK: - R4：arch 的截断披露要进 html 出口
 
-/// R4 回归：scene 的 meta 恒发 truncated（false 也发）。原先只有 archJson 有
-/// 这个键，scene 连键都没有 —— 同一事实在两个出口一个说一个不说。
-@Test
-func testArchSceneMetaAlwaysEmitsTruncated(): Unit {
-    let root = writeTree()
-    try {
-        let scene = buildArchScene(buildArch(buildGraph(root)), false)
-        let meta = Json.getOr(scene, "meta")
-        @Assert(Json.has(meta, "truncated"))
-        // fallback 取反：键缺失即红（恒发与值一起钉）；小夹具远不到 4000 上限
-        @Assert(Json.boolAt(meta, "truncated", true) == false)
-    } finally {
-        removeTree(root)
-    }
-}
 
-/// R4 回归（截断态）：真实撞上 GRAPH_MAX_FILES=4000 —— walk 层任何文件都计数
-/// （README.md 亦然），pad 全用 .md：不进 facts（语言识别排除），arch 聚合保持
-/// 轻量，但 truncated 如实置位并一路透传 graph → ArchData → scene meta。
-@Test
-func testArchSceneMetaTruncatedTrueWhenFileCapHit(): Unit {
-    let root = writeTree()
-    try {
-        ensureDir("${root}/zzbulk")
-        var i: Int64 = 0
-        while (i < GRAPH_MAX_FILES) {
-            writeFileAtomic("${root}/zzbulk/pad${i}.md", "pad\n")
-            i += 1
-        }
-        let g = buildGraph(root)
-        @Assert(g.truncated)   // 前提：真触发了文件数上限
-        let arch = buildArch(g)
-        @Assert(arch.truncated)
-        let scene = buildArchScene(arch, false)
-        let meta = Json.getOr(scene, "meta")
-        @Assert(Json.has(meta, "truncated"))
-        @Assert(Json.boolAt(meta, "truncated", false))
-    } finally {
-        removeTree(root)
-    }
-}
 
 /// R4 回归（html 半边）：驱动 JS 必须真的消费 DATA.truncated —— 键在数据里、
 /// 页面从不读它 = 数据显示没算。两种语言都要有消费点（英文模式同一分支）。
@@ -575,20 +535,14 @@ func archHtmlLangPalette(html: String, nth: Int64): HashMap<String, String> {
 }
 
 /// R9 回归（行为半边）：三处产物必须携带同一组语言→色值映射 ——
-/// scene 的 themes.{dark,light}.langs、treehtml 产物内嵌 JSON 的
-/// langThemes.{dark,light}、archhtml 产物驱动 JS 的 PAL langs。
-/// 它们输出形态各异（token JSON / 页面 JSON / JS 字面量），值必须同源。
+/// treehtml 产物内嵌 JSON 的 langThemes.{dark,light}、archhtml 产物
+/// 驱动 JS 的 PAL langs。输出形态各异（页面 JSON / JS 字面量），值必须同源。
 @Test
-func testLangThemePaletteSharedAcrossSceneTreeHtmlAndArchHtml(): Unit {
+func testLangThemePaletteSharedAcrossTreeHtmlAndArchHtml(): Unit {
     let root = writeTree()
     try {
         let g = buildGraph(root)
-        // ① scene 出口
-        let scene = buildArchScene(buildArch(g), false)
-        let themes = Json.getOr(scene, "themes")
-        assertPaletteMatches(paletteMapOf(Json.getOr(Json.getOr(themes, "dark"), "langs")), true)
-        assertPaletteMatches(paletteMapOf(Json.getOr(Json.getOr(themes, "light"), "langs")), false)
-        // ② treehtml 出口：走真实产物，提取内嵌 JSON 再解 langThemes
+        // ① treehtml 出口：走真实产物，提取内嵌 JSON 再解 langThemes
         let html = treeCanvasHtml(g, 0, false, analyzeConfidence(g, false))
         let marker = "window.__CODEGRAPH__ = "
         match (html.indexOf(marker)) {
@@ -1214,54 +1168,6 @@ func testLayoutSwimlaneSameLayerSameYAndInterfaceAboveFoundation(): Unit {
     }
 }
 
-/// R13 回归（scene 半边）：架构级 panel（scene 侧的「模块对象」）恒发治理
-/// 四键；泳道 frame 带 fill token（认识 fills 的驱动画淡底泳道），frame 数
-/// 与 archJson.lanes 条数一致。
-@Test
-func testArchScenePanelsCarryFanKeysAndFramesCarryFill(): Unit {
-    let root = writeTree()
-    try {
-        let arch = buildArch(buildGraph(root))
-        let scene = buildArchScene(arch, false)
-        // ① panels：arch: 前缀的模块对象逐个查四键（默认值取反法）
-        let panels = Json.getOr(scene, "panels")
-        var archPanels: Int64 = 0
-        match (panels) {
-            case JObj(items) =>
-                for ((k, po) in items) {
-                    if (!k.startsWith("arch:")) { continue }
-                    archPanels += 1
-                    @Assert(Json.has(po, "fanIn"))
-                    @Assert(Json.has(po, "fanOut"))
-                    @Assert(Json.has(po, "instability"))
-                    @Assert(Json.has(po, "layerName"))
-                    @Assert(Json.intAt(po, "fanIn", -1) >= 0)
-                    @Assert(Json.intAt(po, "fanOut", -1) >= 0)
-                    @Assert(Json.intAt(po, "instability", 101) <= 100)
-                    @Assert(Json.strAt(po, "layerName", "").size > 0)
-                }
-            case _ => @Assert(false)
-        }
-        @Assert(archPanels == Int64(arch.modules.size))   // 前提：每模块一个 panel
-        // ② frames：每个非空层一个、都带 fill（淡底 token），数与 lanes 一致
-        let j = archJson(arch, false)
-        let laneCount = Int64(Json.arrAt(j, "lanes").size)
-        @Assert(laneCount > 0)
-        let archView = Json.getOr(Json.getOr(scene, "views"), "arch")
-        var frames: Int64 = 0
-        var filledFrames: Int64 = 0
-        for (s in Json.arrAt(archView, "shapes")) {
-            if (Json.strAt(s, "t", "") == "frame") {
-                frames += 1
-                if (Json.strAt(s, "fill", "").size > 0) { filledFrames += 1 }
-            }
-        }
-        @Assert(frames == laneCount)
-        @Assert(filledFrames == laneCount)
-    } finally {
-        removeTree(root)
-    }
-}
 
 /// R13 回归（驱动消费半边）：renderJs 必须真消费新数据——泳道（DATA.lanes）、
 /// 卡片治理信号（fanIn/instability）、顶栏体检（buildHealth/Top3）、图例

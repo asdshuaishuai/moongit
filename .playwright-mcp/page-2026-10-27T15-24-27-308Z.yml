@@ -1,0 +1,26 @@
+- generic [active] [ref=f2e1]:
+  - generic [ref=f2e3]:
+    - generic [ref=f2e4]: 技术架构
+    - generic [ref=f2e5]: moonGit 引擎（仓颉）确定性计算 · 零依赖单文件 · 20 文件 / 325 符号 / 5980 行
+    - generic [ref=f2e6] [cursor=pointer]: 其他 3
+    - textbox "搜索模块…" [ref=f2e7]
+    - button "复位" [ref=f2e8] [cursor=pointer]
+    - button "主题" [ref=f2e9] [cursor=pointer]
+    - generic [ref=f2e10]:
+      - generic [ref=f2e11]:
+        - generic [ref=f2e12]: 架构体检
+        - generic [ref=f2e13]: 3 模块 · 20 文件 · 325 符号 · 5980 行
+      - generic [ref=f2e14]:
+        - generic [ref=f2e15]: 扇入 Top3
+        - generic [ref=f2e16]: (root) 0 · d2note 0 · tools 0
+      - generic [ref=f2e17]:
+        - generic [ref=f2e18]: 扇出 Top3
+        - generic [ref=f2e19]: (root) 0 · d2note 0 · tools 0
+      - generic [ref=f2e20]:
+        - generic [ref=f2e21]: 违规
+        - generic [ref=f2e22]: 无违规
+      - generic [ref=f2e23]:
+        - generic [ref=f2e24]: 环
+        - generic [ref=f2e25]: 无环
+  - generic [ref=f2e26]: 拖拽平移 · 滚轮缩放 · 点击模块看详情
+  - generic [ref=f2e27]: 上=接口层，下=基础层；箭头向下=健康依赖；红色上行=违规；橙=环；不稳定度=出/(入+出) · 未分层模块在最上（不参与违规判定）

@@ -1350,8 +1350,8 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
             if (notAllowed) {
                 let got = if (unknown != "") { unknown } else { "text" }
                 throw DgError.usage(T(
-                    "--format accepts html | mermaid | dot | json | scene (got: ${got})",
-                    "--format 只支持 html | mermaid | dot | json | scene（收到：${got}）"))
+                    "--format accepts html | mermaid | dot | json (got: ${got})",
+                    "--format 只支持 html | mermaid | dot | json（收到：${got}）"))
             }
             var payload = ""
             match (fmtOpt) {
@@ -1359,10 +1359,6 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
                 case Dot => payload = archDot(arch, en)
                 case Json => payload = Json.pretty(archJson(arch, en))
                 case Html => payload = archCanvasHtml(arch, en)
-                case Scene =>
-                    // 场景 JSON（moongit-graph-scene v1）：几何/命中/动画时序的
-                    // 数据层，供任何标准 Canvas2D API 移植实现驱动渲染
-                    payload = Json.pretty(buildArchScene(arch, en))
                 case Text => ()
             }
             match (flagValue(args, "--out")) {
@@ -3097,7 +3093,7 @@ func skillGraphToolNote(name: String): String {
         return "（depth 控制目录深度）"
     }
     if (name == "codegraph_arch") {
-        return "（format=html|mermaid|dot|json|**scene**）"
+        return "（format=html|mermaid|dot|json）"
     }
     if (name == "codegraph_confidence") {
         return "（format=json|text|**llm**——可直接喂给模型的逐条复核提示词）"
@@ -3191,7 +3187,7 @@ func skillMarkdown(): String {
         + skillToolSection())
     ways.add("**CLI**（一次性问答/脚本）：`" + engine + " status --json`、`context [项目] --budget N`、`tools`、"
         + "`journal <项目>`、`dashboard --json`、"
-        + "`graph overview|tree --format html|symbol <名>|impact <名>|arch --format scene|confidence [--llm]|patchconf --patch <diff>`（tree/arch 默认即 Web Canvas 交互图）")
+        + "`graph overview|tree --format html|symbol <名>|impact <名>|arch|confidence [--llm]|patchconf --patch <diff>`（tree/arch 默认即 Web Canvas 交互图）")
     let sb = StringBuilder()
     sb.append(SKILL_FRONTMATTER)
     sb.append("# moonGit — 本地项目群进度与代码引擎（agent 使用指南）\n\n")
@@ -3212,9 +3208,8 @@ func skillMarkdown(): String {
     sb.append("- **提交前补丁体检（三层）**：`git diff > /tmp/p.diff` → codegraph_patch_confidence(name, patch_path) "
         + "拿 S1..S10 信号与 uncertain 清单 → 你逐条裁决（confirm/dismiss/unsure，必须引用代码原文）→ "
         + "codegraph_patch_merge(algorithm_json, agent_json) → final 分数与披露\n")
-    sb.append("- **架构图给客户端/用户**：codegraph_arch(name, format=scene) 出 moongit-graph-scene v1 JSON "
-        + "（主题 token、形状、粒子、hits 点击区、panels 详情面板、逐视图 edgesDropped 截断披露）——"
-        + "任何 Canvas2D 移植（浏览器/Swift/Skia）按 docs/graph-scene-schema.md 驱动；format=html 出零依赖单文件交互图\n\n")
+    sb.append("- **架构图给客户端/用户**：codegraph_arch(name, format=html) 出零依赖单文件交互图\n"
+        + "（关系连线/模块下钻/返回/搜索/明暗主题全内建）——客户端与用户直接渲染该文件，不再另发绘制数据\n\n")
     sb.append("## 红线\n\n")
     sb.append("- git_op 只允许白名单操作（pull/push/commit/stash/unstash/fetch），没有 reset/clean/force-push\n")
     sb.append("- 文档更新只发生 moonGit 托管区域内（引擎保证），用户内容逐字节保留\n")
@@ -3539,7 +3534,7 @@ func printHelp(): Unit {
         printOut("                           patchconf: patch-level confidence (3-layer: --patch analyze / --skill agent / --merge final)")
         printOut("                           confidence: structural confidence report (--llm for the LLM review prompt; --no-ast skips the syntax-tree layer)")
         printOut("                           Code graph: symbol index / relationship tree / impact /")
-        printOut("                           interactive architecture canvas (--format html|mermaid|dot|json|scene)")
+        printOut("                           interactive architecture canvas (--format html|mermaid|dot|json)")
         printOut("  graph db [project] [--out F]  Write the symbol-level index to a single-file SQLite DB (nodes/edges with confidence tiers; query callers/callees via SQL)")
         printOut("  confidence db [project] [--out F]  Write the confidence report to a single-file SQLite DB (findings/dimensions/penalty table)")
         printOut("  arch <gen|update|query> <project>  Architecture index: gen (arch.json, layout included) / update (probe-driven, --force) / query [module] [--violations]")
@@ -3594,7 +3589,7 @@ func printHelp(): Unit {
     printOut("                           patchconf：补丁级置信度三层架构（--patch 分析 / --skill 取 Agent 任务 / --merge 合并终稿）")
     printOut("                           confidence：代码置信度报告（--llm 出 LLM 复核提示词；--no-ast 跳过语法树层）")
     printOut("                           代码图谱：符号索引/关系树/影响面/技术架构图")
-    printOut("                           （arch 用 --format html|mermaid|dot|json|scene；html 为 Canvas 交互图）")
+    printOut("                           （arch 用 --format html|mermaid|dot|json；html 为 Canvas 交互图）")
     printOut("  graph db [项目] [--out F]  符号级索引写入单文件 SQLite（nodes/edges，含 tier 确信度；agent 用 SQL 查 callers/callees）")
     printOut("  confidence db [项目] [--out F]  置信度报告写入单文件 SQLite（findings/dimensions/罚分表）")
     printOut("  arch <gen|update|query> <项目>  架构索引：gen（arch.json，含布局坐标）/ update（探针增量，--force 强制）/ query [模块] [--violations]")

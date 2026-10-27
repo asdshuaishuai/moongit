@@ -255,24 +255,6 @@ case Some(res) =>
         // 幻影字面量：`'》'.length` 恒等于 1，曾被拼成无意义的 "· L1"。
         @Assert(!html.contains("》"))
 
-        // 场景 JSON 的文件级面板：out/in 必须取自真实文件级边 ——
-        // 原实现恒发空数组 = 对驱动谎称「这个文件没有任何依赖」。
-        // （夹具里 flow/update.cj 引用了 util/text.cj ⇒ util/text.cj 有入向依赖）
-        let scene = buildArchScene(arch, false)
-        let fp = Json.getOr(Json.getOr(scene, "panels"), "module:util:util/text.cj")
-        @Assert(Json.arrAt(fp, "in").size > 0 || Json.arrAt(fp, "out").size > 0)
-
-        // scene 每个视图必须**恒发** `edgesDropped`（截断要披露；0 也要发）
-        match (Json.getOr(scene, "views")) {
-            case JObj(vm) =>
-                var viewCount: Int64 = 0
-                for ((_, vv) in vm) {
-                    @Assert(Json.has(vv, "edgesDropped"))
-                    viewCount += 1
-                }
-                @Assert(viewCount > 0)
-            case _ => @Assert(false)
-        }
 
         // i18n：英文模式（cli 按 config.language 传 en=true）下内嵌 JS 不得出现中文 ——
         // 原实现把 MODULEW / ROOTW 硬编码成「外部模块」「架构总览」。
@@ -573,27 +555,6 @@ func testStripCodeFastPathMatchesFullScan(): Unit {
     }
 }
 
-@Test
-func testSceneEdgesCapKeepsHeaviestAndDiscloses(): Unit {
-    // scene 每条边展开成形状+粒子，上万条会 OOM ⇒ 有上限。上限之外**按权重降序**保留
-    // （留最重的依赖），并报出丢弃数（截断必须披露，不能静默）。
-    let e = ArrayList<(String, String, Int64)>()
-    e.add(("a", "b", 1))
-    e.add(("c", "d", 9))
-    e.add(("e", "f", 5))
-    e.add(("g", "h", 9))
-    e.add(("i", "j", 2))
-    let (kept, dropped) = sceneEdges(e, 2)
-    @Assert(Int64(kept.size) == 2)
-    @Assert(dropped == 3)
-    // 权重降序；并列按 from↑
-    @Assert(kept[0][2] == 9 && kept[0][0] == "c")
-    @Assert(kept[1][2] == 9 && kept[1][0] == "g")
-    // 未超限：全留、丢弃 0
-    let (k2, d2) = sceneEdges(e, 10)
-    @Assert(Int64(k2.size) == 5)
-    @Assert(d2 == 0)
-}
 
 
 
@@ -1263,11 +1224,11 @@ func testCanvasSubsetAndGraphFormatParsing(): Unit {
     let broken = ArrayList<String>(CANVAS2D_SUBSET)
     broken.remove(at: 12)
     @Assert(!canvasSubsetCompliant(broken))
-    // 格式解析：六值 + 空串回落默认 + 未知返回 None
-    match (parseGraphFormat("scene", GraphExportFormat.Html)) {
+    // 格式解析：五值 + 空串回落默认 + 未知返回 None（scene 已随原生绘制退役）
+    match (parseGraphFormat("html", GraphExportFormat.Html)) {
         case Some(f) =>
             match (f) {
-                case Scene => ()
+                case Html => ()
                 case _ => @Assert(false)
             }
         case None => @Assert(false)
@@ -1281,7 +1242,7 @@ func testCanvasSubsetAndGraphFormatParsing(): Unit {
         case None => @Assert(false)
     }
     @Assert(parseGraphFormat("svg", GraphExportFormat.Html).isNone())
-    @Assert(graphFormatList(ArrayList<GraphExportFormat>([GraphExportFormat.Html, GraphExportFormat.Scene])) == "html | scene")
+    @Assert(graphFormatList(ArrayList<GraphExportFormat>([GraphExportFormat.Html, GraphExportFormat.Json])) == "html | json")
 }
 
 /// 代码图谱的 Web 导出（与 arch 同纪律：引擎单独跑或被 agent 驱动时
@@ -1648,54 +1609,6 @@ func __lintRefEdgesMaterializationHasATotalOrder(): Unit {
     @Assert(window.contains("a[2] < b[2]"))
 }
 
-/// M11 回归：场景导出必须逐字节一致。
-/// archscene.cj 的文件头原来写着「graph_test 有守护」，而**那条测试不存在**
-/// —— 声明本身就成了掩盖。这条钉住两件事：边序是排序的、meta 的截断披露在。
-@Test
-func testSceneExportIsDeterministic(): Unit {
-    let root = writeTree()
-    try {
-        let g = buildGraph(root)
-        let s1 = Json.pretty(buildArchScene(buildArch(g), false))
-        let s2 = Json.pretty(buildArchScene(buildArch(g), false))
-        @Assert(s1 == s2)
-        // 场景里的 token 必须是 themes 里存在的键（M13：panel 原先不在表里）
-        let j = buildArchScene(buildArch(g), false)
-        let th = Json.getOr(j, "themes")
-        for (themeName in ["dark", "light"]) {
-            let th1 = Json.getOr(th, themeName)
-            for (k in ["bg0", "bg1", "grid", "text", "muted", "border", "arrow", "accent", "panel"]) {
-                @Assert(Json.has(th1, k))
-            }
-        }
-        // 每视图恒发 edgesDropped（截断披露，不变量 33）
-        let views = Json.getOr(j, "views")
-        match (views) {
-            case JObj(items) =>
-                @Assert(items.size > 0)
-                for ((_, viewVal) in items) {
-                    @Assert(Json.has(viewVal, "edgesDropped"))
-                }
-            case _ => @Assert(false)
-        }
-        // chips 必须带独立的 count 数字字段（M14）
-        let metaObj = Json.getOr(j, "meta")
-        let chipsRaw = Json.getOr(metaObj, "chips")
-        let chips = match (chipsRaw) {
-            case JArr(items) => items
-            case _ => ArrayList<JsonValue>()
-        }
-        if (chips.size > 0) {
-            for (c in chips) {
-                @Assert(Json.has(c, "count"))
-                @Assert(Json.has(c, "layer"))
-                @Assert(Json.has(c, "label"))
-            }
-        }
-    } finally {
-        removeTree(root)
-    }
-}
 
 // MARK: - 审查回归（audit-2026-10-11）：图谱核心 G1..G8
 

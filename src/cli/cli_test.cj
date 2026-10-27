@@ -2385,9 +2385,8 @@ func testSkillMarkdownCoversFullCapabilitySurface(): Unit {
     @Assert(md.contains("codegraph_patch_confidence"))
     @Assert(md.contains("codegraph_patch_merge"))
     @Assert(md.contains("Layer 2"))
-    // 画布契约：scene 格式 + schema 文档指针
-    @Assert(md.contains("moongit-graph-scene"))
-    @Assert(md.contains("graph-scene-schema.md"))
+    // 架构图出口：零依赖单文件交互图（scene 契约已随原生绘制退役）
+    @Assert(md.contains("format=html"))
     // 置信度 llm 出口
     @Assert(md.contains("format=llm"))
     // CLI 图谱七件套（patchconf --patch 是三层的入口）

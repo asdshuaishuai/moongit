@@ -125,7 +125,7 @@ public func mcpToolList(): JsonValue {
     arr.add(mcpToolDeprecated("codegraph_tree", "索引关系树：目录→文件→符号（JSON 形态为全量图：文件事实 + import 边 + 引用边）（旧名别名，将移除——新面用 index_gen / index_query）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("depth", "integer", "目录深度，默认 6")], ["name"]), "index_query"))
     arr.add(mcpToolDeprecated("codegraph_symbol", "符号定位：定义处 + 词法引用文件（旧名别名，将移除——新面用 index_query）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"]), "index_query"))
     arr.add(mcpToolDeprecated("codegraph_impact", "影响面分析：符号定义 + 引用文件 + 受影响符号（词法文件级粒度，非语义调用图）（旧名别名，将移除）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"]), "index_query"))
-    arr.add(mcpToolDeprecated("codegraph_arch", "技术架构图：模块聚合 + 分层判定（治理信号：分层违规/依赖环）。format=scene 出 moongit-graph-scene v1——主题 token/形状/粒子/hits 点击区/panels 详情面板的交互契约，任何 Canvas2D 移植（浏览器/Swift/Skia）按 docs/graph-scene-schema.md 驱动；html=零依赖单文件交互图；另有 mermaid / dot / json（旧名别名，将移除——新面用 arch_gen / render）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "scene|html|mermaid|dot|json，默认 html")], ["name"]), "arch_gen"))
+    arr.add(mcpToolDeprecated("codegraph_arch", "技术架构图：模块聚合 + 分层判定（治理信号：分层违规/依赖环）。format=html 出零依赖单文件交互图（关系连线/模块下钻/搜索/主题全内建），客户端与用户直接渲染该文件；另有 mermaid / dot / json（旧名别名，将移除——新面用 arch_gen / render）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "html|mermaid|dot|json，默认 html")], ["name"]), "arch_gen"))
     arr.add(mcpTool("codegraph_patch_confidence", "补丁级置信度 Layer 1（算法层）：S1..S10 信号 + certain/uncertain 分层。uncertain 是给 Agent 的待办清单（配合 --skill 的任务说明）。name=项目名，patch_path=diff 文件路径", mcpSchemaObject([("name", "string", "项目名或 ID"), ("patch_path", "string", "unified diff 文件路径")], ["name", "patch_path"])))
     arr.add(mcpTool("codegraph_patch_merge", "补丁级置信度 Layer 3（合并器）：algorithm.json + agent.json → final.json。规则：agent resolved ×0.9 / unresolved 计负分 / ambiguous 0.5 / 未处理 deferred 0.5", mcpSchemaObject([("algorithm_json", "string", "Layer 1 输出的 JSON 文本"), ("agent_json", "string", "Layer 2 输出的 JSON 文本")], ["algorithm_json", "agent_json"])))
     arr.add(mcpToolDeprecated("codegraph_confidence", "代码置信度：结构性疑点（孤儿/占位/吞错/魔法数/重复体…）的确定性度量。被动能力——只在本工具被显式调用时分析。format=json|text|llm（llm 产出可直接喂模型的逐条复核提示词）（旧名别名，将移除——新面用 confidence_gen / confidence_query）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "json|text|llm，默认 json")], ["name"]), "confidence_gen"))
@@ -410,12 +410,8 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                     mcpOk(Json.pretty(archJson(arch, false)))
                 } else if (format == "html") {
                     mcpOk(archCanvasHtml(arch, false))
-                } else if (format == "scene") {
-                    // moongit-graph-scene v1：给任意 Canvas2D 移植（含
-                    // deepDolphin 的 SwiftUI 驱动）的交互契约出口
-                    mcpOk(Json.pretty(buildArchScene(arch, false)))
                 } else {
-                    mcpErr("format accepts scene | html | mermaid | dot | json (got: ${format})")
+                    mcpErr("format accepts html | mermaid | dot | json (got: ${format})")
                 }
             case "get_project_status" =>
                 let p = mcpRequireProject(getStr("name"))
@@ -2250,7 +2246,7 @@ func testMcpCodegraphArchScene(): Unit {
         let (p, created) = addProject(base, "cg-demo", ArrayList<String>(), "")
         @Assert(created)
 
-        // scene：契约关键字段必须在
+        // html：零依赖单文件交互图（scene 出口已随原生绘制退役）
         let req = Json.obj()
         Json.set(req, "id", Json.of(11))
         Json.set(req, "method", Json.of("tools/call"))
@@ -2258,18 +2254,17 @@ func testMcpCodegraphArchScene(): Unit {
         Json.set(params, "name", Json.of("codegraph_arch"))
         let args = Json.obj()
         Json.set(args, "name", Json.of("cg-demo"))
-        Json.set(args, "format", Json.of("scene"))
+        Json.set(args, "format", Json.of("html"))
         Json.set(params, "arguments", args)
         Json.set(req, "params", params)
         let resp = mcpHandle(req).getOrThrow()
         let result = Json.getOr(resp, "result")
         @Assert(Json.boolAt(result, "isError", true) == false)
         let text = Json.strAt(Json.arrAt(result, "content")[0], "text", "")
-        @Assert(text.contains("moongit-graph"))
-        @Assert(text.contains("nodeTheme"))
-        @Assert(text.contains("edgesDropped"))
+        @Assert(text.contains("<canvas"))
+        @Assert(text.contains("__ARCH__"))
 
-        // 非法 format 报错必须列出 scene（否则宿主不知道新格式存在）
+        // 非法 format 报错必须列出合法集合（宿主据此纠正调用）
         let bad = Json.obj()
         Json.set(bad, "id", Json.of(12))
         Json.set(bad, "method", Json.of("tools/call"))
@@ -2282,7 +2277,7 @@ func testMcpCodegraphArchScene(): Unit {
         Json.set(bad, "params", bparams)
         let bresp = mcpHandle(bad).getOrThrow()
         let btext = Json.strAt(Json.arrAt(Json.getOr(bresp, "result"), "content")[0], "text", "")
-        @Assert(btext.contains("scene"))
+        @Assert(btext.contains("html"))
     } finally {
         exitTestHome()
         removePathIfExists(base)

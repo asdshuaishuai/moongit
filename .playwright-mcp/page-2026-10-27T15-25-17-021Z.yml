@@ -1,0 +1,174 @@
+- generic [ref=f3e2]:
+  - banner [ref=f3e3]:
+    - generic [ref=f3e10]:
+      - heading "AI CODE RELIABILITY" [level=1] [ref=f3e11]
+      - generic [ref=f3e12]: CONFIDENCE GRAPH · moonGit
+    - generic [ref=f3e14]:
+      - generic [ref=f3e15]: D2
+      - generic [ref=f3e16]:
+        - strong [ref=f3e17]: d2note
+        - generic [ref=f3e18]: 20 文件 · 325 符号 ·
+      - generic [ref=f3e19]: 紧凑级
+    - generic [ref=f3e20]:
+      - generic [ref=f3e21]: "38"
+      - generic [ref=f3e23]:
+        - generic [ref=f3e24]: 项目综合置信度
+        - strong [ref=f3e25]: 38 / 100
+    - button "置信度模型 ↗" [ref=f3e26] [cursor=pointer]
+  - generic [ref=f3e27]:
+    - generic [ref=f3e29]:
+      - textbox "搜索模块、文件、符号…" [ref=f3e33]
+      - generic [ref=f3e34]: /
+    - generic [ref=f3e36]:
+      - generic [ref=f3e37]: 关系
+      - combobox [ref=f3e38]:
+        - option "全部关系类型" [selected]
+        - option "调用"
+        - option "词法不确定"
+    - generic [ref=f3e40]:
+      - generic [ref=f3e41]: 置信度 ≥
+      - slider [ref=f3e42]: "0"
+      - generic [ref=f3e43]: "0"
+    - generic [ref=f3e46]:
+      - text: ⌁
+      - generic [ref=f3e47]: 关系驱动 · 分层散点
+    - generic [ref=f3e48]: 3 节点 · 0 关系
+    - button "⌂" [ref=f3e50] [cursor=pointer]
+  - main [ref=f3e51]:
+    - generic [ref=f3e52]:
+      - generic [ref=f3e53]:
+        - generic [ref=f3e54]: GRAPH /
+        - generic [ref=f3e55]: d2note · 项目
+        - generic [ref=f3e56]: 3 模块
+        - generic [ref=f3e57]:
+          - button "⇢ 高亮关系路径" [ref=f3e58] [cursor=pointer]
+          - button "适应画布" [ref=f3e59] [cursor=pointer]
+          - button "✦ 呼吸动态 ON" [pressed] [ref=f3e60] [cursor=pointer]
+      - generic [ref=f3e61]:
+        - generic "代码置信度关系图" [ref=f3e62]
+        - generic:
+          - generic: 层级 PROJECT
+          - generic: 图谱 CODEGRAPH
+        - generic: 关系驱动散点 · 单击选中 · 双击下钻 · 拖动平移 · 滚轮缩放
+        - generic [ref=f3e63]:
+          - generic [ref=f3e64]: CONFIDENCE
+          - generic [ref=f3e65]: 低 0–59
+          - generic [ref=f3e68]: 中 60–79
+          - generic [ref=f3e71]: 高 80–100
+          - generic [ref=f3e75]: 线色 = 来源节点（卡的左色条）· 虚线 = 词法不确定
+        - generic [ref=f3e78]: MINIMAP / CLICK TO PAN
+      - generic [ref=f3e80]:
+        - button "d2note" [ref=f3e82] [cursor=pointer]
+        - generic [ref=f3e83]: / d2note
+    - complementary [ref=f3e84]:
+      - generic [ref=f3e85]:
+        - generic [ref=f3e90]:
+          - generic [ref=f3e91]: 置信度分析报告
+          - generic [ref=f3e92]: PROJECT · project
+        - button "×" [ref=f3e93] [cursor=pointer]
+      - navigation [ref=f3e94]:
+        - button "概览" [ref=f3e95] [cursor=pointer]
+        - button "置信度报告" [ref=f3e96] [cursor=pointer]
+        - button "关系明细" [ref=f3e97] [cursor=pointer]
+        - button "证据" [ref=f3e98] [cursor=pointer]
+        - button "模块汇总" [ref=f3e99] [cursor=pointer]
+        - button "符号" [ref=f3e100] [cursor=pointer]
+      - generic [ref=f3e101]:
+        - generic [ref=f3e102]:
+          - generic [ref=f3e103]:
+            - generic [ref=f3e104]: SCORE
+            - generic [ref=f3e105]: project
+          - generic [ref=f3e106]:
+            - generic [ref=f3e107]:
+              - generic [ref=f3e108]:
+                - generic [ref=f3e109]: 项目综合置信度
+                - generic [ref=f3e110]: 38 / 100
+              - generic [ref=f3e111]: 低置信
+            - generic [ref=f3e114]:
+              - generic [ref=f3e115]: ⚠74 疑点
+              - generic [ref=f3e116]: 罚分 −638
+        - generic [ref=f3e117]:
+          - generic [ref=f3e118]:
+            - generic [ref=f3e119]: SIGNALS
+            - generic [ref=f3e120]: METRICS
+          - generic [ref=f3e121]:
+            - generic [ref=f3e122]:
+              - generic [ref=f3e123]: 疑点
+              - strong [ref=f3e124]: "74"
+              - generic [ref=f3e125]: 罚分 −638
+            - generic [ref=f3e126]:
+              - generic [ref=f3e127]: 关系数
+              - strong [ref=f3e128]: "0"
+              - generic [ref=f3e129]: 关系度 0
+            - generic [ref=f3e130]:
+              - generic [ref=f3e131]: 规模
+              - strong [ref=f3e132]: 20 文件
+              - generic [ref=f3e133]: 325 符号
+            - generic [ref=f3e134]:
+              - generic [ref=f3e135]: 清洁占比
+              - strong [ref=f3e136]: 55%
+              - generic [ref=f3e137]: 清洁占比
+        - generic [ref=f3e138]:
+          - generic [ref=f3e139]:
+            - generic [ref=f3e140]: 疑点维度分布
+            - generic [ref=f3e141]: 0–N
+          - generic [ref=f3e142]:
+            - generic [ref=f3e143]:
+              - generic [ref=f3e144]: 变量
+              - strong [ref=f3e146]: "0"
+            - generic [ref=f3e147]:
+              - generic [ref=f3e148]: 函数
+              - strong [ref=f3e151]: "57"
+            - generic [ref=f3e152]:
+              - generic [ref=f3e153]: 类型
+              - strong [ref=f3e155]: "0"
+            - generic [ref=f3e156]:
+              - generic [ref=f3e157]: 指针
+              - strong [ref=f3e159]: "0"
+            - generic [ref=f3e160]:
+              - generic [ref=f3e161]: 并发
+              - strong [ref=f3e163]: "0"
+            - generic [ref=f3e164]:
+              - generic [ref=f3e165]: 结构
+              - strong [ref=f3e168]: "17"
+        - generic [ref=f3e169]:
+          - generic [ref=f3e170]:
+            - generic [ref=f3e171]: 图谱完整性
+            - generic [ref=f3e172]: DISCLOSURE
+          - generic [ref=f3e173]: 语法树不可用：ast-grep 已运行，但全部 1 个批次失败（规则或环境异常）——已降级为词法级分析；函数粒度信号改由词法路径近似（长度/嵌套/魔法数/空体），吞错与重复体仍缺失同类每文件最多 6 条 / 全量最多 400 条，超出已汇总
+        - generic [ref=f3e174]:
+          - generic [ref=f3e175]:
+            - generic [ref=f3e176]: 下一级节点
+            - generic [ref=f3e177]: 3 ITEMS
+          - generic [ref=f3e178]:
+            - generic [ref=f3e179] [cursor=pointer]:
+              - generic [ref=f3e181]:
+                - strong [ref=f3e182]: (root)
+                - generic [ref=f3e183]: 模块 · ⚠0
+              - generic [ref=f3e184]: "100"
+            - generic [ref=f3e185] [cursor=pointer]:
+              - generic [ref=f3e187]:
+                - strong [ref=f3e188]: d2note
+                - generic [ref=f3e189]: 模块 · ⚠72
+              - generic [ref=f3e190]: "36"
+            - generic [ref=f3e191] [cursor=pointer]:
+              - generic [ref=f3e193]:
+                - strong [ref=f3e194]: tools
+                - generic [ref=f3e195]: 模块 · ⚠2
+              - generic [ref=f3e196]: "55"
+        - button "已下钻至 ↘" [ref=f3e198] [cursor=pointer]
+        - generic [ref=f3e199]:
+          - generic [ref=f3e200]:
+            - generic [ref=f3e201]: 直接关系
+            - generic [ref=f3e202]: INDEXED EDGES
+          - strong [ref=f3e204]: 此节点当前没有登记的显式边
+  - contentinfo [ref=f3e205]:
+    - generic [ref=f3e206]:
+      - generic [ref=f3e207]: ● INDEX v0
+      - generic [ref=f3e208]: 325 个符号已索引
+      - generic [ref=f3e209]: "MODEL: LEX-1"
+      - generic [ref=f3e210]: 渲染于 2026-10-27T23:25:02.503834+08:00
+    - generic [ref=f3e211]:
+      - generic [ref=f3e212]: Canvas renderer
+      - generic [ref=f3e213]: "? 交互说明"
+      - generic [ref=f3e214]: moongit codegraph
