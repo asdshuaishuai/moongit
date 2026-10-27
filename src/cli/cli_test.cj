@@ -3051,6 +3051,53 @@ func testRenderIndexReuseAndRedrawStates(): Unit {
     }
 }
 
+/// render check：**只探测产物存在性**，绝不触发自愈重建——
+/// GUI 仓库面板用它决定「显示打开按钮还是生成按钮」，调用发生在
+/// 每次进详情页，若它会顺手重建 index，等于浏览界面变成分钟级。
+/// 三件事：缺席 → exists=false；render 后 → exists=true；未知种类 → usage。
+@Test
+func testRenderCheckProbesExistenceWithoutHealing(): Unit {
+    let base = "/tmp/deepgit-rchk-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    try {
+        let p = dbCliFixtureProject(base, "rchk-demo")
+        let ctx = CliContext(ArrayList<String>(["render"]))
+        let store = deepgitPath(["store", p.id])
+        let htmlPath = store + "/render/index.html"
+
+        // 缺席：check 不创建任何东西（路径不作数，文件必须不在）
+        @Assert(cmdRender(ArrayList<String>(["check", "index", "rchk-demo"]), ctx) == 0)
+        @Assert(!fileExists(htmlPath))
+        @Assert(cmdRender(ArrayList<String>(["check", "arch", "rchk-demo"]), ctx) == 0)
+        @Assert(!fileExists(store + "/render/arch.html"))
+
+        // 生成后：exists 翻真（check 与产物文件是同一事实的两面）
+        @Assert(cmdIndex(ArrayList<String>(["gen", "rchk-demo"]), ctx) == 0)
+        @Assert(renderIndexCmd(ArrayList<String>(["rchk-demo"]), ctx) == 0)
+        @Assert(cmdRender(ArrayList<String>(["check", "index", "rchk-demo"]), ctx) == 0)
+        @Assert(fileExists(htmlPath))
+
+        // 未知种类：usage（exit 2），不许静默当「不存在」
+        func exitOf(f: () -> Int64): Int64 {
+            var code: Int64 = -1
+            try {
+                let _ = f()
+            } catch (e: DgError) {
+                code = e.exitCode
+            }
+            return code
+        }
+        @Assert(exitOf({ => cmdRender(ArrayList<String>(["check", "svg", "rchk-demo"]), ctx) }) == 2)
+    } finally {
+        exitTestHome()
+        removePathIfExists(base + "/repo")
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
 /// 顶层命名空间形状：gen/update/query 已落地（链路见 testArchPipeline… /
 /// testConfidenceGenQueryLifecycle），这里钉的是**用法面**——
 /// 空参/未知子命令/无意义取值 = usage（exit 2）。

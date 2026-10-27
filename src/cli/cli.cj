@@ -2454,8 +2454,8 @@ func hasPathSuffix(path: String, suffix: String): Bool {
 func cmdRender(rest: ArrayList<String>, ctx: CliContext): Int64 {
     if (rest.size == 0) {
         throw DgError.usage(T(
-            "Usage: moongit render <arch|index> <project> [--confidence] [--force] [--out F]",
-            "用法：moongit render <arch|index> <项目> [--confidence] [--force] [--out 文件]"))
+            "Usage: moongit render <arch|index|check> <project> [--confidence] [--force] [--out F]",
+            "用法：moongit render <arch|index|check> <项目> [--confidence] [--force] [--out 文件]"))
     }
     let args = ArrayList<String>()
     var i: Int64 = 1
@@ -2466,10 +2466,45 @@ func cmdRender(rest: ArrayList<String>, ctx: CliContext): Int64 {
     if (rest[0] == "arch") {
         return renderArchCmd(args, ctx)
     }
+    // check：**只查产物在不在**，不做自愈重建——index 的自愈可能触发整库
+    // 重建（大仓库分钟级），「看一眼按钮该亮哪个」的调用方（GUI 仓库面板）
+    // 付不起这个代价，也绝不该在毫不知情时改库。
+    if (rest[0] == "check") {
+        if (rest.size < 3) {
+            throw DgError.usage(T(
+                "Usage: moongit render check <arch|index> <project> [--json]",
+                "用法：moongit render check <arch|index> <项目> [--json]"))
+        }
+        let kind = rest[1]
+        let sp = StorePaths(requireProject(rest[2]).id)
+        let path: String
+        if (kind == "arch") {
+            path = sp.dir + "/render/arch.html"
+        } else if (kind == "index") {
+            path = sp.dir + "/render/index.html"
+        } else {
+            throw DgError.usage(T(
+                "render check accepts arch | index (got: ${kind})",
+                "render check 只支持 arch | index（收到：${kind}）"))
+        }
+        let exists = fileExists(path)
+        if (ctx.json) {
+            let o = Json.obj()
+            Json.set(o, "ok", Json.of(true))
+            Json.set(o, "artifact", Json.of(kind))
+            Json.set(o, "exists", Json.of(exists))
+            // path 只在存在时给：缺席给空串等于把「没有」说成一个位置
+            Json.set(o, "path", Json.of(if (exists) { path } else { "" }))
+            printOut(Json.pretty(o))
+        } else {
+            printOut(if (exists) { T("exists: ${path}", "已生成：${path}") } else { T("not generated yet", "尚未生成") })
+        }
+        return 0
+    }
     if (rest[0] != "index") {
         throw DgError.usage(T(
-            "Usage: moongit render <arch|index> <project> [--confidence] [--force] [--out F]",
-            "用法：moongit render <arch|index> <项目> [--confidence] [--force] [--out 文件]"))
+            "Usage: moongit render <arch|index|check> <project> [--confidence] [--force] [--out F]",
+            "用法：moongit render <arch|index|check> <项目> [--confidence] [--force] [--out 文件]"))
     }
     return renderIndexCmd(args, ctx)
 }
