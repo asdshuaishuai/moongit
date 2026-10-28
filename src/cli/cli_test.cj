@@ -2377,6 +2377,35 @@ func testEnvLanguageOverrideRejectsUnsupported(): Unit {
 /// skill 教学包必须覆盖全部 AI 能力面：图谱七件套、scene 画布契约、
 /// 置信度 llm 出口、补丁三层工作流、词法级红线。skill 是 agent 的唯一
 /// 入口文档——少写一条能力，agent 就少会一种用法（此前只点名了工具名，
+/// skill graph：LLM 驱动图谱生成的独立 playbook 出口。
+/// 三件事都在：两份交付物的步骤、回执语义（复用/重绘）、render check 的
+/// 「绝不自愈」红线。它是客户端播种 agent 任务的单一来源——缺了任何一件，
+/// LLM 就要靠猜命令形态，猜错一次就是一次全量重建。
+@Test
+func testSkillGraphWorkflowSurface(): Unit {
+    let md = skillGraphWorkflow(false)
+    // 两份交付物各自成章
+    @Assert(md.contains("render/index.html"))
+    @Assert(md.contains("render/arch.html"))
+    // 三个 gen 步骤 + 渲染 + 探测全点名
+    for (cmd in ["index gen", "confidence gen", "arch gen",
+                 "render index", "render arch", "render check"]) {
+        @Assert(md.contains(cmd))
+    }
+    // 回执语义与红线
+    @Assert(md.contains("复用"))
+    @Assert(md.contains("重绘"))
+    @Assert(md.contains("绝不自愈"))
+    // 治理信号要报告（职责视图也在内）
+    @Assert(md.contains("roleViolations"))
+    // 英文表同构（四语言配置里 en 是独立分支）
+    let en = skillGraphWorkflow(true)
+    @Assert(en.contains("render check"))
+    @Assert(en.contains("NEVER heals"))
+    // skillMarkdown 尾部携带同一章节（同一来源，不许手抄第二份）
+    @Assert(skillMarkdown().contains("LLM 驱动的生成工作流"))
+}
+
 /// 没有任何一条「怎么用」的配方）。
 @Test
 func testSkillMarkdownCoversFullCapabilitySurface(): Unit {

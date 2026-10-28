@@ -3210,6 +3210,60 @@ func skillToolSection(): String {
     return "工具（${total} 个，分 ${groups.size} 组）：\n" + joinStrings(groups, "\n")
 }
 
+/// 图谱交付物生成工作流（LLM playbook 的**唯一来源**）。
+///
+/// 【为什么在引擎】引擎 AI 无关——它不调 LLM，但它最清楚自己有两个
+/// 交付物管线（代码图谱热力图 / 架构图）、每步的命令形态、回执语义
+/// （复用/重绘/首版/第 N 版）、治理信号怎么读。把这些写成给 LLM 的
+/// 工作说明书，LLM（客户端 agent / 外部编码 agent）照它驱动引擎，
+/// 生成过程就是「LLM 编排 + 引擎确定性执行」，而不是 GUI 静默直出。
+///
+/// 【谁消费】`moongit skill graph` 独立出口（客户端播种 agent 任务用）、
+/// skillMarkdown 尾部章节（完整教学包）。两处共用本函数——两份手抄必然漂移。
+func skillGraphWorkflow(en: Bool): String {
+    let sb = StringBuilder()
+    if (en) {
+        sb.append("## Graph deliverables: LLM-driven generation workflow\n\n")
+        sb.append("Both deliverables are produced by YOU (the agent) driving the engine — never by silent GUI magic. Follow the steps, read the receipts, report facts.\n\n")
+        sb.append("### Deliverable A — code graph / confidence heatmap (`render/index.html`)\n\n")
+        sb.append("1. `index gen <project>` — build the lexical index (self-heals when probes go stale; long repos take tens of seconds).\n")
+        sb.append("2. `confidence gen <project>` — layered confidence findings (algorithm → evidence). Absent confidence renders an honest \"no confidence data\" legend, never fabricated data.\n")
+        sb.append("3. `render index <project> --confidence` — produce the single-file interactive HTML. Receipt says 复用 (reused — artifact fresh) or 重绘 (redrawn, version N). Reuse is cheap; redraw when the index version moved.\n")
+        sb.append("4. Verify: `render check index <project>` returns exists=true and the path. Report the path.\n")
+        sb.append("5. Read `graph confidence <project> --json` and report: global score, top findings with file:line evidence. Findings are LEXICAL approximations — say so.\n\n")
+        sb.append("### Deliverable B — architecture graph (`render/arch.html`)\n\n")
+        sb.append("1. `arch gen <project>` — aggregate modules/layers/edges (probe-reconciled).\n")
+        sb.append("2. `render arch <project>` — interactive HTML. Same receipt semantics.\n")
+        sb.append("3. Verify with `render check arch <project>`.\n")
+        sb.append("4. Read `graph arch <project> --json` and report governance facts: layer violations, cycles, fan-in/out Top3, and the ROLE view (roles/roleEdges/roleViolations) — entry/interface/service/model/storage/support classified by filename role words (lexical, disclose that).\n\n")
+        sb.append("### Hard rules\n\n")
+        sb.append("- Never fabricate data the engine did not return; quote receipts verbatim when reporting versions.\n")
+        sb.append("- `render check` NEVER heals — it is the only safe existence probe.\n")
+        sb.append("- Deliverable files are engine-owned: report their paths, do not edit them.\n")
+        sb.append("- Both pages are self-contained: hand the path to the user (client renders it in a WebView).\n\n")
+    } else {
+        sb.append("## 图谱交付物：LLM 驱动的生成工作流\n\n")
+        sb.append("两份交付物都由**你（agent）驱动引擎**产出——不是 GUI 静默直出。按步骤执行、读回执、报告事实。\n\n")
+        sb.append("### 交付物 A——代码图谱 / 置信度热力图（`render/index.html`）\n\n")
+        sb.append("1. `index gen <项目>` —— 建词法索引（探针过期会自愈重建；大仓几十秒级）。\n")
+        sb.append("2. `confidence gen <项目>` —— 分层置信度疑点（算法层证据）。置信度缺席时渲染恒发「无置信度数据」图例，绝不编数据。\n")
+        sb.append("3. `render index <项目> --confidence` —— 产出零依赖单文件交互 HTML。回执两种：复用（产物新鲜，代价小）/ 重绘（第 N 版，索引版本变了）。\n")
+        sb.append("4. 验证：`render check index <项目>` 返回 exists=true 与路径。向用户报告路径。\n")
+        sb.append("5. 读 `graph confidence <项目> --json`，报告：全局分数、按 file:line 证据列主要疑点。疑点是**词法级近似**——必须如实说明。\n\n")
+        sb.append("### 交付物 B——架构图（`render/arch.html`）\n\n")
+        sb.append("1. `arch gen <项目>` —— 聚合模块/分层/依赖边（探针对账）。\n")
+        sb.append("2. `render arch <项目>` —— 交互 HTML。回执语义同上。\n")
+        sb.append("3. `render check arch <项目>` 验证。\n")
+        sb.append("4. 读 `graph arch <项目> --json`，报告治理事实：分层违规、环、扇入/扇出 Top3，以及**职责视图**（roles/roleEdges/roleViolations）——入口/界面/服务/数据/存储/支撑按文件名职责词归类（词法级，如实说明）。\n\n")
+        sb.append("### 硬规则\n\n")
+        sb.append("- 引擎没返回的数据绝不编造；报告版本时逐字引用回执。\n")
+        sb.append("- `render check` 绝不自愈——它是唯一安全的产物存在性探测。\n")
+        sb.append("- 交付物文件归引擎所有：报告路径，不要编辑它们。\n")
+        sb.append("- 两份页面零依赖单文件：把路径交给用户即可（客户端 WebView 直接渲染）。\n\n")
+    }
+    return sb.toString()
+}
+
 func skillMarkdown(): String {
     let engine = currentExecutable()
     // 接入方式先攒成列表，标题里的「N 种」由列表长度派生。
@@ -3250,18 +3304,24 @@ func skillMarkdown(): String {
     sb.append("- 文档更新只发生 moonGit 托管区域内（引擎保证），用户内容逐字节保留\n")
     sb.append("- 引擎是 AI 无关的：所有判断与表达由你完成，引擎只提供事实\n")
     sb.append("- codegraph_* 是词法级近似，不是编译器闭包：对用户表述时必须带「词法级候选」限定，不许说成精确引用\n")
+    sb.append(skillGraphWorkflow(isEnglish(loadConfig().language)))
     return sb.toString()
 }
 
 func cmdSkill(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let refs = positionalsOnly(rest, VALUE_FLAGS)
     let action = if (refs.size > 0) { refs[0] } else { "print" }
-    let md = skillMarkdown()
     match (action) {
+        case "graph" =>
+            // 图谱生成工作流的独立出口：客户端播种 agent 任务、外部编码 agent
+            // 单取这一节，不必吞下整份教学包。与 skillMarkdown 尾部同源。
+            printOut(skillGraphWorkflow(isEnglish(loadConfig().language)))
+            return 0
         case "print" =>
-            printOut(md)
+            printOut(skillMarkdown())
             return 0
         case "install" =>
+            let md = skillMarkdown()
             var dir = ""
             match (flagValue(rest, "--dir")) {
                 case Some(v) => dir = expandHome(v)
@@ -3280,7 +3340,7 @@ func cmdSkill(rest: ArrayList<String>, ctx: CliContext): Int64 {
             }
             return 0
         case _ =>
-            throw DgError.usage(T("Usage: moongit skill <print|install> [--dir D]", "用法：moongit skill <print|install> [--dir D]"))
+            throw DgError.usage(T("Usage: moongit skill <print|graph|install> [--dir D]", "用法：moongit skill <print|graph|install> [--dir D]"))
     }
 }
 
