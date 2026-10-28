@@ -2398,12 +2398,24 @@ func testSkillGraphWorkflowSurface(): Unit {
     @Assert(md.contains("绝不自愈"))
     // 治理信号要报告（职责视图也在内）
     @Assert(md.contains("roleViolations"))
-    // 英文表同构（四语言配置里 en 是独立分支）
+    // 架构交付物的多角度结构：五个角度逐一在册（结构/技术/健康/业务/行动）
+    // ——这是 skill 的核心价值：告诉 LLM「从哪些角度做」，缺一个角度
+    // 它就只会照命令跑一遍，交回一张没有解读的图。
+    for (angle in ["模块分层", "职责视图", "依赖治理", "业务域解读", "风险与建议"]) {
+        @Assert(md.contains(angle))
+    }
+    // 业务视角的诚实边界：命名推断必须标注，不许说成引擎算出的分组
+    @Assert(md.contains("命名推断"))
+    // 词法边界声明（两份交付物共用）
+    @Assert(md.contains("词法"))
+    // 英文表同构（en 是独立分支，五角度一一对应）
     let en = skillGraphWorkflow(true)
     @Assert(en.contains("render check"))
     @Assert(en.contains("NEVER heals"))
+    @Assert(en.contains("Business reading"))
+    @Assert(en.contains("Risks & actions"))
     // skillMarkdown 尾部携带同一章节（同一来源，不许手抄第二份）
-    @Assert(skillMarkdown().contains("LLM 驱动的生成工作流"))
+    @Assert(skillMarkdown().contains("LLM 驱动的生成与多角度分析"))
 }
 
 /// 没有任何一条「怎么用」的配方）。
