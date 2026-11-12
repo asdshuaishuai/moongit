@@ -2418,6 +2418,49 @@ func testSkillGraphWorkflowSurface(): Unit {
     @Assert(skillMarkdown().contains("LLM 驱动的生成与多角度分析"))
 }
 
+/// playbook 与数据面互钉（同不变量 43 的口径：teaching 面与数据面各留一份
+/// 必然漂移）。上一版实测抓到的真事故：
+///   · 教 `graph arch <项目> --json` —— 而 arch 命令把裸 --json 当 HTML 输出，
+///     LLM 照做会拿到一整页 HTML，五个角度的数据一个都读不到；
+///   · 教 `warnings.cycles` —— 实际键是 `warnings.cycleEdges`。
+/// 两条都是「教了它一件做不到/读不到的事」，而且只要引擎改键名就会复发。
+/// 这里把 playbook 引用的每个键与 archJson 的真实输出逐一对上。
+@Test
+func testSkillGraphWorkflowKeysExistInArchJson(): Unit {
+    let md = skillGraphWorkflow(false)
+    // 建一个最小仓库图（两个文件足够触发模块/角色网）
+    let base = "/tmp/deepgit-skilldrift-${nowMillis()}"
+    ensureDir(base)
+    writeFileAtomic(base + "/ui_view.swift", "play")
+    writeFileAtomic(base + "/svc_service.swift", "play")
+    try {
+        let j = archJson(buildArch(buildGraph(base)), false)
+        // 顶层键：playbook 每个角度都点名了它们
+        for (key in ["modules", "edges", "layers", "lanes",
+                     "roles", "roleLanes", "roleEdges", "roleViolations",
+                     "warnings", "drilldown"]) {
+            @Assert(md.contains(key))                    // playbook 确实教了
+            @Assert(Json.has(j, key))                    // 数据面确实有
+        }
+        // warnings 内部三键（角度 3 逐一点名）
+        let w = Json.getOr(j, "warnings")
+        for (key in ["violations", "cycleEdges", "violationPairs", "cycleModules"]) {
+            @Assert(md.contains(key))
+            @Assert(Json.has(w, key))
+        }
+        // 命令形态：arch 取数据必须 --format json（裸 --json 是 HTML）
+        @Assert(md.contains("--format json"))
+        @Assert(!md.contains("graph arch <项目> --json"))
+        @Assert(!md.contains("graph arch <project> --json"))
+        // 工具形态映射：render check 必须带 artifact（CLI 的参数序不同，
+        // 少了 artifact 的工具调用调不到）
+        @Assert(md.contains("target=check"))
+        @Assert(md.contains("artifact"))
+    } finally {
+        removePathIfExists(base)
+    }
+}
+
 /// 没有任何一条「怎么用」的配方）。
 @Test
 func testSkillMarkdownCoversFullCapabilitySurface(): Unit {

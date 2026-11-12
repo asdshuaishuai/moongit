@@ -116,7 +116,7 @@ public func mcpToolList(): JsonValue {
     arr.add(mcpTool("index_query", "索引查询：symbol 模式 = 定义处 + 调用方 + 被调（含权重与确信度分层）；file 模式 = 该文件符号清单 + 调入/调出文件与权重。查不到报错，不编结果", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名（与 file 二选一）"), ("file", "string", "文件相对路径（与 symbol 二选一）")], ["name"])))
     arr.add(mcpTool("confidence_gen", "置信度生成：前置自愈索引（过期先重建并披露）→ 结构性疑点确定性度量 → 持久化 confidence.json（render index --confidence 的消费端就吃它）。no_ast=true 跳过语法树层；db=true 额外写 confidence.db", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "text|json|llm（llm = 可直接喂给模型的逐条复核提示词），默认 json"), ("no_ast", "boolean", "跳过语法树层（纯词法）"), ("db", "boolean", "额外写 confidence.db")], ["name"])))
     arr.add(mcpTool("confidence_query", "置信度快照查询：只读持久化 confidence.json，绝不重算（报告缺席报错，提示先 confidence_gen）。无过滤出总览（分数/维度/罚分 Top/限流披露）；file/symbol/kind/weight/top 过滤 findings；回执恒带快照元信息（generatedAt + 依据的索引版本）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("file", "string", "按文件过滤（精确或路径后缀）"), ("symbol", "string", "按符号过滤"), ("kind", "string", "按类别 id 过滤（如 orphan）"), ("weight", "integer", "按权重下限过滤"), ("top", "integer", "取前 N 条"), ("json", "boolean", "返回 JSON（默认 true）")], ["name"])))
-    arr.add(mcpTool("render", "渲染交付物：持久化 payload → 单文件交互 HTML（落盘到项目库，回执只带路径与复用/新绘判定，不内塞 HTML 全文）。target=arch|index；confidence=true 时 index 叠加 confidence.json（缺席则纯结构渲染并注明）；force=true 强制重绘", mcpSchemaObject([("name", "string", "项目名或 ID"), ("target", "string", "arch|index，默认 index"), ("confidence", "boolean", "index 叠加 confidence.json"), ("force", "boolean", "强制重绘")], ["name"])))
+    arr.add(mcpTool("render", "渲染交付物：持久化 payload → 单文件交互 HTML（落盘到项目库，回执只带路径与复用/新绘判定，不内塞 HTML 全文）。target=arch|index；confidence=true 时 index 叠加 confidence.json（缺席则纯结构渲染并注明）；force=true 强制重绘。target=check 时只探测产物存在性（**绝不自愈重建**），需同时给 artifact=arch|index——图谱生成工作流（skill graph）用它验证产物", mcpSchemaObject([("name", "string", "项目名或 ID"), ("target", "string", "arch|index|check，默认 index"), ("artifact", "string", "target=check 时必填：arch|index"), ("confidence", "boolean", "index 叠加 confidence.json"), ("force", "boolean", "强制重绘")], ["name"])))
     // ── CodeGraph：代码图谱（仓颉引擎的确定性词法分析，零依赖）──
     // ⚠️ 改名期兼容：旧 codegraph_*（patch 两工具除外）保留为**别名**——
     //    执行仍走各自原有的 handler（行为不变，已配好的客户端不断），
@@ -889,8 +889,32 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                 let p = mcpRequireProject(getStr("name"))
                 var target = getStr("target")
                 if (target.isEmpty()) { target = "index" }
+                if (target == "check") {
+                    // 产物存在性探测：与 CLI `render check` 同一事实、同一纪律
+                    // （绝不自愈——自愈可能触发整库重建，探测付不起那个代价）。
+                    // agent 的生成工作流（skill graph）靠它验证产物，
+                    // 而原先只有 arch|index 两个 target，agent 根本调不到。
+                    let artifact = getStr("artifact")
+                    if (artifact != "arch" && artifact != "index") {
+                        return mcpErr("render target=check requires artifact=arch|index (got: ${artifact})")
+                    }
+                    let sp = StorePaths(p.id)
+                    let path = if (artifact == "arch") {
+                        sp.dir + "/render/arch.html"
+                    } else {
+                        sp.dir + "/render/index.html"
+                    }
+                    let exists = fileExists(path)
+                    let o = Json.obj()
+                    Json.set(o, "ok", Json.of(true))
+                    Json.set(o, "artifact", Json.of(artifact))
+                    Json.set(o, "exists", Json.of(exists))
+                    // path 只在存在时给：缺席给空串等于把「没有」说成一个位置
+                    Json.set(o, "path", Json.of(if (exists) { path } else { "" }))
+                    return mcpOk(Json.pretty(o))
+                }
                 if (target != "arch" && target != "index") {
-                    return mcpErr("target accepts arch | index (got: ${target})")
+                    return mcpErr("target accepts arch | index | check (got: ${target})")
                 }
                 let force = boolArg("force")
                 // HTML 落盘到项目库；回执只带路径与复用/新绘判定（不内塞 3MB 全文）
@@ -1160,7 +1184,70 @@ func testMcpUnknownMethod(): Unit {
     @Assert(Json.intAt(err, "code", 0) == -32601)
 }
 
+/// MCP render 工具的 check 目标（不变量 43 同族：schema 与处理器必须成对，
+/// 且能力必须在两个入口都可达）。agent 的生成工作流教了它用 `render check`
+/// 验证产物——CLI 有，工具形态原先没有，等于教了它一件做不到的事。
+/// 三件事：不存在 → exists=false（且不建任何文件）；渲染后 → exists=true；
+/// 缺 artifact → isError（不许静默当成 index）。
 @Test
+func testMcpRenderCheckProbesExistence(): Unit {
+    let base = "/tmp/deepgit-mcpchk-${nowMillis()}"
+    let home = "${base}-home"
+    ensureDir(base)
+    ensureDir(home)
+    gitRun(base, ["init", "-b", "main"], false)
+    writeFileAtomic(base + "/a.cj", "1")
+    gitRun(base, ["add", "."], false)
+    gitRun(base, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"], false)
+    enterTestHome(home)
+    try {
+        let (p, created) = addProject(base, "mcpchk-demo", ArrayList<String>(), "")
+        @Assert(created)
+        let htmlPath = deepgitPath(["store", p.id]) + "/render/index.html"
+
+        func callRender(args: JsonValue): JsonValue {
+            let req = Json.obj()
+            Json.set(req, "id", Json.of(21))
+            Json.set(req, "method", Json.of("tools/call"))
+            let params = Json.obj()
+            Json.set(params, "name", Json.of("render"))
+            Json.set(params, "arguments", args)
+            Json.set(req, "params", params)
+            return Json.getOr(mcpHandle(req).getOrThrow(), "result")
+        }
+
+        // 缺席：exists=false，且探测本身不建文件（探针绝不自愈）
+        let a1 = Json.obj()
+        Json.set(a1, "name", Json.of("mcpchk-demo"))
+        Json.set(a1, "target", Json.of("check"))
+        Json.set(a1, "artifact", Json.of("index"))
+        let r1 = callRender(a1)
+        @Assert(Json.boolAt(r1, "isError", true) == false)
+        let t1 = Json.strAt(Json.arrAt(r1, "content")[0], "text", "")
+        @Assert(t1.contains("\"exists\": false"))
+        @Assert(!fileExists(htmlPath))
+
+        // 生成后：exists=true（check 与产物文件是同一事实的两面）
+        let _renderReceipt = renderIndexCore(p, false, true, "")
+        @Assert(Json.has(_renderReceipt, "path"))
+        @Assert(fileExists(htmlPath))
+        let r2 = callRender(a1)
+        let t2 = Json.strAt(Json.arrAt(r2, "content")[0], "text", "")
+        @Assert(t2.contains("\"exists\": true"))
+
+        // 缺 artifact：isError（不许静默吞成 index）
+        let a2 = Json.obj()
+        Json.set(a2, "name", Json.of("mcpchk-demo"))
+        Json.set(a2, "target", Json.of("check"))
+        let r3 = callRender(a2)
+        @Assert(Json.boolAt(r3, "isError", false) == true)
+    } finally {
+        exitTestHome()
+        removePathIfExists(base)
+        removePathIfExists(home)
+    }
+}
+
 func testMcpToolsCallOnTempRepo(): Unit {
     let base = "/tmp/deepgit-mcp-${nowMillis()}"
     ensureDir(base)
