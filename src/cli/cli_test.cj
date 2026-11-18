@@ -3751,3 +3751,183 @@ func testAliasToolsCarryMachineReadableDeprecation(): Unit {
         }
     }
 }
+
+/// 两份能力清单（`tools --json` = agentToolsManifest ⇄ MCP `tools/list` =
+/// mcpToolList）在**同名工具的参数集**上必须对账。#43 已钉住工具集基线与
+/// 改名对，但参数级没有对账 —— render 就漂过一次：MCP schema 与处理器
+/// 早已支持 target=check + artifact=arch|index，playbook 也教了
+/// render(target=check, artifact=…)，而 manifest 没声明 artifact。
+/// 客户端按 manifest 的 params 给模型建工具定义（不变量 21/49），
+/// 模型在客户端环境永远拿不到 artifact 参数 —— playbook 教的调用
+/// 注定缺参失败，而且没有任何一条既有检查会红。
+///
+/// 规则（两份清单服务于不同运行时，工具集本就可以不同；参数差异必须有意识）：
+///   · manifest 声明的每个参数，MCP schema 必须也有（否则 MCP 环境调不到）；
+///   · MCP schema 多出来的参数必须落在 mcpOnly 基线里（MCP 侧默认回 JSON /
+///     默认写库等运行时形态参数，显式声明才许存在 —— 断言基线而不是
+///     「应该相同」，否则会逼着人造假等价，同 #43 的口径）；
+///   · 基线每条必须真实出现在 MCP schema 里（空转的基线等于没钉，不变量 22）。
+@Test
+func testToolManifestAndMcpSchemaParamsAgreeOnSharedTools(): Unit {
+    func paramSetFromManifest(params: String): HashSet<String> {
+        let s = HashSet<String>()
+        if (params.isEmpty()) { return s }
+        for (p in params.split(",")) {
+            let n = p.trimAscii()
+            if (!n.isEmpty()) { s.add(n) }
+        }
+        return s
+    }
+    func paramSetFromMcp(t: JsonValue): HashSet<String> {
+        let s = HashSet<String>()
+        // schema 由 mcpSchemaObject 构造、properties 恒在；
+        // 缺席 = 结构坏了，落到这个分支就必须红
+        match (Json.asObj(Json.getOr(Json.getOr(t, "inputSchema"), "properties"))) {
+            case Some(props) =>
+                for (pair in props) { s.add(pair[0]) }
+            case None => @Assert(false)
+        }
+        return s
+    }
+
+    let mcpNames = HashSet<String>()
+    let mcpSets = HashMap<String, HashSet<String>>()
+    for (t in Json.arrAt(mcpToolList(), "tools")) {
+        let n = Json.strAt(t, "name", "")
+        mcpNames.add(n)
+        mcpSets[n] = paramSetFromMcp(t)
+    }
+    // 前提守卫：MCP 清单抓到 0 个 = 下面对账全空转（不变量 22）
+    @Assert(mcpNames.size >= 20)
+
+    // MCP-only 参数基线：同名工具上 MCP schema 比 manifest 多出的参数。
+    // 每条都是**有意识**的运行时形态差异（MCP 默认回 JSON / 默认写库）；
+    // 新增差异必须在这里声明，而不是让清单静默漂。
+    let mcpOnly: Array<(String, String)> = [
+        ("run_deep_update", "scope"),
+        ("arch_query", "json"),
+        ("confidence_query", "json"),
+        ("index_gen", "db"),
+    ]
+
+    var shared = 0
+    for (t in Json.arrAt(agentToolsManifest(), "tools")) {
+        let n = Json.strAt(t, "name", "")
+        if (!mcpNames.contains(n)) { continue }
+        shared += 1
+        let cliSet = paramSetFromManifest(Json.strAt(t, "params", ""))
+        match (mcpSets.get(n)) {
+            case Some(mcpSet) =>
+                // 规则①：manifest 承诺的参数，MCP schema 必须也有
+                for (p in cliSet) {
+                    @Assert(mcpSet.contains(p))
+                }
+                // 规则②：MCP 多出的参数必须有意识（render 漂移就是这个方向的红）
+                for (p in mcpSet) {
+                    if (cliSet.contains(p)) { continue }
+                    var allowed = false
+                    for (bp in mcpOnly) {
+                        if (bp[0] == n && bp[1] == p) { allowed = true }
+                    }
+                    @Assert(allowed)
+                }
+            case None => @Assert(false)
+        }
+    }
+    // 前提守卫：交集太小 = 工具集大改（改名/增删），本测试覆盖面变了，
+    // 必须显式面对而不是静默缩水
+    @Assert(shared >= 20)
+
+    // 基线不许空转：每条基线必须真实出现在 MCP schema 里
+    for (bp in mcpOnly) {
+        match (mcpSets.get(bp[0])) {
+            case Some(mcpSet) => @Assert(mcpSet.contains(bp[1]))
+            case None => @Assert(false)
+        }
+    }
+
+    // render 点名（本次漂移的直接钉子）：render 没有 MCP-only 形态参数，
+    // 两份清单的参数集必须**完全相等**（含 artifact）。
+    var sawCliRender = false
+    var sawMcpRender = false
+    var cliRender = HashSet<String>()
+    var mcpRender = HashSet<String>()
+    for (t in Json.arrAt(agentToolsManifest(), "tools")) {
+        if (Json.strAt(t, "name", "") == "render") {
+            cliRender = paramSetFromManifest(Json.strAt(t, "params", ""))
+            sawCliRender = true
+        }
+    }
+    for (t in Json.arrAt(mcpToolList(), "tools")) {
+        if (Json.strAt(t, "name", "") == "render") {
+            mcpRender = paramSetFromMcp(t)
+            sawMcpRender = true
+        }
+    }
+    @Assert(sawCliRender)
+    @Assert(sawMcpRender)
+    @Assert(cliRender.contains("artifact"))
+    @Assert(mcpRender.contains("artifact"))
+    @Assert(cliRender.size == mcpRender.size)
+    for (p in cliRender) { @Assert(mcpRender.contains(p)) }
+    for (p in mcpRender) { @Assert(cliRender.contains(p)) }
+}
+
+/// #196 口径在 `render check` 上的回归：元数固定（check + kind + 项目 = 3），
+/// 多出来的位置参数报 usage（exit 2），绝不静默吞。
+/// 原实现直接按下标读 rest —— `render check arch proj EXTRA --json` 在
+/// 真实二进制上 rc=0、EXTRA 无声蒸发（实测复现）；同族 graph/tools/add
+/// 都有 rejectExtraPositionals，唯独这里漏了。
+///
+/// 拒收发生在 requireProject 之前，所以「多参数」这条不需要注册项目、
+/// 也不需要 store 隔离；合法元数这条走完整路径（注册项目、断言 rc=0）。
+@Test
+func testRenderCheckRejectsExtraPositionals(): Unit {
+    // 多出的位置参数 → usage（exit 2）
+    var threw = false
+    var code: Int64 = -1
+    try {
+        let _ = cmdRender(ArrayList<String>(["check", "arch", "someproj", "EXTRA"]),
+                          CliContext(ArrayList<String>([])))
+    } catch (e: DgError) {
+        threw = true
+        code = e.exitCode
+    }
+    @Assert(threw)
+    @Assert(code == 2)
+
+    // 缺元数（只有 check + kind）→ 同样 usage
+    var threwShort = false
+    try {
+        let _ = cmdRender(ArrayList<String>(["check", "arch"]),
+                          CliContext(ArrayList<String>([])))
+    } catch (e: DgError) {
+        threwShort = true
+        @Assert(e.exitCode == 2)
+    }
+    @Assert(threwShort)
+
+    // 合法元数（3 个位置参数）→ 走完探测路径，rc=0
+    let base = "/tmp/deepgit-rendercheck-${nowMillis()}"
+    let repo = base + "/repo"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    try {
+        ensureDir(repo)
+        gitRun(repo, ["init", "-b", "main"], false)
+        writeFileAtomic(repo + "/a.txt", "1")
+        gitRun(repo, ["add", "."], false)
+        gitRun(repo, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"], false)
+        let (_, okProj) = addProject(repo, "render-check-demo", ArrayList<String>(), "")
+        @Assert(okProj)
+        let ctx = CliContext(ArrayList<String>([]))
+        let rc = cmdRender(ArrayList<String>(["check", "arch", "render-check-demo"]), ctx)
+        @Assert(rc == 0)
+    } finally {
+        exitTestHome()
+        removePathIfExists(repo)
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}

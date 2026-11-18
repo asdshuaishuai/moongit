@@ -2470,13 +2470,20 @@ func cmdRender(rest: ArrayList<String>, ctx: CliContext): Int64 {
     // 重建（大仓库分钟级），「看一眼按钮该亮哪个」的调用方（GUI 仓库面板）
     // 付不起这个代价，也绝不该在毫不知情时改库。
     if (rest[0] == "check") {
-        if (rest.size < 3) {
+        // 元数固定（check + kind + 项目 = 3 个位置参数）⇒ 走 #196 的同一道闸门：
+        // 位置参数先过 positionalsOnly（值 flag 对如 --out F 不算位置参数），
+        // 多出来的位置参数报 usage（exit 2），绝不静默吞。
+        // 原实现直接按下标读 rest，混在 rest[3+] 的多余项目名/布尔 flag
+        // 全部无声蒸发（exit 0），拼写错误被变成一次「成功」。
+        let refs = positionalsOnly(rest, VALUE_FLAGS)
+        if (refs.size < 3) {
             throw DgError.usage(T(
                 "Usage: moongit render check <arch|index> <project> [--json]",
                 "用法：moongit render check <arch|index> <项目> [--json]"))
         }
-        let kind = rest[1]
-        let sp = StorePaths(requireProject(rest[2]).id)
+        rejectExtraPositionals("render check", refs, 3)
+        let kind = refs[1]
+        let sp = StorePaths(requireProject(refs[2]).id)
         let path: String
         if (kind == "arch") {
             path = sp.dir + "/render/arch.html"
