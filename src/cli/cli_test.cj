@@ -4285,3 +4285,41 @@ func testMcpIndexToolsAreStructuredAndSyncedWithManifest(): Unit {
     }
 }
 
+
+/// skill 教学包要自报版本：frontmatter 的 version 行 == ENGINE_VERSION（单一真相源，不手抄）。
+@Test
+func testSkillFrontmatterCarriesEngineVersion(): Unit {
+    let md = skillMarkdown()
+    @Assert(md.startsWith("---\nname: moongit\n"))
+    let want = "\nversion: " + ENGINE_VERSION + "\n---\n"
+    @Assert(md.contains(want))
+}
+
+/// 配方行（「- **…**：」开头）不得再教旧名别名：codegraph_* 里只有补丁三层的两个不是别名。
+/// 清单里保留别名是为了与工具表对账，但「教 agent 怎么做」的地方必须是新工具面。
+@Test
+func testSkillRecipesDoNotTeachDeprecatedAliases(): Unit {
+    let md = skillMarkdown()
+    var recipeLines = 0
+    for (line in md.split("\n")) {
+        if (!line.startsWith("- **")) { continue }
+        recipeLines += 1
+        for (alias in ["codegraph_overview", "codegraph_tree", "codegraph_symbol",
+                       "codegraph_impact", "codegraph_arch", "codegraph_confidence"]) {
+            @Assert(!line.contains(alias))
+        }
+    }
+    // 前提：真有配方行，否则上面整段空转成绿
+    @Assert(recipeLines >= 8)
+}
+
+/// 代码定位配方把六个查询命令与置信度、渲染都点到了名——这是本轮给 agent 的主路径。
+@Test
+func testSkillRecipesCoverCodeLocationPath(): Unit {
+    let md = skillMarkdown()
+    for (needle in ["index_search", "index_outline", "index_query", "index_grep",
+                    "index_refs", "index_impact", "confidence_gen", "confidence_query",
+                    "render index", "ambiguous: true", "guessed", "f:<相对路径>:<行>:<名字>"]) {
+        @Assert(md.contains(needle))
+    }
+}

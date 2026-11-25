@@ -117,6 +117,8 @@ moongit status --json            # 全部项目状态
 moongit context [项目] [--budget N]   # agent 上下文包（markdown，字符预算内）
 moongit tools                    # agent 工具清单（JSON）
 moongit dashboard --json         # 项目群聚合
+moongit index gen myapp          # 建代码索引（成员级；每个项目一次，之后 index update 增量）
+moongit index search parse myapp # 按名字搜符号 → index query / outline / refs / impact / grep
 ```
 
 ### 2. MCP 服务器（工具化接入，推荐）
@@ -131,16 +133,20 @@ moongit mcp                      # stdio JSON-RPC（2024-11-05）
 {"mcpServers": {"moongit": {"command": "/path/to/moongit", "args": ["mcp"]}}}
 ```
 
-提供 **23 个工具**：
+提供 **38 个工具**（32 个现行 + 6 个旧名别名；别名在 `tools/list` 里带 `deprecated: true` 与 `replacedBy`）：
 - 项目管理：`list_projects`、`add_project`
-- 上下文与状态：`get_group_context`、`get_project_context`、`get_project_status`、`get_dashboard`
-- 文档与日志：`get_project_docs`、`get_journal`
+- 上下文与状态：`get_group_context`、`get_project_context`、`get_project_status`、`get_dashboard`、`get_project_docs`、`get_journal`
 - 更新与追踪：`run_shallow_update`、`run_deep_update`、`run_track`
 - git 与里程碑：`git_op`、`list_milestones`、`milestone_add`、`milestone_action`
-- 代码图谱：`codegraph_overview`、`codegraph_tree`、`codegraph_symbol`、`codegraph_impact`、`codegraph_arch`、`codegraph_confidence`、`codegraph_patch_confidence`、`codegraph_patch_merge`
+- 代码索引（agent 定位代码）：`index_gen`、`index_update`、`index_overview`、`index_search`、`index_query`、`index_outline`、`index_refs`、`index_impact`、`index_grep`
+- 架构与置信度：`arch_gen`、`arch_update`、`arch_query`、`confidence_gen`、`confidence_query`、`render`
+- 补丁级置信度三层（Layer 1 算法信号 / Layer 2 agent 复核走 skill / Layer 3 合并）：
+  `codegraph_patch_confidence`（Layer 1）、`codegraph_patch_merge`（Layer 3）
+- 旧名别名（将移除，勿在新方案里使用）：`codegraph_overview`、`codegraph_tree`、`codegraph_symbol`、`codegraph_impact`、`codegraph_arch`、`codegraph_confidence`
 
-另有 resources（deepgit://project/{id}）与 prompts（project_brief）。
-> MCP 工具表与 CLI 的 `moongit tools --json`（18 项）**是两份注册表**，服务不同运行时、
+`index_*` 工具同时返回 `content[0].text`（人读摘要）与 `structuredContent`（与 CLI `--json` 同形的对象）；
+只读工具带 `annotations.readOnlyHint`。另有 resources（deepgit://project/{id}）与 prompts（project_brief）。
+> MCP 工具表与 CLI 的 `moongit tools --json`（33 项）**是两份注册表**，服务不同运行时、
 > 能力集本就可以不同——要紧的是差异是**有意识**的（见 `AGENTS.md` 不变量 43）。
 > 数字要跟着清单走：这两处都漂过（审查 M25 实测两处各差 3 项）。
 
@@ -151,7 +157,53 @@ moongit skill print              # 输出 SKILL.md 内容
 moongit skill install            # 安装到 ~/.zcode/skills/moongit/SKILL.md（--dir 可指定）
 ```
 
-内容含：三种接入方式、工具清单、典型任务配方（项目现状/项目群周报/收尾打扫/项目说明）、红线。
+内容含：两种接入方式（标题里的数字由列表长度派生）、工具清单（**从 `mcpToolList()` 生成**，名字与计数
+不手抄——对账测试 `testSkillMarkdownToolListMatchesMcpToolList` 双向钉住）、用索引前要先读的五条、
+典型任务配方（项目现状 / 项目群周报 / 收尾打扫 / 项目说明 / **代码在哪** / **改这个函数影响谁** /
+**这段代码可信吗** / 提交前补丁体检三层 / 架构图）、红线、旧名别名对照。frontmatter 带引擎 `version`。
+配方行不教旧名别名（`testSkillRecipesDoNotTeachDeprecatedAliases`）。
+
+### 代码索引（agent 快速定位代码）
+
+```sh
+moongit index gen <项目>                      # 建索引：codegraph.db（SQLite v2）+ index.json
+moongit index update <项目> [--force]         # 探针增量：源没变就跳过，变了重建（版本 +1）
+moongit index search <模式> [项目] [--kind K] [--lang L] [--limit N] [--file F]
+                                              # 按名字/限定名搜符号（大小写不敏感；名字精确 > 限定名相等
+                                              #   > 名字前缀 > 子串 > 子序列），每条带稳定 id 与 score
+moongit index query <符号> [项目]              # 符号 = 裸名 | Outer.method | id
+moongit index query --file <路径> [项目]        # 同 index file
+moongit index file <路径> [项目]               # 文件大纲：符号 + 行范围 + 签名 + 调入/调出文件
+moongit index refs <符号> [项目]               # 每一个调用点（file:line:col、接收者、tier、所在函数）
+moongit index impact <符号> [项目] [--depth N] # 沿 direct/resolved 边反向传递闭包（谁会跟着坏）
+moongit index grep <文本> [项目] [--ignore-case] [--limit N] [--context K] [--glob G]
+                                              # 字面文本搜索，不依赖索引
+moongit index overview <项目>                  # 计数：符号 / 边 / 调用点 / 未解析 / 各 tier
+```
+
+- **符号是成员级的**：`kind / name / qual（Outer.method）/ file / line / endLine / col / sig / visibility /
+  declOnly`，9 种语言（`lang` 值：swift、kotlin、java、ts、python、go、rust、cangjie、c——C 与 C++ 共用 `c`）。
+  入表的成员是函数与类型（`func` / `class` / `struct` / `interface` / `enum` / `extension` / `typealias`）；
+  属性 / 字段目前不作为独立符号入表。
+  只有声明没有体的（头文件原型、接口方法签名）以 `declOnly: true` 入表——agent 要能在头文件里找到声明处；
+  同一工程另有同名定义时它作为该定义的 `decls` 呈现，不单独算定义。
+- **稳定 id** `f:<相对路径>:<行>:<名字>`：同一份源码两次索引得到同一个 id，可当句柄回传给
+  `index query / refs / impact`（同文件同行同名的重复者带 `#n` 后缀）。行号是 id 的一部分——代码挪了行 id 就变（词法级索引给不出跨编辑恒定的身份，
+  不编一个看起来恒定实际会漂的哈希）。
+- **裸名有歧义时不替你挑**：`index query` 返回 `ambiguous: true` 与 `perDef`（逐定义的调用方/被调），
+  用限定名或 id 收窄。同名不同语言不算同一个符号。
+- **调用边带调用点与确信度** `tier`：`direct` = 限定命中（`Type.name(` / `self.name(`）；
+  `resolved` = 裸名在候选里唯一（同文件 → 全工程 → 同模块）；`guessed` = 有歧义、全部连边。
+  **全部是词法级候选，不是编译器闭包**——向用户转述必须带这个限定。
+- **未解析的调用点**（`dst = 0`）绝大多数是框架/标准库调用（探针工程上 58%：`Text`、`addWidget`、`isEmpty`…），
+  不要说成「项目里没有定义」。各语言关键字与标准库内建在解析阶段丢弃（仅当工程内无同名符号时）。
+- **SQL 直查**（给要自己写查询的 agent）：`codegraph.db`
+  `nodes(id, kind, name, file, line, lang, findings, max_weight, sid, qual, end_line, col, sig, visibility, decl_only)`、
+  `sites(src, dst, file, line, col, receiver, tier, name)`、`edges(src, dst, tier, weight)`、`files(path, lang, lines, symbols)`。
+  例：`SELECT s.file, s.line, s.col FROM sites s JOIN nodes n ON n.id = s.dst WHERE n.qual = 'AppModel.goRoute'`。
+  旧版（v1）库在下次 `index update` / `confidence gen` 时视为过期自动重建。
+- 查不到就是查不到：`index query / refs / file` 对不存在的符号/文件报错、非 0 退出、不编结果；
+  `search / grep` 无命中返回空数组。
 
 ### 红线（三件套共有）
 
@@ -212,7 +264,7 @@ moongit deep [项目] [--scope S]    深度更新：重写文档章节
 moongit journal [项目] [--branch B]
 moongit git <pull|push|commit|stash|unstash|fetch> [项目]
                                   面板级 git 操作（无破坏性命令）--message M 传提交信息
-moongit milestone <add|list|done|drop|remove> [项目] [名称]
+moongit milestone <add|list|done|drop|remove|reopen> [项目] [名称]
                                   里程碑：--tag T（tag 存在即自动达成）--date --desc
 moongit dashboard                 跨项目聚合：活跃度 / 里程碑 / 语言分布 / 待合入
 moongit report [项目] [--out F]   导出自包含 Markdown 进度报告
@@ -220,8 +272,22 @@ moongit hook <install|uninstall|status> [项目]   post-commit + post-merge 钩�
 moongit verify [项目]             校验文档完整性（用户内容是否被改动）
 moongit graph <overview|tree|symbol|impact|arch|confidence> [项目] [--json]
                                   代码图谱：符号索引 / 关系树 / 影响面 / 架构图 / 代码置信度
+moongit index <gen|update|overview|search|query|file|refs|impact|grep> …
+                                  代码索引（成员级，稳定 id）：见上文「代码索引」
+moongit confidence <gen|query> <项目> [--file F] [--symbol S] [--kind K] [--weight W] [--top N]
+                                  置信度快照：gen 生成（索引过期先自愈）；query 只读快照
+moongit arch <gen|update|query> <项目> [模块] [--violations]
+                                  架构索引：模块聚合 + 分层判定 + 泳道布局
+moongit render <arch|index> <项目> [--confidence] [--force]
+                                  用持久化 payload 渲染单文件交互 HTML（未变即复用）
+moongit tools / moongit mcp / moongit skill <print|install>
+                                  agent 三件套：工具清单 / MCP 服务器 / Skill 教学包
+moongit context [项目] [--budget N]
+                                  agent 上下文包
 moongit config <list|get|set> [k] [v]
+                                  配置键：language / update.backupKeep / update.maxShallowBranches / roots
 moongit doctor                    环境自检
+moongit version                   引擎版本号
 ```
 
 全局选项：`--json`（机器可读）、`-q`（静默）、`-v`（详细日志）。
@@ -282,7 +348,8 @@ scripts/      install.sh / moongit.sh / build-minimal-sdk.sh / package-release.s
 
 ## 构建细节与已知边界
 
-见 [AGENTS.md](AGENTS.md)（仓颉编码约定、macOS SDK 兼容、测试基线 547 项）。
+见 [AGENTS.md](AGENTS.md)（仓颉编码约定、macOS SDK 兼容；测试基线以 `cjpm test` 实跑为准，
+v0.3.0 为 702 项——Linux 上有 3 条环境性红用例，见下）。
 
 - SHA-256 自研（通过官方测试向量），不用于密码学安全场景。
 - AI 摘要质量取决于提交信息质量。
@@ -292,6 +359,34 @@ scripts/      install.sh / moongit.sh / build-minimal-sdk.sh / package-release.s
   （魔法数等）数量仍会压分，请以 `byKind` 分类明细为准，不要只看 headline 分数。
   孤儿报告的处置口径：未使用的**私有**符号可安全删除（文件外不可能有人引用）；
   **公开**符号可能是预留给后续能力的 API，引擎只报告、不自动删除。
+- **代码索引的边界**（v0.3.0 的取舍，数字取自探针工程 /tmp/itest：9 种语言、2.3k 符号）：
+  · **稳定 id 是名字基的** `f:<相对路径>:<行>:<名字>`——同一份源码两次索引得到同一个 id，
+    但代码挪了行 id 就变。词法级索引给不出跨编辑恒定的身份，这里**不编一个看起来恒定、
+    实际会漂的哈希**；要跨编辑追踪请用 `qual` + 名字自己兜。
+  · **v1 库视为过期**：旧版 `codegraph.db` 在下次 `index update` / `confidence gen` 时自动重建，
+    不做迁移（schema v2 的列是新增的，旧库没有可迁的数据）。
+  · **调用边是词法级候选，不是编译器闭包**。tier 的含义见上文「代码索引」；探针上调用点
+    19040 个、未解析 11038 个（约 58%），未解析的绝大多数是框架/标准库调用
+    （`Text`、`addWidget`、`isEmpty`…）——**不要说成「项目里没有定义」**。
+    接收者调用（`a.b(`）在接收者类型未知时按裸名解析：探针上 1526 条 `resolved` 边里
+    有 421 条的两端不属于同一个类型——**可能误连**，向用户转述必须带这个限定。
+  · **没有真正的增量解析**：`index update` 是探针增量（源没变就跳过；变了整库重建，版本 +1）。
+  · C++ 栈上构造的对象不计调用点（`Foo f; f.m()` 的 `f.m(` 按裸名 `m` 解析）。
+  · MCP 工具尚未声明 `outputSchema`（形状靠 `structuredContent` 与描述文字约定）；
+    两遍词法扫描（成员级扫描器与 `build.cj` 的引用遍）各有一套口径，偶有不一致；
+    其余未做项见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+  · **macOS 客户端的 AgentCore 尚未接入 5 个新索引查询工具**（`index_query / refs / impact /
+    search / grep`）——引擎侧 CLI 与 MCP 都已就绪，客户端侧是后续工作。
+  · **MCP 与 `tools --json` 的现行工具名并不对齐**（v0.2 之前的旧账，本轮没并）：两边同名的 23 个，
+    MCP 独有 9 个（`add_project` / `list_projects` / `get_project_status` / `get_dashboard` / `run_track` /
+    `git_op` / `list_milestones` / `milestone_add` / `milestone_action`），`tools --json` 独有 4 个
+    （`get_milestones` / `git_commit` / `git_pull_push` / `milestone_done`——客户端 AgentCore 按这些名字分发）。
+    6 个旧名别名两边一致。本轮新增的 `index_*` 九个两边同名同数；并表要动客户端的分发表，另起一轮。
+- **Linux 上有 3 条环境性红用例**（改动前就红，与功能无关，不要为了变绿去改断言）：
+  `testExecCaptureTerminatesTimedOutProcess`、`testExecCaptureTimeoutIsATotalBoundNotPerPhase`
+  ——`/bin/sh` 是 dash，不认 `exec -a`；`testDocWriteFailureStillPersistsProgressToStore`
+  ——没有 `chflags uchg`，「把文件锁成只读再写」这个前提造不出来（文档照常写成，
+  拿不到 `DOC_WRITE_FAILED`）。本轮在 Linux 上实跑 699/702；macOS 上未实跑。
 - **`graph arch` 系列的内存**：`--format json | html | scene` 会把整个图谱**加上每个模块的
   文件级下钻**都序列化出来，内存需求随仓库规模上涨。**仓颉运行时的默认堆上限偏小**，
   大仓库会 `OutOfMemoryError` —— 这不是算法问题：用 `cjHeapSize` 提高堆即可

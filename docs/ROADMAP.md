@@ -1,109 +1,120 @@
-# moonGit Engine — 长周期路线图
+# moonGit Engine — 路线图与现状
 
-> **定位**：AI 无关的确定性项目群进度内核。引擎只回答「事实是什么」和「能做什么」；
-> 判断与表达由上层（deepDolphin / MCP 宿主 / 任意 agent）完成。
+> **定位**：AI 无关的确定性项目群进度内核 + 代码事实引擎。引擎只回答「事实是什么」和
+> 「能做什么」；判断与表达由上层（deepDolphin / MCP 宿主 / 任意 agent）完成。
 >
-> **版本节奏**：每 6-8 周一个 minor 版本（0.x），1.0 为 API 冻结的稳定版。
+> **版本节奏**：按能力批次发 minor（0.x），1.0 为 API 冻结的稳定版。
 >
-> **跨平台**：macOS ARM64（首发）→ Linux x64 → Windows x64 → 鸿蒙 PC。
+> **跨平台**：macOS arm64、Linux x64 已随 release 发版 → Windows x64 → 鸿蒙 PC。
+
+**已发版**：`v0.1.0`（2026-10-07）· `v0.2.0`、`v0.2.1`（2026-10-20）。
+**v0.3.0**（代码索引 schema v2 + 代码索引 CLI/MCP + skill 重写）的代码在 `feat/*` 分支上，
+**尚未打 tag 发版**——打 tag 即触发公开发版，这一步留给维护者。
 
 ---
 
-## Phase 1 — 数据深度与可靠性（v0.2.x）
+## 已交付（原路线图之外、实际先做了的）
 
-**目标**：让引擎的"事实"从「快照」升级为「趋势」，让子进程生命周期可控。
-
-| # | 特性 | 说明 | 客户端影响 |
-|---|------|------|-----------|
-| 1.1 | **进度差分** `diff` | 两次快照之间：新增/消失了哪些分支、提交增减、里程碑状态变化。输出结构化 delta | 客户端可展示"自上次以来发生了什么"而不是每次全量刷新 |
-| 1.2 | **速度追踪** `velocity` | 按周/月的提交速率（per project / per branch / per author），趋势方向（加速/减速/停滞） | 仪表盘增加速度曲线图 |
-| 1.3 | **子进程生命周期管理** | execCapture 超时路径 kill 子进程（用信号量 + waitpid WNOHANG 轮询）；泄漏有界化 | 无感（引擎内部） |
-| 1.4 | **并发 serve** | HTTP serve 从串行 accept 改为 thread-per-connection + 连接池；慢请求不再阻塞全局 | 面板多请求并发不排队 |
-| 1.5 | **Linux x64 二进制** | GitHub Actions 自动构建 Linux 版，Cangjie SDK Linux 安装 | Linux 客户端可用 |
-| 1.6 | **数据导出** `export --format json\|csv\|md` | 任意查询结果导出为文件；为 agent 和 CI 提供结构化数据 | 客户端"导出"按钮 |
-| 1.7 | **registry v2** | 注册表支持项目分组（group）、标签（tags）、排序权重 | 侧栏项目分组展示 |
-| 1.8 | **进度历史 API** `GET /api/history?project=&range=` | 从 journal.jsonl 构建时间序列数据点 | 图表库绘制进度变化曲线 |
-
----
-
-## Phase 2 — 动作扩展与自动化（v0.3.x–v0.4.x）
-
-**目标**：引擎从"只读+浅写"扩展为"可编排的自动化平台"。
-
-| # | 特性 | 说明 | 客户端影响 |
-|---|------|------|-----------|
-| 2.1 | **watch 模式** `moongit watch` | fsevents / inotify 监听文件变更 → 自动 track；`--interval` 定时自动 update | 客户端"实时模式"开关 |
-| 2.2 | **分支生命周期** `branch create/merge/delete` | 安全白名单扩展：merge 需 ff-only 或确认；delete 需已合入；不支持 force | 客户端看板卡片上的分支操作按钮 |
-| 2.3 | **多根扫描** `scan --root A --root B` | 一次扫描多个目录；跨根去重 | 客户端批量添加支持多目录 |
-| 2.4 | **webhook 通知** `hook webhook <url>` | 事件驱动：update 完成 / 里程碑达成 / 分支停滞 → POST JSON 到指定 URL | 设置页 webhook 管理 UI |
-| 2.5 | **查询语言** `query "dirty>10 AND stale AND lang=swift"` | 结构化过滤表达式，替代 if-else 组合；MCP tool `query_projects` | 客户端搜索栏升级为表达式输入 |
-| 2.6 | **模板系统** `template list/apply` | 托管区域内容模板：自定义 README 格式、里程碑格式、报告格式 | 客户端模板选择器 |
-| 2.7 | **Windows x64 二进制** | Cangjie Windows 工具链；路径分隔符/编码适配 | Windows 客户端可用 |
-| 2.8 | **进度快照回滚** `snapshot rollback <id>` | 进度库（非 git）误写回滚；快照 list/create/restore | 客户端"撤销"按钮 |
+| 能力 | 入口 | 状态 |
+|---|---|---|
+| 项目群进度内核：注册 / 扫描 / 浅更新 / 深更新 / 追踪 / 里程碑 / 进度日志 / 仪表盘 / 报告 | `list` `add` `scan` `status` `track` `update` `deep` `journal` `milestone` `dashboard` `report` | 已发版 |
+| 文档生成与完整性校验（README / AGENTS / CLAUDE 的托管区域） | `update --docs` `deep` `docs` `verify` | 已发版 |
+| git 安全操作与 post-commit 钩子 | `git <pull\|push\|commit\|stash\|unstash\|fetch>`、`hook <install\|uninstall\|status>` | 已发版 |
+| agent 三件套 | CLI（`--json`）/ `moongit mcp`（38 个工具）/ `moongit skill` | 已发版，持续补 |
+| 代码图谱（符号索引 / 关系树 / 影响面）+ SQLite 图库 | `graph overview\|tree\|symbol\|impact`、`graph db` | 已发版 |
+| 架构图（模块聚合 / 分层判定 / 泳道布局 / Canvas 交互图） | `arch gen\|update\|query`、`graph arch --format …` | 已发版 |
+| 代码置信度（确定性疑点）+ 置信度库 + 热力图 | `confidence gen\|query\|db`、`render index --confidence` | 已发版 |
+| 补丁级置信度三层（算法信号 / agent 复核 / 合并） | `graph patchconf`、MCP `codegraph_patch_confidence` / `_merge` | 已发版 |
+| **代码索引 v2**：成员级符号、调用点、稳定 id、9 个 `index_*` 工具 | `index gen\|update\|overview\|search\|query\|file\|refs\|impact\|grep` | v0.3.0（未发版） |
 
 ---
 
-## Phase 3 — 协作与远程（v0.5.x）
+## 代码索引线 · 本轮没做、下一步做的
 
-**目标**：从单机工具扩展为"可同步的团队基础设施"。
+按「对 agent 定位代码的影响」排序：
 
-| # | 特性 | 说明 | 客户端影响 |
-|---|------|------|-----------|
-| 3.1 | **远程同步协议** | moonGit sync pull/push：进度库推送到远端 JSON 文件（Git 仓库 / S3 / 自建服务器）；多机冲突解决 | 客户端同步设置 + 冲突展示 |
-| 3.2 | **团队聚合** | 多台机器的 registry 合并到一个视图；按 author 维度统计 | 客户端"团队"页 |
-| 3.3 | **review 工作流** | 进度更新需要 review（像 PR 一样 approve/reject）；reviewer 留痕 | 客户端 review 队列 |
-| 3.4 | **Web Dashboard** | 自托管只读 Web 面板（引擎 serve 内置 HTML），手机浏览器可看 | 客户端可选（有 Web 就够了） |
-| 3.5 | **OpenAPI 规范** | 输出 OpenAPI 3.0 JSON；第三方可用代码生成器自动生成客户端 | 第三方集成成本→0 |
+| # | 项 | 现状 | 要做到 |
+|---|---|---|---|
+| I.1 | **属性 / 字段索引** | 只索引函数与类型（7 种 `kind`），字段不出现在 `nodes` | 字段 / 属性作为符号入表，带所属类型 |
+| I.2 | **真增量** | `index update` 是探针增量：源没变跳过，变了**整库重建** | 按文件增量解析，只重算变过的文件与其调用点 |
+| I.3 | **接收者类型解析** | 接收者调用按裸名解析，`resolved` 边可能误连（探针 421/1526 跨类型） | 至少对「本文件 / 本类型内可见的成员」做类型感知解析 |
+| I.4 | **孤儿检测的证据升级** | 「被引用」仍是名字级（裸名在任意非声明处出现），同名不同物会漏报 | 在不把「当类型用 / 按名引用的槽函数 / 字符串插值里的调用」误判成孤儿的前提下收紧 |
+| I.5 | **两遍词法扫描合一** | 成员级扫描器与 `build.cj` 的引用遍各有一套口径，偶有不一致 | 一遍扫描产出带分类的 token 流，图谱 / 引用 / 未解析 / 架构引用都从它取 |
+| I.6 | **MCP `outputSchema`** | 只有 `inputSchema`；返回形状靠 `structuredContent` 与描述文字约定 | 给每个工具声明 `outputSchema` |
+| I.7 | **跨编辑恒定的符号身份** | 稳定 id 含行号，代码挪了行就变 | 增加按 `qual` 的别名查找（已在 `index query` 支持限定名），文档明示 id 的有效期 |
+| I.8 | **带接收者的未解析调用入疑点** | `unresolved-call` 只报自由调用 | 接收者是工程内类型时，未解析的成员调用才报——需要 I.3 |
+| I.9 | **macOS 客户端接入 `index_*`** | 引擎侧 CLI 与 MCP 就绪；macOS 客户端 AgentCore 未接入 5 个查询工具 | 客户端工具循环接入 |
+| I.10 | **Linux 环境红夹具跨平台化** | 3 条用例的夹具依赖 macOS / bash 行为 | 改夹具而不是改断言（`AGENTS.md` 不变量 148） |
+| I.11 | **两份工具清单并表** | MCP 与 `tools --json` 现行工具名只有 23 个同名 | 并表要动客户端分发表，另起一轮 |
 
 ---
 
-## Phase 4 — 生态与智能（v1.0+）
+## 原路线图条目的现状
 
-**目标**：从工具升级为可扩展的平台。
+### Phase 1 — 数据深度与可靠性
+
+| # | 特性 | 现状 | 说明 |
+|---|---|---|---|
+| 1.1 | 进度差分 `diff` | 未做 | 两次快照之间的结构化 delta |
+| 1.2 | 速度追踪 `velocity` | 未做 | 按周 / 月的提交速率与趋势 |
+| 1.3 | 子进程生命周期管理 | **已交付** | `execCapture` 超时路径杀子进程（util/exec.cj 的用例组） |
+| 1.4 | 并发 serve | **已废弃** | HTTP 服务端已整体删除；传输层只有 CLI 子进程与 MCP(stdio)，零 socket |
+| 1.5 | Linux x64 二进制 | **已交付** | release 流水线产出 `moongit-<tag>-linux-x64.tar.gz`（`AGENTS.md` 不变量 140） |
+| 1.6 | 数据导出 `export` | 形态变了 | 没有独立的 `export` 命令；每个命令都有 `--json`，`report --out` 导出 Markdown |
+| 1.7 | registry v2 | 部分交付 | 项目群（group）与标签（tags）已有；排序权重未做 |
+| 1.8 | 进度历史 HTTP API | **已废弃**（HTTP 形态） | 数据在 `journal` / MCP `get_journal` 里；没有 HTTP 端点 |
+
+### Phase 2 — 动作扩展与自动化
+
+| # | 特性 | 现状 | 说明 |
+|---|---|---|---|
+| 2.1 | watch 模式 | 部分交付 | post-commit 钩子 → `track` 已有；inotify / fsevents 监听与定时 update 未做 |
+| 2.2 | 分支生命周期 | 未做 | 现有 git 操作是 pull / push / commit / stash / unstash / fetch |
+| 2.3 | 多根扫描 | **已交付** | `scan [根目录…] [--depth N] [--git-only]` |
+| 2.4 | webhook 通知 | 搁置 | 向外发 HTTP 与「零 socket」红线冲突；由上层（MCP 宿主 / 客户端）在 update 后自行通知 |
+| 2.5 | 查询语言 | 未做 | — |
+| 2.6 | 模板系统 | 未做 | — |
+| 2.7 | Windows x64 二进制 | 未做 | — |
+| 2.8 | 进度快照回滚 | 未做 | 只有备份保留（`update.backupKeep`），没有回滚命令 |
+
+### Phase 3 — 协作与远程
+
+| # | 特性 | 现状 | 说明 |
+|---|---|---|---|
+| 3.1 | 远程同步协议 | 未做 | — |
+| 3.2 | 团队聚合 | 未做 | — |
+| 3.3 | review 工作流 | 未做 | — |
+| 3.4 | Web Dashboard | **已废弃** | 依赖已删除的 HTTP 服务端 |
+| 3.5 | OpenAPI 规范 | **已废弃** | 没有 HTTP API 可描述；对外契约是 CLI `--json` 与 MCP |
+
+### Phase 4 — 生态与智能（未开始）
 
 | # | 特性 | 说明 |
-|---|------|------|
-| 4.1 | **插件系统** | 自定义命令注册（`moongit plugin install <url>`）；自定义数据源（不只 git，还可接 Jira/GitHub Issues） |
-| 4.2 | **IDE 扩展** | VS Code 扩展（读引擎 MCP）；JetBrains 插件 |
-| 4.3 | **AI agent 框架** | 引擎内置轻量 agent 循环（可选启用）：注册工具 → LLM 推理 → 执行 → 反馈；但引擎仍不绑定 LLM |
-| 4.4 | **指标插件** | 测试覆盖率趋势 / 代码复杂度趋势 / 构建成功率——作为新的数据维度 |
-| 4.5 | **自定义仪表盘** | 用户定义 dashboard 布局（选择展示哪些卡片、排序、过滤条件） |
-| 4.6 | **API 冻结** | 1.0 冻结 CLI 参数名 / HTTP 路径 / JSON 键名 / MCP 工具签名；后续只增不改 |
-
----
-
-## 里程碑时间线（估算）
-
-```
-v0.1.0 ← 当前（已完成）
-v0.2.0 ← Phase 1 核心（diff + velocity + Linux + 并发 serve）    ~6 周
-v0.2.x ← Phase 1 补全（export + registry v2 + history API）      ~4 周
-v0.3.0 ← Phase 2 核心（watch + branch ops + query language）     ~8 周
-v0.4.0 ← Phase 2 补全（webhook + template + Windows）            ~6 周
-v0.5.0 ← Phase 3 核心（sync + review + web dashboard）           ~10 周
-v1.0.0 ← Phase 4（生态 + API 冻结）                               长期
-```
+|---|---|---|
+| 4.1 | 插件系统 | 自定义命令注册；自定义数据源（Jira / GitHub Issues） |
+| 4.2 | IDE 扩展 | VS Code 扩展（读引擎 MCP）；JetBrains 插件 |
+| 4.3 | AI agent 框架 | 引擎内置轻量 agent 循环（可选启用）；引擎仍不绑定 LLM |
+| 4.4 | 指标插件 | 测试覆盖率趋势 / 复杂度趋势 / 构建成功率 |
+| 4.5 | 自定义仪表盘 | 用户定义布局 |
+| 4.6 | API 冻结 | 1.0 冻结 CLI 参数名 / JSON 键名 / MCP 工具签名；后续只增不改 |
 
 ---
 
 ## 客户端跟进（deepDolphin 对应表）
 
-引擎每新增一个端点，客户端需要新增对应的 UI：
-
-| 引擎能力 | deepDolphin 需要的 UI |
+| 引擎能力 | deepDolphin 需要的 |
 |---|---|
-| 1.1 进度差分 | 详情页"变化"tab |
+| 代码索引 v2（`index_*`） | AgentCore 接入查询工具；热力图按定位串跳转 |
+| 1.1 进度差分 | 详情页「变化」tab |
 | 1.2 速度追踪 | 仪表盘速度曲线图 |
 | 1.6 数据导出 | 工具栏导出按钮 |
-| 1.7 registry v2 | 侧栏项目分组 |
-| 1.8 进度历史 API | 图表库 |
-| 2.1 watch 模式 | 设置页实时开关 |
+| 1.7 registry v2 | 侧栏项目分组（排序权重落地后补自定义排序） |
+| 2.1 watch 模式 | 设置页实时开关（inotify / 定时部分） |
 | 2.2 分支生命周期 | 看板卡片分支操作 |
 | 2.5 查询语言 | 搜索栏表达式模式 |
 | 2.8 快照回滚 | 撤销按钮 |
 | 3.1 远程同步 | 同步设置 + 冲突展示 |
 | 3.2 团队聚合 | 团队页 |
-| 3.4 Web Dashboard | 无（引擎内置） |
 | 4.1 插件 | 插件管理页 |
 
 ---
@@ -112,8 +123,15 @@ v1.0.0 ← Phase 4（生态 + API 冻结）                               长期
 
 | 不做 | 理由 |
 |---|---|
-| 内置 LLM 调用 | AI 无关是核心架构决策；AI 在客户端/插件层 |
-| 内置数据库（SQLite 等） | JSON 文件够用且 git 可追踪；零依赖是红线 |
+| 内置 LLM 调用 | AI 无关是核心架构决策；AI 在客户端 / 插件层 |
 | 云服务 | 本地优先是核心价值；远程同步是协议不是服务 |
-| 实时协作编辑 | 不是 Google Docs；进度是"事实记录"不是"文档编辑" |
+| 实时协作编辑 | 不是 Google Docs；进度是「事实记录」不是「文档编辑」 |
 | Windows ARM64 | 需求不明确；先覆盖 x64 |
+| HTTP 服务端 | 已整体删除：进程之间用 CLI 子进程与 MCP(stdio) 通信，零 socket |
+
+> **更正一条旧记录**：本表原来写着「内置数据库（SQLite 等）——不做」。
+> 自 2026-10-13（v0.2.0 之前）起，图库与置信度库就是单文件 SQLite
+> （`graph db` / `confidence db` / `codegraph.db`，经系统 `libsqlite3`）。
+> 红线守住的其实是三件事：**不引入数据库服务、不引入第三方仓颉包**（走系统 `libsqlite3`）、
+> **JSON 仍是默认的出口形状**（SQLite 只作为可选的单文件落盘，给要自己写 SQL 的 agent）。
+> 那一行与事实相反，删去；留这条说明，免得后来者按旧表去「纠正」现有实现。

@@ -3552,19 +3552,14 @@ func cmdTools(rest: ArrayList<String>, ctx: CliContext): Int64 {
     return 0
 }
 
-let SKILL_FRONTMATTER = "---\nname: moongit\ndescription: 用 moonGit 引擎管理本地 git 项目群的进度与代码：查现状、记进度、浅/深更新文档、git 操作、里程碑，以及代码图谱、架构图（Canvas 契约）、代码置信度与补丁置信度三层体检。适用于任何关于本地项目状态、分支进度、项目文档维护、代码结构与可信度分析的问题。\n---\n\n"
+let SKILL_FRONTMATTER = "---\nname: moongit\ndescription: 用 moonGit 引擎管理本地 git 项目群的进度与代码：查现状、记进度、浅/深更新文档、"
+    + "git 操作、里程碑；代码索引（按名字搜符号、查定义/调用点/引用/影响面/文件大纲、搜文本）让 agent 快速定位代码；"
+    + "代码置信度、热力图与架构图；补丁置信度三层体检。适用于任何关于本地项目状态、分支进度、项目文档维护、"
+    + "代码在哪/谁在调用/改了影响谁、代码结构与可信度分析的问题。\n"
+    + "version: ${ENGINE_VERSION}\n---\n\n"
 
 /// 代码图谱工具在 skill 文本里的附加注解（纯呈现细节，名字本身来自 mcpToolList）。
 func skillGraphToolNote(name: String): String {
-    if (name == "codegraph_tree") {
-        return "（depth 控制目录深度）"
-    }
-    if (name == "codegraph_arch") {
-        return "（format=html|mermaid|dot|json|**scene**）"
-    }
-    if (name == "codegraph_confidence") {
-        return "（format=json|text|**llm**——可直接喂给模型的逐条复核提示词）"
-    }
     if (name == "arch_gen") {
         return "（产出 arch.json + 摘要；交互 HTML 归 render）"
     }
@@ -3573,6 +3568,43 @@ func skillGraphToolNote(name: String): String {
     }
     if (name == "confidence_gen") {
         return "（前置自愈索引；format=text|json|llm——llm 是可直接喂给模型的逐条复核提示词）"
+    }
+    if (name == "index_search") {
+        return "（拿不准全名先用它；结果带稳定 id、限定名、file:line:col、签名）"
+    }
+    if (name == "index_query") {
+        return "（symbol 可给裸名、限定名或 id；裸名有歧义时 ambiguous=true 且 perDef 逐定义给出）"
+    }
+    if (name == "index_outline") {
+        return "（读文件前先看结构：符号、行范围、签名）"
+    }
+    if (name == "index_refs") {
+        return "（找全调用点：file:line:col、接收者、tier、所在函数）"
+    }
+    if (name == "index_impact") {
+        return "（沿 direct/resolved 边反向传递闭包；每个带 distance）"
+    }
+    if (name == "index_grep") {
+        return "（字面文本搜索，不依赖索引）"
+    }
+    // 旧名别名：仍在清单里（与工具表对账），但注明已废弃与去向——配方里不再使用
+    if (name == "codegraph_overview") {
+        return "（旧名别名，将移除 → index_overview）"
+    }
+    if (name == "codegraph_tree") {
+        return "（旧名别名，将移除 → index_gen）"
+    }
+    if (name == "codegraph_symbol") {
+        return "（旧名别名，将移除 → index_query）"
+    }
+    if (name == "codegraph_impact") {
+        return "（旧名别名，将移除 → index_impact）"
+    }
+    if (name == "codegraph_arch") {
+        return "（旧名别名，将移除 → arch_gen / arch_query / render；format=html|mermaid|dot|json|**scene**）"
+    }
+    if (name == "codegraph_confidence") {
+        return "（旧名别名，将移除 → confidence_gen / confidence_query；format=llm 出复核提示词）"
     }
     if (name == "render") {
         return "（target=arch|index；落盘单文件交互 HTML，回执只带路径与复用/新绘判定）"
@@ -3643,18 +3675,23 @@ func skillToolSection(): String {
 }
 
 func skillMarkdown(): String {
+    // 接入方式先攒成列表，标题里的「N 种」由列表长度派生（数字跟着列表走，就不会漂）。
+    // 工具清单由 skillToolSection() 从 mcpToolList() 派生——名字与计数不手抄第二份。
     let engine = currentExecutable()
-    // 接入方式先攒成列表，标题里的「N 种」由列表长度派生。
-    // 原来这里硬写「## 三种接入方式」却只列了 MCP + CLI 两条 ——
-    // HTTP 删掉后第三种没了，标题没跟着改，agent 读到的就是一个空承诺。
-    // 数字跟着列表走，就不会再漂。
     let ways = ArrayList<String>()
     ways.add("**MCP 服务器**（推荐，工具化接入）。宿主配置：\n   ```json\n   "
         + "{\"mcpServers\": {\"moongit\": {\"command\": \"" + engine + "\", \"args\": [\"mcp\"]}}}\n   ```\n   "
+        + "（command 是生成这份教学包的那台机器上的引擎路径；换机器用 `command -v moongit` 的结果替换。"
+        + "Linux 上要用自带的启动器 `moongit`——它负责给仓颉运行时设 LD_LIBRARY_PATH，直接指向裸二进制会起不来。）\n   "
         + skillToolSection())
-    ways.add("**CLI**（一次性问答/脚本）：`" + engine + " status --json`、`context [项目] --budget N`、`tools`、"
-        + "`journal <项目>`、`dashboard --json`、"
-        + "`graph overview|tree --format html|symbol <名>|impact <名>|arch --format scene|confidence [--llm]|patchconf --patch <diff>`（tree/arch 默认即 Web Canvas 交互图）")
+    ways.add("**CLI**（一次性问答/脚本；`--json` 出机器可读结果）。把 `<moongit>` 换成引擎启动器：\n   "
+        + "进度：`<moongit> status --json` · `context [项目] --budget N` · `tools` · `journal <项目>` · `dashboard --json`\n   "
+        + "代码定位：`index search <模式> [项目]` · `index query <符号|--file 路径> [项目]` · `index file <路径> [项目]` · "
+        + "`index refs <符号> [项目]` · `index impact <符号> [项目]` · `index grep <文本> [项目]`\n   "
+        + "索引与置信度：`index gen|update|overview <项目>` · `confidence gen|query <项目>` · `arch gen|query <项目>`\n   "
+        + "交互图：`render <arch|index> <项目>`（单文件 HTML 落盘，回执带路径与复用/新绘判定）· "
+        + "`graph tree|arch --format html|scene`\n   "
+        + "体检：`graph confidence [--llm]` · `graph patchconf --patch <diff>`")
     let sb = StringBuilder()
     sb.append(SKILL_FRONTMATTER)
     sb.append("# moonGit — 本地项目群进度与代码引擎（agent 使用指南）\n\n")
@@ -3663,26 +3700,54 @@ func skillMarkdown(): String {
     for (i in 0..ways.size) {
         sb.append("${i + 1}. ${ways[i]}\n\n")
     }
+    sb.append("## 用索引之前先读这五条\n\n")
+    sb.append("- **索引是词法级的，不是编译器闭包**：符号来自对源码的确定性扫描（9 种语言），"
+        + "调用边来自调用点解析；没有类型信息，结论一律按「候选」表述。\n")
+    sb.append("- **稳定 id**：`f:<相对路径>:<行>:<名字>`，同一份源码两次索引得到同一个 id——把它当句柄存下来回传"
+        + "（`index query` / `index refs` / `index impact` 的 symbol 参数都收 id）。行号是 id 的一部分，代码挪了行 id 就变。\n")
+    sb.append("- **限定名消歧**：裸名可能对应多个定义（`ambiguous: true`，`perDef` 逐定义给出调用关系）；"
+        + "用限定名（`Outer.method`）或 id 收窄。同名不同语言不算同一个符号。\n")
+    sb.append("- **tier 是确信度**：`direct` = 限定命中（`Type.name(` / `self.name(`）；`resolved` = 裸名在候选里唯一；"
+        + "`guessed` = 有歧义、全部连边。向用户转述时带上这一档。\n")
+    sb.append("- **没建索引先用不了**：`index_gen(name)` 建一次（之后 `index_update` 探针增量）；"
+        + "`index_grep` 不依赖索引。未解析的调用点绝大多数是框架/标准库调用，不要说成「项目里没有定义」。\n\n")
     sb.append("## 典型任务配方\n\n")
     sb.append("- **项目现状**：get_project_context(name) → 直接总结；要历史再 get_journal\n")
     sb.append("- **项目群周报**：get_group_context → get_dashboard → 按「活跃/风险/建议」输出\n")
     sb.append("- **收尾打扫**：git_op(op=commit, message=…) 提交未提交改动 → run_shallow_update 记进度\n")
     sb.append("- **项目说明文档**：get_project_context + get_project_docs → 生成 markdown 说明\n")
-    sb.append("- **改这个函数影响谁**：codegraph_symbol(name, symbol) 看定义与引用 → codegraph_impact(name, symbol) "
-        + "拿引用文件清单 → 按影响面给改动顺序（结论是词法级候选，不是编译器闭包，措辞要带上）\n")
-    sb.append("- **这段代码可信吗**：codegraph_confidence(name, format=llm) 拿逐条复核提示词自己过一遍，"
-        + "或 format=json 看六维度分数与 findings（file:line 证据自足）\n")
+    sb.append("- **X 功能的代码在哪 / 我要改 X**：index_search(name, pattern) 按名字或片段搜符号"
+        + "（拿不准全名就先搜，结果带 id、限定名、file:line:col、签名）→ index_outline(name, file) 读文件前先看结构 "
+        + "→ index_query(name, symbol=id 或限定名) 取定义、调用方与被调（每条带调用点 file:line:col）"
+        + "→ index_grep(name, pattern) 找字面文本（报错信息、配置键、注解、字符串）。"
+        + "回答时给「路径:行:列 + 限定名 + 签名」，不要只给文件名。\n")
+    sb.append("- **改这个函数影响谁**：index_refs(name, symbol) 找全调用点 → index_impact(name, symbol) "
+        + "拿传递影响面（每个带 distance）→ 按距离给改动顺序。结论是**词法级候选**，不是编译器闭包，"
+        + "措辞必须带上；`guessed` 边不参与影响面。\n")
+    sb.append("- **这段代码可信吗**：index_gen(name) → confidence_gen(name) 生成置信度快照 → "
+        + "confidence_query(name) 读疑点（每条带符号 id 与限定名，可直接回到 index_query）"
+        + "→ 要给人看：render(target=index) 再 `render index <项目> --confidence` 出热力图"
+        + "（符号带「路径:行:列」定位串，可一键复制）；要自己做语义复核：confidence_gen(name, format=llm) "
+        + "拿逐条复核提示词自己过一遍。回执说快照过期就先重跑 confidence_gen，不要拿旧快照下结论。\n")
     sb.append("- **提交前补丁体检（三层）**：`git diff > /tmp/p.diff` → codegraph_patch_confidence(name, patch_path) "
         + "拿 S1..S10 信号与 uncertain 清单 → 你逐条裁决（confirm/dismiss/unsure，必须引用代码原文）→ "
         + "codegraph_patch_merge(algorithm_json, agent_json) → final 分数与披露\n")
-    sb.append("- **架构图给客户端/用户**：codegraph_arch(name, format=scene) 出 moongit-graph-scene v1 JSON "
+    sb.append("- **架构图**：arch_gen(name) 产出 arch.json 与模块摘要 → arch_query(name[, module]) 读分层/违规/环 → "
+        + "render(target=arch) 出零依赖单文件交互图；要自己画：arch_gen(name, format=scene) 出 moongit-graph-scene v1 JSON "
         + "（主题 token、形状、粒子、hits 点击区、panels 详情面板、逐视图 edgesDropped 截断披露）——"
-        + "任何 Canvas2D 移植（浏览器/Swift/Skia）按 docs/graph-scene-schema.md 驱动；format=html 出零依赖单文件交互图\n\n")
+        + "任何 Canvas2D 移植（浏览器/Swift/Skia）按 docs/graph-scene-schema.md 驱动\n\n")
     sb.append("## 红线\n\n")
     sb.append("- git_op 只允许白名单操作（pull/push/commit/stash/unstash/fetch），没有 reset/clean/force-push\n")
     sb.append("- 文档更新只发生 moonGit 托管区域内（引擎保证），用户内容逐字节保留\n")
     sb.append("- 引擎是 AI 无关的：所有判断与表达由你完成，引擎只提供事实\n")
-    sb.append("- codegraph_* 是词法级近似，不是编译器闭包：对用户表述时必须带「词法级候选」限定，不许说成精确引用\n")
+    sb.append("- 索引、调用边、影响面都是词法级近似，不是编译器闭包：对用户表述时必须带「词法级候选」限定，"
+        + "不许说成精确引用；转述 tier。\n")
+    sb.append("- 裸名有歧义先收窄再下结论；`ambiguous: true` 时不要替用户挑一个。\n")
+    sb.append("- 代码图谱里被标为旧名别名的 codegraph_* 工具不要写进方案（见文末），新面用 index_* / arch_* / confidence_* / render。\n\n")
+    sb.append("## 旧名别名（将移除）\n\n")
+    sb.append("codegraph_overview / codegraph_tree / codegraph_symbol / codegraph_impact / codegraph_arch / codegraph_confidence "
+        + "是早期工具名，仅为兼容保留、将移除。对应关系：overview→index_overview、tree→index_gen、symbol→index_query、"
+        + "impact→index_impact、arch→arch_gen+arch_query+render、confidence→confidence_gen+confidence_query。\n")
     return sb.toString()
 }
 
@@ -3985,7 +4050,8 @@ func printHelp(): Unit {
         printOut("  scan [root...] [--depth N] [--git-only]  Discover and register projects (--git-only skips non-git dirs)")
         printOut("  status [project]         Show progress status (writes nothing)")
         printOut("  track [project]          Progress snapshot: record only, never touch docs (for hooks)")
-        printOut("  update [project] [--docs S] [--dry-run]  Shallow update: record branch progress + refresh managed doc sections (S = all|readme|agent, default all)")
+        printOut("  update [project] [--docs S] [--dry-run]  Shallow update: record branch progress + refresh")
+        printOut("                           managed doc sections (S = all|readme|agent, default all)")
         printOut("  deep [project] [--scope S]   Deep update: rewrite overview/architecture/commands/history")
         printOut("  journal [project] [--branch B]  View the progress log")
         printOut("  git <pull|push|commit|stash|unstash|fetch> [project] [--message M]")
@@ -3999,21 +4065,36 @@ func printHelp(): Unit {
         printOut("  skill <print|install>    Print/install the agent Skill pack (--dir for the target directory)")
         printOut("  report [project] [--out F]  Export a Markdown progress report")
         printOut("  graph [overview|tree|symbol|impact|arch|functions|confidence|patchconf] [project]")
-        printOut("                           patchconf: patch-level confidence (3-layer: --patch analyze / --skill agent / --merge final)")
-        printOut("                           confidence: structural confidence report (--llm for the LLM review prompt; --no-ast skips the syntax-tree layer)")
+        printOut("                           patchconf: patch-level confidence (3-layer: --patch analyze")
+        printOut("                           / --skill agent / --merge final)")
+        printOut("                           confidence: structural confidence report (--llm for the LLM review prompt;")
+        printOut("                             --no-ast skips the syntax-tree layer)")
         printOut("                           Code graph: symbol index / relationship tree / impact /")
         printOut("                           interactive architecture canvas (--format html|mermaid|dot|json|scene)")
-        printOut("  graph db [project] [--out F]  Write the symbol-level index to a single-file SQLite DB (nodes/edges with confidence tiers; query callers/callees via SQL)")
-        printOut("  confidence db [project] [--out F]  Write the confidence report to a single-file SQLite DB (findings/dimensions/penalty table)")
-        printOut("  arch <gen|update|query> <project>  Architecture index: gen (arch.json, layout included) / update (probe-driven, --force) / query [module] [--violations]")
-        printOut("  index <gen|overview|update|query|search|grep|refs|impact|file>  Persistent code index (member-level, stable ids): gen (db + index.json) / overview (SQL counts) / update (probe-driven)")
-        printOut("                           query <symbol> (name | Outer.method | id) | --file <path> · search <pattern> [--kind K] [--lang L] [--limit N] [--file F]")
-        printOut("                           grep <text> [--ignore-case] [--limit N] [--context K] [--glob G] (literal; works without an index) · refs <symbol> · impact <symbol> [--depth N] · file <path>")
-        printOut("  confidence <gen|query> <project>   Confidence: gen (confidence.json; rebuilds the index first when stale; --db also writes confidence.db) / query (read-only snapshot, filters --file/--symbol/--kind/--weight/--top)")
-        printOut("  render <arch|index> <project>  Render deliverables from the persisted payload (reuses when unchanged; --force redraws; render index --confidence overlays confidence.json)")
-        printOut("  config <list|get|set> [k] [v]  Configuration (AI preset, etc.)")
+        printOut("  graph db [project] [--out F]  Write the symbol-level index to a single-file SQLite DB")
+        printOut("                           (nodes/edges with confidence tiers; query callers/callees via SQL)")
+        printOut("  confidence db [project] [--out F]  Write the confidence report to a single-file SQLite DB")
+        printOut("                           (findings/dimensions/penalty table)")
+        printOut("  arch <gen|update|query> <project>  Architecture index: gen (arch.json, layout included)")
+        printOut("                           / update (probe-driven, --force) / query [module] [--violations]")
+        printOut("  index <gen|overview|update|query|search|grep|refs|impact|file>  Persistent code index")
+        printOut("                           (member-level, stable ids): gen (db + index.json) / overview (SQL counts)")
+        printOut("                           / update (probe-driven, --force)")
+        printOut("                           search <pattern> (find symbols by name; --kind/--lang/--limit/--file)")
+        printOut("                           grep <text> (literal text, works without an index;")
+        printOut("                             --ignore-case/--limit/--context/--glob)")
+        printOut("                           query <symbol> (name | Outer.method | id) | --file <path> · file <path> (outline)")
+        printOut("                           refs <symbol> (every call site) · impact <symbol> (reverse closure; --depth N)")
+        printOut("  confidence <gen|query> <project>  Confidence: gen (confidence.json; rebuilds the index first")
+        printOut("                           when stale; --db also writes confidence.db)")
+        printOut("                           / query (read-only snapshot; --file/--symbol/--kind/--weight/--top)")
+        printOut("  render <arch|index> <project>  Render deliverables from the persisted payload (reuses when")
+        printOut("                           unchanged; --force redraws; render index --confidence overlays confidence.json)")
+        printOut("  config <list|get|set> [k] [v]  Configuration (keys: language / update.backupKeep")
+        printOut("                           / update.maxShallowBranches / roots)")
         printOut("  verify [project]         Verify doc integrity (user content untouched)")
         printOut("  doctor                   Environment self-check")
+        printOut("  version                  Print the engine version")
         printOut("")
         printOut("Options:")
         printOut("  --json                   Machine-readable output")
@@ -4042,7 +4123,8 @@ func printHelp(): Unit {
     printOut("  scan [根目录...] [--depth N] [--git-only]  扫描发现项目并注册（--git-only 跳过非 git 目录）")
     printOut("  status [项目]            查看项目进度现状（不写任何文件）")
     printOut("  track [项目]             进度快照：只记录，不改文档（钩子用）")
-    printOut("  update [项目] [--docs S] [--dry-run]  浅更新：记录各分支进度 + 刷新文档进度区域（S = all|readme|agent，默认 all）")
+    printOut("  update [项目] [--docs S] [--dry-run]  浅更新：记录各分支进度 + 刷新文档进度区域")
+    printOut("                           （S = all|readme|agent，默认 all）")
     printOut("  deep [项目] [--scope S]   深度更新：重写 overview/architecture/commands/history")
     printOut("  journal [项目] [--branch B]  查看进度日志")
     printOut("  git <pull|push|commit|stash|unstash|fetch> [项目] [--message M]")
@@ -4056,21 +4138,30 @@ func printHelp(): Unit {
     printOut("  skill <print|install>    输出/安装 agent Skill 教学包（--dir 指定目录）")
     printOut("  report [项目] [--out F]  导出 Markdown 进度报告")
     printOut("  graph [overview|tree|symbol|impact|arch|confidence|patchconf] [项目]")
-    printOut("                           patchconf：补丁级置信度三层架构（--patch 分析 / --skill 取 Agent 任务 / --merge 合并终稿）")
+    printOut("                           patchconf：补丁级置信度三层架构（--patch 分析 / --skill 取 Agent 任务")
+    printOut("                           / --merge 合并终稿）")
     printOut("                           confidence：代码置信度报告（--llm 出 LLM 复核提示词；--no-ast 跳过语法树层）")
     printOut("                           代码图谱：符号索引/关系树/影响面/技术架构图")
     printOut("                           （arch 用 --format html|mermaid|dot|json|scene；html 为 Canvas 交互图）")
-    printOut("  graph db [项目] [--out F]  符号级索引写入单文件 SQLite（nodes/edges，含 tier 确信度；agent 用 SQL 查 callers/callees）")
+    printOut("  graph db [项目] [--out F]  符号级索引写入单文件 SQLite（nodes/edges，含 tier 确信度；")
+    printOut("                           agent 用 SQL 查 callers/callees）")
     printOut("  confidence db [项目] [--out F]  置信度报告写入单文件 SQLite（findings/dimensions/罚分表）")
-    printOut("  arch <gen|update|query> <项目>  架构索引：gen（arch.json，含布局坐标）/ update（探针增量，--force 强制）/ query [模块] [--violations]")
-    printOut("  index <gen|overview|update|query|search|grep|refs|impact|file>  持久化代码索引（成员级，稳定 id）：gen（db + index.json）/ overview（SQL 计数）/ update（探针增量）")
-    printOut("                           query <符号>（裸名 | Outer.method | id）| --file <路径> · search <模式> [--kind K] [--lang L] [--limit N] [--file F]")
-    printOut("                           grep <文本> [--ignore-case] [--limit N] [--context K] [--glob G]（定字符串，不依赖索引）· refs <符号> · impact <符号> [--depth N] · file <路径>")
-    printOut("  confidence <gen|query> <项目>   置信度：gen（confidence.json；索引过期先自动重建；--db 额外写 confidence.db）/ query（只读快照，过滤 --file/--symbol/--kind/--weight/--top）")
-        printOut("  render <arch|index> <项目>  用持久化 payload 渲染交付物（未变即复用；--force 重绘；render index --confidence 叠加 confidence.json）")
-    printOut("  config <list|get|set> [k] [v]  配置（AI 预设等）")
+    printOut("  arch <gen|update|query> <项目>  架构索引：gen（arch.json，含布局坐标）/ update（探针增量，--force 强制）")
+    printOut("                           / query [模块] [--violations]（违规对清单 + 环上模块）")
+    printOut("  index <gen|overview|update|query|search|grep|refs|impact|file>  持久化代码索引（成员级，稳定 id）")
+    printOut("                           gen（db + index.json）/ overview（SQL 计数）/ update（探针增量，--force 重建）")
+    printOut("                           search <模式>（按名字搜符号；--kind/--lang/--limit/--file）")
+    printOut("                           grep <文本>（字面文本，不依赖索引；--ignore-case/--limit/--context/--glob）")
+    printOut("                           query <符号>（裸名 | Outer.method | id）| --file <路径> · file <路径>（文件大纲）")
+    printOut("                           refs <符号>（每一个调用点）· impact <符号>（反向传递闭包；--depth N）")
+    printOut("  confidence <gen|query> <项目>  置信度：gen（confidence.json；索引过期先自动重建；--db 另写")
+    printOut("                           confidence.db）/ query（只读快照；--file/--symbol/--kind/--weight/--top 过滤）")
+    printOut("  render <arch|index> <项目>  用持久化 payload 渲染单文件交互 HTML（未变即复用；--force 重绘；")
+    printOut("                           render index --confidence 叠加 confidence.json 热力图）")
+    printOut("  config <list|get|set> [k] [v]  配置（键：language / update.backupKeep / update.maxShallowBranches / roots）")
     printOut("  verify [项目]            校验文档完整性（用户内容是否被改动）")
     printOut("  doctor                   环境自检")
+    printOut("  version                  引擎版本号")
     printOut("")
     printOut("选项：")
     printOut("  --json                   机器可读输出")
