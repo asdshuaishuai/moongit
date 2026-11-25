@@ -4320,7 +4320,8 @@ func testSkillRecipesCoverCodeLocationPath(): Unit {
     for (needle in ["index_search", "index_outline", "index_query", "index_grep",
                     "index_refs", "index_impact", "confidence_gen", "confidence_query",
                     "render index", "ambiguous: true", "guessed", "f:<相对路径>:<行>:<名字>",
-                    "原型的 id 回的也是定义", "声明处列在 decls"]) {
+                    "原型的 id 回的也是定义", "声明处列在 decls",
+                    "框架回调", "再说「编造了 API」"]) {
         @Assert(md.contains(needle))
     }
 }

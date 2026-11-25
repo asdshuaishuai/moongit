@@ -3743,6 +3743,10 @@ func skillMarkdown(): String {
     sb.append("- 索引、调用边、影响面都是词法级近似，不是编译器闭包：对用户表述时必须带「词法级候选」限定，"
         + "不许说成精确引用；转述 tier。\n")
     sb.append("- 裸名有歧义先收窄再下结论；`ambiguous: true` 时不要替用户挑一个。\n")
+    sb.append("- `orphan`（孤儿符号）的「被引用」是名字级证据，同名不同物会漏报；框架回调（Qt override / D-Bus slot / "
+        + "协议方法）恒报——先看它是不是框架约定的方法名。\n")
+    sb.append("- `unresolved-call`（幻觉调用）只是「全仓没有该名字的裸调用」：框架密集的工程上抽样几乎全是框架 / 标准库调用——"
+        + "先 `index grep` 或查依赖确认这个名字确实不存在，再说「编造了 API」。\n")
     sb.append("- 代码图谱里被标为旧名别名的 codegraph_* 工具不要写进方案（见文末），新面用 index_* / arch_* / confidence_* / render。\n\n")
     sb.append("## 旧名别名（将移除）\n\n")
     sb.append("codegraph_overview / codegraph_tree / codegraph_symbol / codegraph_impact / codegraph_arch / codegraph_confidence "
