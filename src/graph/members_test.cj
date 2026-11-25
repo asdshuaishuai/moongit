@@ -607,24 +607,21 @@ func testCallSitesColAndUtf8Safety(): Unit {
     let line = "    checks.add([tl(lang, \"data dir\", \"数据目录\"), if (isDirectoryPath(deepgitHome())) { \"OK\" } else { tl(lang, \"not created\", \"未创建\") }, deepgitHome()])"
     let src = "public func cmd(): Unit {\n" + line + "\n}\n"
     let f = scanSource(src, "cangjie")
-    var seenHome: Int64 = 0
-    var seenTl: Int64 = 0
+    // 期望列（按字符数独立数出来）：tl 在 4 空格 + checks.add([ 之后 = 17；
+    // deepgitHome 第一次在 16 + 50 个字符的实参段之后 = 67，第二次在行尾 = 133。
+    let homeCols = ArrayList<Int64>()
+    let tlCols = ArrayList<Int64>()
     for (r in f.refs) {
         @Assert(r.caller == 0)                 // 内层被索引函数 = cmd
-        if (r.name == "deepgitHome") {
-            seenHome += 1
-            // 16 个字符的前缀（4 空格 + checks.add([）+ 50 个字符的实参段 + 1
-            @Assert(r.col == 67)
-            let at = line.indexOf("deepgitHome(").getOrThrow()
-            @Assert(r.col == runeCountOf(line[0..at]) + 1)
-        }
-        if (r.name == "tl") {
-            seenTl += 1
-            if (seenTl == 1) { @Assert(r.col == 17) }
-        }
+        if (r.name == "deepgitHome") { homeCols.add(r.col) }
+        if (r.name == "tl") { tlCols.add(r.col) }
     }
-    @Assert(seenHome == 1)
-    @Assert(seenTl == 2)
+    @Assert(homeCols.size == 2)
+    @Assert(homeCols[0] == 67)
+    @Assert(homeCols[1] == 133)
+    @Assert(tlCols.size == 2)
+    @Assert(tlCols[0] == 17)
+    @Assert(tlCols[1] == 99)
 
     // 声明行 / 析构 / 控制流关键字：都不是调用
     let cpp = scanSource("""
@@ -1118,7 +1115,7 @@ fun board(): Int { return 7 }
         let byKind = indexSearch(dbPath, "render", "class", "", "", 30)
         @Assert(Json.intAt(byKind, "total", 0) == 1)
         @Assert(Json.strAt(Json.arrAt(byKind, "results")[0], "name", "") == "Render")
-        @Assert(Json.intAt(indexSearch(dbPath, "render", "func", "", "", 30), "total", 0) == 5)
+        @Assert(Json.intAt(indexSearch(dbPath, "render", "func", "", "", 30), "total", 0) == 6)
         @Assert(Json.intAt(indexSearch(dbPath, "render", "", "kotlin", "", 30), "total", 0) == 7)
         @Assert(Json.intAt(indexSearch(dbPath, "render", "", "swift", "", 30), "total", 0) == 0)
         @Assert(Json.intAt(indexSearch(dbPath, "render", "", "", "a.kt", 30), "total", 0) == 4)
@@ -1268,7 +1265,8 @@ func testGrepFixedString(): Unit {
         @Assert(globMatch("a/b/c.kt", "a/*/c.kt"))
         @Assert(!globMatch("a/b/c.kt", "b/*.kt"))
         @Assert(globMatch("abc", "a?c"))
-        @Assert(!globMatch("abc", "a??"))
+        @Assert(globMatch("abc", "a??"))         // 两个 ? 恰好吃掉 b、c
+        @Assert(!globMatch("abcd", "a??"))       // 多出一个字符 ⇒ 不匹配
         @Assert(globMatch("abc", "*"))
         @Assert(globMatch("", "*"))
         @Assert(!globMatch("", "?"))

@@ -321,13 +321,19 @@ func graphDbFill(db: SqliteDb, graph: CodeGraph, funcPayload: JsonValue): Bool {
     stNode.finalize()
 
     // ── sites（调用点）──
-    // 只收「文件在本次数据域里」的调用点：depth 截断掉的文件里，调用方与被调方都
+    // 只收「文件在本次数据域里」的调用点：--depth 截断掉的文件里，调用方与被调方都
     // 不在 nodes 里，留下来只会是一批 src = 0 的孤儿行，把「有调用方」说成「没有」。
+    // 例外：本来就没有任何符号的文件（顶层脚本、只有属性初始化器的文件）在 payload 里
+    // 也没有节点，但它们的调用点是真实的「不在函数体内的调用」——照常入库。
+    let symFiles = HashSet<String>()
+    for (fe in graph.files) {
+        if (fe.symbols.size > 0) { symFiles.add(fe.relPath) }
+    }
     let stSiteOpt = db.prepare("INSERT INTO sites(src, dst, file, line, col, receiver, tier, name) VALUES(?, ?, ?, ?, ?, ?, ?, ?)")
     if (stSiteOpt.isNone()) { return false }
     let stSite = stSiteOpt.getOrThrow()
     for (site in graph.callSites) {
-        if (!fileInPayload.contains(site.file)) { continue }
+        if (!fileInPayload.contains(site.file) && symFiles.contains(site.file)) { continue }
         var src: Int64 = 0
         var dst: Int64 = 0
         match (idMap.get(site.caller)) {

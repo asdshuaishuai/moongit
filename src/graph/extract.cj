@@ -1284,7 +1284,10 @@ let C_STOP: HashSet<String> = buildStop(["if", "for", "while", "switch", "return
     "case", "goto", "sizeof", "new", "delete", "throw", "catch", "try", "using", "namespace",
     "template", "typedef", "friend", "union", "alignof", "alignas", "decltype", "typeid",
     "static_assert", "defined", "public", "private", "protected", "operator", "class", "struct",
-    "enum", "noexcept", "virtual", "explicit", "constexpr", "co_return", "co_await", "co_yield"])
+    "enum", "noexcept", "virtual", "constexpr", "co_return", "co_await", "co_yield"])
+// ⚠️ `explicit` 不在停用词里：它只出现在构造函数声明之前（`explicit AppModel(…);`）。
+//   当成停用词会让这一行在走到「构造函数」判定**之前**就被放弃，名字 token 来不及
+//   标成「不是调用点」——头文件里每个带 explicit 的构造函数都会多出一个假调用点。
 
 let JAVA_STOP: HashSet<String> = buildStop(["if", "for", "while", "switch", "return", "else", "do",
     "case", "new", "throw", "try", "catch", "finally", "synchronized", "class", "interface",

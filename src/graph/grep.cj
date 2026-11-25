@@ -120,7 +120,7 @@ public func grepSources(root: String, pattern: String, ignoreCase: Bool, limit0:
     var needleLower = ""
     if (ignoreCase) { needleLower = lowerAscii(pattern) }
     for ((absDir, rel) in files) {
-        if (hits.size >= limit) { break }   // 已经取满且确认过还有没有更多
+        if (truncated) { break }   // 取满之后又撞见一处：已确认「还有更多」，停
         if (detectLang(rel).isEmpty()) { continue }
         if (!glob.isEmpty() && !globMatchesPath(rel, glob)) { continue }
         let content = readFileText("${absDir}/${lastSeg(rel)}")
@@ -138,6 +138,7 @@ public func grepSources(root: String, pattern: String, ignoreCase: Bool, limit0:
                     let at = grepFind(hay, pattern, ignoreCase, needleLower)
                     if (at >= 0) {
                         if (Int64(hits.size) >= limit) {
+                            // 取满之后再撞见一处 = 确实还有没列出的（不是「正好等于上限」）
                             truncated = true
                             break
                         }
