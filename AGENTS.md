@@ -39,8 +39,8 @@ export SDKROOT="$HOME/.local/share/sdks/MacOSX.minimal/latest"  # macOS 26/27+ �
 
 cd engine
 cjpm build          # 构建 → target/release/bin/main
-cjpm test           # 702 项测试（graph 137 / kernel 258 / flow 95 / util 101 / cli 111）
-                    # Linux 上恰好 3 条环境性红（699/702），见不变量 148
+cjpm test           # 704 项测试（graph 139 / kernel 258 / flow 95 / util 101 / cli 111）
+                    # Linux 上恰好 3 条环境性红（701/704），见不变量 148
                       # ⚠️ 必须带 DEEPGIT_HOME，见下方红线
 cjpm build -i       # 增量构建（改单文件时更快）
 ```
@@ -3130,7 +3130,7 @@ version 字段没法引用代码常量 ⇒ 由**测试**钉死两处同值（改
   会干扰判断。要根治：给测试基类加 `defer` 清理，或统一走一个 `withSandbox` 辅助函数。
   临时清法：`mavis-trash -- /tmp/dg_<前缀>_<某次时间戳前缀>`（逐个传，批量会报假失败）。
 - **Linux 上恰好 3 条环境性红用例**（夹具依赖 macOS / bash 的行为，不是功能坏了）：
-  全量 `cjpm test --parallel 1` 的验收口径是 699/702。明细与处置见不变量 148。
+  全量 `cjpm test --parallel 1` 的验收口径是 701/704。明细与处置见不变量 148。
 - **代码索引是词法级的**（v0.3.0）：调用边是候选、不是编译器闭包；稳定 id 含行号；
   未解析的调用点大多是框架调用；成员级扫描器与 `build.cj` 的引用遍是两套词法口径。
   逐条与探针数字见 `README.md`「构建细节与已知边界」。
@@ -3321,7 +3321,10 @@ C/C++ 头文件原型、接口 / 抽象方法签名、TS 重载签名：agent �
 1. `index query` 的符号对象带 `declOnly`；定义带 `decls: [{file, line}]`（同语言、同 qual 的声明处），
    声明挂在定义上、不单独算定义；
 2. 调用点连到定义，不连到原型——原型不作为独立解析目标；
-3. 符号对象的键集恒定（16 键）：有无声明、是不是原型，都发同样的键。
+3. 符号对象的键集恒定（16 键）：有无声明、是不是原型，都发同样的键；
+4. **按声明处的 id 查询，回的是定义**（`resolveSymbolRows` 的 `f:` 分支）：agent 从头文件大纲拿到原型 id，
+   下一跳就该是定义与它的调用方——直接回原型会让它把「调用方为空」当成事实。声明处挂在定义的 `decls` 上；
+   只有声明、没有定义的照常回声明本身（判据：`testQueryByDeclarationIdResolvesToDefinition`）。
 ⇒ 推广：把「同一物的多个出现位置」建成一主多从（定义为主、声明为从）——
 查询默认回主，从挂在主的列表上；不要让从各算一条记录。
 
@@ -3376,7 +3379,7 @@ FFI 标记）来封杀 foreign 导入。阶段一的成员级夹具用了注解 
 三条红的都是**夹具造不出前提**，不是功能坏了——引擎的超时路径另有用例且是绿的
 （`testExecCaptureTimeoutActuallyTimesOut` 等）。
 ⇒ 判据：
-1. 本机全量 `cjpm test --parallel 1` 的验收口径是 **699/702、红的恰好是这 3 条**——多一条、少一条都要查；
+1. 本机全量 `cjpm test --parallel 1` 的验收口径是 **701/704、红的恰好是这 3 条**——多一条、少一条都要查；
 2. 要在 Linux 上变绿，正规修法是改**夹具**（`/bin/sh` 换成 `bash`、不可写手段换成 `chattr +i` 或目录权限），
    不是改断言；动夹具前先在 macOS 上确认它还绿；
 3. 新写的用例不要依赖某平台才有的 shell 特性 / 命令；实在要依赖，在本表登记。

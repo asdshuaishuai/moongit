@@ -190,6 +190,8 @@ moongit index overview <项目>                  # 计数：符号 / 边 / 调�
 - **稳定 id** `f:<相对路径>:<行>:<名字>`：同一份源码两次索引得到同一个 id，可当句柄回传给
   `index query / refs / impact`（同文件同行同名的重复者带 `#n` 后缀）。行号是 id 的一部分——代码挪了行 id 就变（词法级索引给不出跨编辑恒定的身份，
   不编一个看起来恒定实际会漂的哈希）。
+- **从声明处一跳到定义**：`index file <头文件>` 的大纲里有原型的 id；拿它去 `index query / refs / impact`，
+  回的是**定义**（含调用方与调用点），声明处列在定义的 `decls` 里。只有声明、没有定义的照常回声明本身。
 - **裸名有歧义时不替你挑**：`index query` 返回 `ambiguous: true` 与 `perDef`（逐定义的调用方/被调），
   用限定名或 id 收窄。同名不同语言不算同一个符号。
 - **调用边带调用点与确信度** `tier`：`direct` = 限定命中（`Type.name(` / `self.name(`）；
@@ -349,7 +351,7 @@ scripts/      install.sh / moongit.sh / build-minimal-sdk.sh / package-release.s
 ## 构建细节与已知边界
 
 见 [AGENTS.md](AGENTS.md)（仓颉编码约定、macOS SDK 兼容；测试基线以 `cjpm test` 实跑为准，
-v0.3.0 为 702 项——Linux 上有 3 条环境性红用例，见下）。
+v0.3.0 为 704 项——Linux 上有 3 条环境性红用例，见下）。
 
 - SHA-256 自研（通过官方测试向量），不用于密码学安全场景。
 - AI 摘要质量取决于提交信息质量。
@@ -372,6 +374,8 @@ v0.3.0 为 702 项——Linux 上有 3 条环境性红用例，见下）。
     有 421 条的两端不属于同一个类型——**可能误连**，向用户转述必须带这个限定。
   · **没有真正的增量解析**：`index update` 是探针增量（源没变就跳过；变了整库重建，版本 +1）。
   · C++ 栈上构造的对象不计调用点（`Foo f; f.m()` 的 `f.m(` 按裸名 `m` 解析）。
+  · 扫描器**一行只记一个符号起点**：同一行上闭合括号之后的声明不记（`}; class B {}`、
+    `int f() {…} int g() {…}` 这类写法会丢后一个）；正常排版不受影响。
   · MCP 工具尚未声明 `outputSchema`（形状靠 `structuredContent` 与描述文字约定）；
     两遍词法扫描（成员级扫描器与 `build.cj` 的引用遍）各有一套口径，偶有不一致；
     其余未做项见 [docs/ROADMAP.md](docs/ROADMAP.md)。
@@ -386,7 +390,7 @@ v0.3.0 为 702 项——Linux 上有 3 条环境性红用例，见下）。
   `testExecCaptureTerminatesTimedOutProcess`、`testExecCaptureTimeoutIsATotalBoundNotPerPhase`
   ——`/bin/sh` 是 dash，不认 `exec -a`；`testDocWriteFailureStillPersistsProgressToStore`
   ——没有 `chflags uchg`，「把文件锁成只读再写」这个前提造不出来（文档照常写成，
-  拿不到 `DOC_WRITE_FAILED`）。本轮在 Linux 上实跑 699/702；macOS 上未实跑。
+  拿不到 `DOC_WRITE_FAILED`）。本轮在 Linux 上实跑 701/704；macOS 上未实跑。
 - **`graph arch` 系列的内存**：`--format json | html | scene` 会把整个图谱**加上每个模块的
   文件级下钻**都序列化出来，内存需求随仓库规模上涨。**仓颉运行时的默认堆上限偏小**，
   大仓库会 `OutOfMemoryError` —— 这不是算法问题：用 `cjHeapSize` 提高堆即可

@@ -24,7 +24,12 @@ let LOOKUP_ID: Int64 = 3
 let EDGE_SITES_CAP: Int64 = 50
 
 /// 把 `<符号>` 解析成定义行。三种形态按优先级：稳定 id（`f:…`）> 限定名（含 `.`）
-/// > 裸名。id 精确指到一个节点（哪怕它只是个声明）；限定名查不到时退回裸名。
+/// > 裸名。限定名查不到时退回裸名。
+///
+/// id 指到的是「另有同名定义的声明」（头文件原型 / 接口签名）时，回它的**定义**：
+/// 调用点连的是定义，原型自己没有调用方——直接回原型会让 agent 把「没人调用」当成事实。
+/// 声明处挂在定义的 `decls` 上，不会丢。只有声明、没有定义的（平台条件编译 / 外部库）
+/// 照常回声明本身。
 /// 返回 (定义行, 命中方式)；一行都没有 = 查不到。
 func resolveSymbolRows(db: SqliteDb, symbol: String): (ArrayList<NodeRow>, Int64) {
     let out = ArrayList<NodeRow>()
@@ -40,8 +45,25 @@ func resolveSymbolRows(db: SqliteDb, symbol: String): (ArrayList<NodeRow>, Int64
         st.finalize()
         return res
     }
+    func rowsWhereLangQual(lang: String, qual: String): ArrayList<NodeRow> {
+        let res = ArrayList<NodeRow>()
+        let stOpt = db.prepare("SELECT ${NODE_COLS} FROM nodes n WHERE n.decl_only = 0 AND n.lang = ? AND n.qual = ? ORDER BY n.file, n.line, n.id")
+        if (stOpt.isNone()) { return res }
+        let st = stOpt.getOrThrow()
+        if (st.bindText(1, lang) && st.bindText(2, qual)) {
+            while (st.stepHasRow()) { res.add(readNodeRow(st)) }
+        }
+        st.finalize()
+        return res
+    }
     if (symbol.startsWith("f:")) {
-        return (rowsWhere("n.sid = ?", symbol), LOOKUP_ID)
+        let rows = rowsWhere("n.sid = ?", symbol)
+        if (rows.size == 1 && rows[0].declOnly) {
+            // 与 declRowsOf 同一条孪生判据：同语言、同 qual、有体
+            let defs = rowsWhereLangQual(rows[0].lang, rows[0].qual)
+            if (defs.size > 0) { return (defs, LOOKUP_ID) }
+        }
+        return (rows, LOOKUP_ID)
     }
     match (symbol.lastIndexOf(".")) {
         case Some(_) =>
