@@ -382,12 +382,17 @@ func stubReason(n: AstNode): Option<String> {
 }
 
 /// 去掉注释行与空白后剩下的内容（用于空体判定）。
-/// 启发式：按行过滤「整行注释」与空行，把剩余行拼接。行尾注释不剥 —— 
+/// 启发式：按行过滤「整行注释」与空行，把剩余行拼接。行尾注释不剥 ——
 /// 行尾注释后必然还有代码，不影响「是否为空」的判定。
+/// 是否在块注释里由跨行状态决定（stripCommentTracked）：块注释里的行整行是注释，
+/// 块注释外的行首 `*`（`*out = x;`）是代码。
 func removeCommentsAndBlanks(text: String): String {
     let sb = StringBuilder()
+    var inBlock = false
     for (line in text.lazySplit("\n")) {
-        let t = stripComment(line)
+        let (stripped, stillInBlock) = stripCommentTracked(line, inBlock)
+        inBlock = stillInBlock
+        let t = stripped
         if (blankLine(t)) { continue }
         for (c in t) {
             let ch = Int64(c)
@@ -478,10 +483,14 @@ func magicCountInLine(t: String): Int64 {
 }
 
 /// 魔法数字计数：裸数字字面量，排除注释行（供 AST 路径对节点文本计数）。
+/// 块注释状态跨行跟踪（`/* 42\n * 7\n */` 两行都是注释）。
 func countMagicNumbers(text: String): Int64 {
     var count: Int64 = 0
+    var inBlock = false
     for (line in text.lazySplit("\n")) {
-        count += magicCountInLine(stripComment(line))
+        let (stripped, stillInBlock) = stripCommentTracked(line, inBlock)
+        inBlock = stillInBlock
+        count += magicCountInLine(stripped)
     }
     return count
 }

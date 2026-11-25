@@ -552,7 +552,14 @@ func testStripCodeFastPathMatchesFullScan(): Unit {
         "let s = \"\"\"abc", "\" ; more", "tail", "*/ tail",
         "a /* inline */ b", "x = 1  # tail", "i--; q", "x = base#anchor",
         "/* only */ let z = 2"]
-    let sts: Array<Int64> = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 0,
+    // ⚠️ 2026-11-25 显式推翻一处（阶段二 · 扫描器修复）：`"  * doc"` 的输入状态原为 0。
+    // 那一项钉的是「行首是 * 就当块注释续行」——按行首字符猜它在不在一个跨行结构里。
+    // 真实文件里文档注释续行只会带着状态 3 进来（开注释的那一行已把状态置 3）；
+    // 状态 0 + 行首 `*` 是代码（`*errOut = f(x);`，曾被整行剥掉 ⇒ 调用点丢失、
+    // 被调函数被报 orphan）。于是把这一项改成真实配对：输入 3、输出仍是空串、
+    // 后继状态 3。期望的输出串一个没改；新契约由
+    // testStarPrefixedCodeLineIsNotAComment 单独钉。
+    let sts: Array<Int64> = [0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 1, 2, 0,
         0, 0, 0, 0, 0]
     // ⚠️ 行内闭合的 `/* ... */` 摘除后以**一个空格占位**（token 边界语义：
     // 注释等价空白，不许让相邻标识符粘连成 ab）。原先是完全消失 ⇒
@@ -563,7 +570,7 @@ func testStripCodeFastPathMatchesFullScan(): Unit {
         "let s = ", " ; more", "", "*/ tail",
         "a   b", "x = 1  ", "i--; q", "x = base#anchor",
         "  let z = 2"]
-    let wantSt: Array<Int64> = [0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0,
+    let wantSt: Array<Int64> = [0, 0, 3, 0, 3, 0, 0, 0, 0, 0, 2, 0, 2, 0,
         0, 0, 0, 0, 0]
     @Assert(ins.size == 19)
     for (i in 0..ins.size) {
@@ -3731,6 +3738,114 @@ func testRenderIndexHtmlTwoStageContract(): Unit {
         @Assert(hMissing != h1)
         @Assert(hMissing.contains("confMissing"))
         @Assert(hMissing.contains("无置信度数据"))
+    } finally {
+        removeTree(root)
+    }
+}
+
+// MARK: - 行首 `*` 的代码行不是块注释续行（阶段二 · 扫描器修复）
+
+/// 修前 stripCode / stripLineComment / stripComment 都按「行首是 `*`」猜这一行是块注释
+/// 续行并整行剥掉。`*errOut = f(x);` 这类解引用赋值于是从所有词法事实里消失：调用点
+/// 不采；符号级孤儿检测（referencedNames）看不到这次调用，**被调用的函数反被报成
+/// orphan**（探针工程实测 SecretStore::saveFailure）。是否在块注释里由跨行状态决定。
+/// 正控：真在 `/* … */` 里的续行（带不带 `*` 前缀）照旧剥掉。
+@Test
+func testStarPrefixedCodeLineIsNotAComment(): Unit {
+    // ── stripCode：块注释外，行首 `*` 是代码（无引号快路径 / 有引号慢路径一致）──
+    let (code, st0) = stripCode("    *errOut = saveFailure(err && 1);", 0)
+    @Assert(code.contains("saveFailure("))
+    @Assert(st0 == 0)
+    let (code2, _) = stripCode("    *s = \"x\"; saveFailure(2); // tail", 0)
+    @Assert(code2.contains("saveFailure(2);"))
+    @Assert(!code2.contains("tail"))
+
+    // ── 正控：块注释里的行由状态剥掉（续行不带 `*` 也一样），闭合后恢复 ──
+    let block = ["int a = 1; /* open", " * fakeCall(1) and { a brace",
+        "   no star prefix either, fakeCall(2)", " */", "*errOut = saveFailure(3);"]
+    var st: Int64 = 0
+    let kept = ArrayList<String>()
+    for (line in block) {
+        let (t, next) = stripCode(line, st)
+        st = next
+        kept.add(t)
+    }
+    @Assert(kept[0] == "int a = 1; ")
+    @Assert(kept[1] == "" && kept[2] == "" && kept[3] == "")
+    @Assert(kept[4].contains("saveFailure(3);"))
+    @Assert(st == 0)
+    let (d1, n1) = stripCode("/* doc", 0)
+    let (d2, n2) = stripCode(" * more doc fakeCall(9)", n1)
+    @Assert(d1 == "" && d2 == "")
+    @Assert(n2 == 3)
+    let (d3, n3) = stripCode(" */ *errOut = saveFailure(4);", n2)
+    @Assert(d3.contains("saveFailure(4);"))
+    @Assert(n3 == 0)
+
+    // ── stripComment 族（无字符串状态，供「使用证据」与 AST 路径用）──
+    @Assert(stripComment("    *errOut = saveFailure(1);").contains("saveFailure("))
+    let (c1, b1) = stripCommentTracked("/* doc", false)
+    @Assert(c1 == "" && b1)
+    let (c2, b2) = stripCommentTracked(" * more doc", b1)
+    @Assert(c2 == "" && b2)
+    let (c3, b3) = stripCommentTracked("   no star, still comment", b2)
+    @Assert(c3 == "" && b3)
+    let (c4, b4) = stripCommentTracked(" */ *errOut = saveFailure(2);", b3)
+    @Assert(c4.contains("saveFailure(2);") && !b4)
+    let (c5, b5) = stripCommentTracked("    *errOut = saveFailure(3); // tail", b4)
+    @Assert(c5.contains("saveFailure(3);") && !c5.contains("tail") && !b5)
+    // AST 路径的两个消费方跟着走状态：整块注释 = 空体；`*out = …` 是代码
+    @Assert(removeCommentsAndBlanks("{\n    /* TODO\n       implement\n    */\n}\n") == "")
+    @Assert(removeCommentsAndBlanks("{\n    *out = saveFailure(1);\n}\n").contains("saveFailure"))
+    // 修前「不带 * 的注释续行」被当成代码数进去（7 被计为魔法数字）
+    @Assert(countMagicNumbers("/* note 42\n   plain continuation 7\n */\nint a = 3;") == 1)
+
+    // ── 端到端：调用点进了索引，名字算被引用，不再报孤儿 ──
+    let root = testRoot()
+    try {
+        writeFileAtomic("${root}/star.c", """
+/* header comment
+ * fakeCall(1)
+   unusedHelper mentioned in a comment line without star prefix
+ */
+int saveFailure(int code)
+{
+    return code;
+}
+
+int unusedHelper(int v)
+{
+    return v;
+}
+
+int caller(int *errOut)
+{
+    *errOut = saveFailure(1);
+    return 0;
+}
+""")
+        let g = buildGraph(root)
+        var sawCall = false
+        for (s in g.callSites) {
+            @Assert(s.name != "fakeCall")
+            if (s.name == "saveFailure") {
+                sawCall = true
+                @Assert(s.line == 17)
+                @Assert(s.tier == "resolved")
+                @Assert(s.dst == "f:star.c:5:saveFailure")
+            }
+        }
+        @Assert(sawCall)
+        @Assert(g.referencedNames.contains("saveFailure"))
+        // 注释里的提及（带不带 `*` 前缀）都不算使用
+        @Assert(!g.referencedNames.contains("unusedHelper"))
+        let rep = analyzeConfidence(g, false)
+        var orphanUnused = false
+        for (f in rep.findings) {
+            if (flawId(f.kind) == "orphan" && f.symbol == "saveFailure") { @Assert(false) }
+            if (flawId(f.kind) == "orphan" && f.symbol == "unusedHelper") { orphanUnused = true }
+        }
+        @Assert(orphanUnused)
     } finally {
         removeTree(root)
     }

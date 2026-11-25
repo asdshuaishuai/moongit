@@ -556,6 +556,10 @@ public func stripCode(line: String, inState: Int64): (String, Int64) {
 /// 只剥注释、不处理字符串状态 —— 供 `stripCode` 的**无引号快路径**使用。
 /// 规则必须与 `stripCode` 状态 0 逐字等价（尤其 `*/` 开头**不算**整行注释，
 /// 那是它与 `stripComment` 的一处既有差异）。零拷贝：无注释时原样返回。
+///
+/// ⚠ 代码态（状态 0）下行首 `*` **不是注释**：块注释的续行一律带着状态 3 进来，
+/// 由状态机剥。此前这里按行首字符猜「块注释续行」，把 `*errOut = f(x);` 这类
+/// 解引用赋值整行剥掉（探针工程实测：调用点丢失、函数被报 orphan）。
 func stripLineComment(line: String): String {
     let n = Int64(line.size)
     var s: Int64 = 0
@@ -567,7 +571,6 @@ func stripLineComment(line: String): String {
         // 故下面的行首 `/*` 半支与行内 `/*...*/` 闭合支当前不可达——保留作
         // 镜像防御（本函数若被独立复用仍语义完整），勿据「没被执行」删除。
         if (b0 == 47 && (b1 == 47 || b1 == 42)) { return "" }   // // 或 /*
-        if (b0 == 42 && b1 != 47) { return "" }                 // * 续行（`*/` 不算）
         if (b0 == 35) { return "" }                             // #
         if (b0 == 45 && b1 == 45) { return "" }                 // --
     }
@@ -594,13 +597,15 @@ func stripLineComment(line: String): String {
     return line
 }
 
-/// 整行注释前缀判定（与 stripComment 的入口条件一致）
+/// 整行注释前缀判定（与 stripComment 的入口条件一致）。
+/// 只认自带边界的行注释；**不认 `*` 续行**——那不是注释的前缀，是块注释内部的
+/// 一行，由跨行状态（inState == 3）说了算，状态机会把它剥干净（含在行尾闭合、
+/// 其后还有代码的那种）。
 func wholeLineComment(trimmed: String): Bool {
     if (trimmed.isEmpty()) { return false }
     let b0 = trimmed[0]
     let b1: UInt8 = if (trimmed.size > 1) { trimmed[1] } else { 0 }
     if (b0 == 47 && (b1 == 47 || b1 == 42)) { return true }   // // /*
-    if (b0 == 42 && b1 != 47) { return true }                  // * 续行
     if (b0 == 35) { return true }                              // #
     if (b0 == 45 && b1 == 45) { return true }                  // --
     return false
@@ -613,9 +618,13 @@ func wholeLineComment(trimmed: String): Bool {
 /// ⚠️ 性能审查 §5.2/§6.1：原实现上来就 `line.toArray()` ——
 /// 100k 行仓库 = 100k 次整行字节数组分配，而**绝大多数行没有注释**，
 /// 结果原样返回。现在零拷贝快路径：按字节索引扫描，未命中 `//` 时原样返回。
+///
+/// **无状态**：不知道上一行有没有开块注释，所以不认 ` * 续行`——块注释内的行由
+/// 带状态的调用方（stripCommentTracked）整行跳过；块注释外的行首 `*` 是代码
+/// （`*errOut = f(x);`）。
 func stripComment(line: String): String {
     let n = Int64(line.size)
-    // 行首注释前缀（跳前导空白后判首个非空白字节）
+    // 行首注释前缀（跳过前导空白后判首个非空白字节）
     var s: Int64 = 0
     while (s < n) {
         let b = line[s]
@@ -626,7 +635,7 @@ func stripComment(line: String): String {
         let b0 = line[s]
         let b1: UInt8 = if (s + 1 < n) { line[s + 1] } else { 0 }
         if (b0 == 47 && (b1 == 47 || b1 == 42)) { return "" }   // // 或 /*
-        if (b0 == 35 || b0 == 42) { return "" }                  // # 或 *
+        if (b0 == 35) { return "" }                             // #
         if (b0 == 45 && b1 == 45) { return "" }                  // --
     }
     // 行内 "//"（切片点落在 ASCII '/' 上，天然是合法 UTF-8 边界）
@@ -638,6 +647,28 @@ func stripComment(line: String): String {
         i += 1
     }
     return line
+}
+
+/// 带块注释状态的逐行剥注释（不处理字符串，与 stripComment 同一定位）。
+/// inBlock = 本行**开始时**是否在 `/* … */` 里；返回 (剥后文本, 行尾是否仍在块注释里)。
+///
+/// 【为什么要有状态】「这一行是不是注释」只取决于上一行有没有开块注释，不取决于行首
+/// 长什么样。stripComment 无状态，认不了块注释续行——此前它靠「行首是 `*`」去猜，
+/// 代价是 `*errOut = f(x);` 这类代码被整行剥掉。现在：块注释里的行整行是注释
+/// （闭合同行 `*/` 之后的代码接续按代码剥），块注释外的行首 `*` 是代码。
+/// 开块注释只认**行首**的 `/*` 且本行不闭合（文档注释的常见形态）；行中开的 `/*`
+/// 历来不跟，维持原口径。
+func stripCommentTracked(line: String, inBlock: Bool): (String, Bool) {
+    if (inBlock) {
+        match (findSubstr(line, "*/")) {
+            case Some(rel) => return stripCommentTracked(" " + line[rel + 2..], false)
+            case None => return ("", true)
+        }
+    }
+    let t = stripComment(line)
+    let trimmed = line.trimAscii()
+    if (trimmed.startsWith("/*") && findSubstr(trimmed[2..], "*/").isNone()) { return (t, true) }
+    return (t, false)
 }
 
 /// 行是否全空白（零分配；替代 trimAscii().isEmpty() 的两次分配）

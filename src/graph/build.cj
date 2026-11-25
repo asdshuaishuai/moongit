@@ -609,6 +609,7 @@ public func buildGraphProbed(root: String): (CodeGraph, SourceProbe) {
                 for (line in text.lazySplit("\n")) {
                     lineNo += 1
                     // 注释与字符串内的标识符都不算引用（与 scanSource 同一套）
+                    let inBlock = strState == 3
                     let (t, nextState) = stripCode(line, strState)
                     strState = nextState
                     let lineDecls = declAtLine.get(lineNo)
@@ -616,7 +617,12 @@ public func buildGraphProbed(root: String): (CodeGraph, SourceProbe) {
                     // `"${expr}"` 里嵌的是代码，stripCode 会把它们一并剥掉，导致
                     // 「只在插值里用到」的符号被误判孤儿（实测 sanitizeId / sumLines / numText）。
                     // 声明位置自身不算「使用」：否则「定义即使用」让孤儿永远检不出。
-                    forEachToken(stripComment(line)) { tok =>
+                    // 是否在块注释里由跨行状态说了算（不看行首字符）：块注释里的行
+                    // 整行是注释，只取闭合同行 `*/` 之后的那段代码（已在 t 里）；
+                    // 块注释外的行首 `*` 是代码——此前 `*errOut = saveFailure(x);`
+                    // 整行被剥掉，被调用的函数反被报成 orphan。
+                    let useLine = if (inBlock) { t } else { stripComment(line) }
+                    forEachToken(useLine) { tok =>
                         let isDecl = match (lineDecls) {
                             case Some(ns) => ns.contains(tok)
                             case None => false
