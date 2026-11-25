@@ -3882,6 +3882,7 @@ func testMcpIndexToolsAreStructuredAndSyncedWithManifest(): Unit {
     let added: Array<String> = ["index_search", "index_grep", "index_refs", "index_impact", "index_outline"]
     try {
         let p = idxMemberFixtureProject(base, "idx-mcp")
+        let probe = sourceProbeNow(p.path)
         // ── 工具清单 ──
         let tools = Json.arrAt(mcpToolList(), "tools")
         @Assert(Int64(tools.size) == 38)     // 33 + 5（成员级索引的查询工具）
@@ -3959,6 +3960,17 @@ func testMcpIndexToolsAreStructuredAndSyncedWithManifest(): Unit {
         let gr = mcpCallTool("index_grep", ga)
         @Assert(!mcpIsError(gr))
         @Assert(Json.intAt(Json.getOr(gr, "structuredContent"), "matches", 0) == 1)
+        // index_gen / index_update 也同时给文本与结构化内容（全部 index_* 工具一致）
+        let gen = mcpCallTool("index_gen", withName("idx-mcp"))
+        @Assert(!mcpIsError(gen))
+        @Assert(idxKeysEqual(Json.getOr(gen, "structuredContent"),
+            ["project", "rebuild", "updateCount", "generatedAt", "probe", "nodes", "edges", "files", "indexJson"]))
+        let up = mcpCallTool("index_update", withName("idx-mcp"))
+        @Assert(!mcpIsError(up))
+        @Assert(idxKeysEqual(Json.getOr(up, "structuredContent"), ["project", "fresh", "updateCount", "probe"]))
+        @Assert(Json.boolAt(Json.getOr(up, "structuredContent"), "fresh", false))
+        let upJson = indexUpdateJson(p, false, 7, Some(probe))
+        @Assert(idxKeysEqual(upJson, ["project", "fresh", "rebuilt", "updateCount", "generatedAt", "probe", "indexJson"]))
         // overview：与 CLI 同一个构造点（含 probe / sites / tiers）
         let ov = mcpCallTool("index_overview", withName("idx-mcp"))
         @Assert(!mcpIsError(ov))

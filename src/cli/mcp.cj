@@ -783,7 +783,7 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                             Json.set(o, "edges", Json.of(ov.edges))
                             Json.set(o, "files", Json.of(ov.files))
                             Json.set(o, "note", Json.of("db=false：未重建，以上是现有索引库统计；要重建请省略 db 或传 true"))
-                            return mcpOk(Json.pretty(o))
+                            return mcpStructured(Json.pretty(o), o)
                         case None =>
                             return mcpErr("读不出索引库：${dbPath}——先调 index_gen（db 省略或 true）")
                     }
@@ -807,17 +807,21 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                     case None => ()
                 }
                 Json.set(o, "indexJson", Json.of(indexJsonPathOf(p)))
-                return mcpOk(Json.pretty(o))
+                return mcpStructured(Json.pretty(o), o)
             case "index_update" =>
+                // 文本回执不变（既有调用方读它）；structuredContent 与 CLI
+                // `index update --json` 是同一个构造点（indexUpdateJson）
                 let p = mcpRequireProject(getStr("name"))
                 let force = boolArg("force")
-                let (fresh, oldProbe, _) = indexProbeFresh(p)
+                let (fresh, oldProbe, nowProbe) = indexProbeFresh(p)
                 let count = indexCurrentCount(p)
                 if (fresh && !force) {
-                    return mcpOk("${p.name}：已最新——${indexVersionLabel(count)}，源状态探针一致，未改动任何文件")
+                    return mcpStructured("${p.name}：已最新——${indexVersionLabel(count)}，源状态探针一致，未改动任何文件",
+                        indexUpdateJson(p, true, count, nowProbe))
                 }
                 let (newCount, newProbe) = indexRebuild(p, indexCurrentDepth(p), count)
-                return mcpOk("${p.name}：索引已重建——${indexVersionLabel(newCount)}\n  ${indexProbeChangeText(oldProbe, newProbe)}\n  index.json：${indexJsonPathOf(p)}")
+                return mcpStructured("${p.name}：索引已重建——${indexVersionLabel(newCount)}\n  ${indexProbeChangeText(oldProbe, newProbe)}\n  index.json：${indexJsonPathOf(p)}",
+                    indexUpdateJson(p, false, newCount, Some(newProbe)))
             case "index_overview" =>
                 // 形状与 CLI `index overview --json` 同一个构造点（indexOverviewJson）
                 let p = mcpRequireProject(getStr("name"))

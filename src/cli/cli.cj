@@ -2874,6 +2874,33 @@ func indexGenCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     return 0
 }
 
+/// `index update` JSON 的唯一构造点（CLI `--json` 与 MCP index_update 的
+/// structuredContent 共用）。两个状态的键集各自固定（沿用既有契约，不改键）：
+///   已最新：project / fresh / updateCount / probe
+///   已重建：project / fresh / rebuilt / updateCount / generatedAt / probe / indexJson
+func indexUpdateJson(p: ProjectEntry, fresh: Bool, count: Int64, probe: Option<SourceProbe>): JsonValue {
+    let o = Json.obj()
+    Json.set(o, "project", Json.of(p.name))
+    Json.set(o, "fresh", Json.of(fresh))
+    if (fresh) {
+        Json.set(o, "updateCount", Json.of(count))
+        match (probe) {
+            case Some(nw) => Json.set(o, "probe", nw.toJson())
+            case None => Json.set(o, "probe", JNull)
+        }
+        return o
+    }
+    Json.set(o, "rebuilt", Json.of(true))
+    Json.set(o, "updateCount", Json.of(count))
+    Json.set(o, "generatedAt", match (indexMetaRead(indexDbPathOf(p))) {
+        case Some(m) => Json.of(m.generatedAt)
+        case None => Json.of("")
+    })
+    Json.set(o, "probe", probe.getOrThrow().toJson())
+    Json.set(o, "indexJson", Json.of(indexJsonPathOf(p)))
+    return o
+}
+
 /// `moongit index update <项目> [--force]`：轻探针比对 → 一致且非 --force
 /// → 「已最新」，exit 0，不动任何文件；不一致/缺失/--force → 重建（版本 +1）
 /// + 重写 index.json，输出变更摘要。
@@ -2890,15 +2917,7 @@ func indexUpdateCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     let count = indexCurrentCount(p)
     if (fresh && !force) {
         if (ctx.json) {
-            let o = Json.obj()
-            Json.set(o, "project", Json.of(p.name))
-            Json.set(o, "fresh", Json.of(true))
-            Json.set(o, "updateCount", Json.of(count))
-            match (nowProbe) {
-                case Some(nw) => Json.set(o, "probe", nw.toJson())
-                case None => Json.set(o, "probe", JNull)
-            }
-            printOut(Json.pretty(o))
+            printOut(Json.pretty(indexUpdateJson(p, true, count, nowProbe)))
         } else {
             printOut(T("Up to date — ${indexVersionLabel(count)}: source probe matches, nothing touched",
                 "已最新——${indexVersionLabel(count)}：源状态探针一致，未改动任何文件"))
@@ -2908,18 +2927,7 @@ func indexUpdateCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     // 过期 / 缺记录 / --force → 重建（沿用生成时的 depth 口径）
     let (newCount, newProbe) = indexRebuild(p, indexCurrentDepth(p), count)
     if (ctx.json) {
-        let o = Json.obj()
-        Json.set(o, "project", Json.of(p.name))
-        Json.set(o, "fresh", Json.of(false))
-        Json.set(o, "rebuilt", Json.of(true))
-        Json.set(o, "updateCount", Json.of(newCount))
-        Json.set(o, "generatedAt", match (indexMetaRead(indexDbPathOf(p))) {
-            case Some(m) => Json.of(m.generatedAt)
-            case None => Json.of("")
-        })
-        Json.set(o, "probe", newProbe.toJson())
-        Json.set(o, "indexJson", Json.of(indexJsonPathOf(p)))
-        printOut(Json.pretty(o))
+        printOut(Json.pretty(indexUpdateJson(p, false, newCount, Some(newProbe))))
     } else {
         printOut(T("Index rebuilt: ${indexVersionLabel(newCount)}", "索引已重建：${indexVersionLabel(newCount)}"))
         printOut("  ${indexProbeChangeText(oldProbe, newProbe)}")
