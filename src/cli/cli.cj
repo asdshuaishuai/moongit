@@ -235,6 +235,8 @@ let VALUE_FLAGS: Array<String> = [
     "--dir", "--limit", "--note", "--format", "--patch", "--file",
     // confidence query 的过滤维度（图能力重设计第二阶段）
     "--symbol", "--kind", "--weight", "--top",
+    // index search / grep / impact（成员级索引）：--depth / --limit / --file / --kind 复用上面的
+    "--lang", "--context", "--glob",
 ]
 
 /// 全部 CLI flag 白名单：全局 + 带值 + 布尔。
@@ -266,6 +268,8 @@ let KNOWN_FLAGS: Array<String> = [
     // arch / confidence（图能力重设计第二阶段）
     "--violations", "--db",
     "--symbol", "--kind", "--weight", "--top",
+    // index search / grep / impact（成员级索引）
+    "--lang", "--context", "--glob", "--ignore-case", "-i",
 ]
 
 /// token 是否长得像 flag。负数（-5）不是 flag。
@@ -1593,11 +1597,14 @@ func indexCurrentDepth(p: ProjectEntry): Int64 {
 /// 缺记录 / 探针畸形 / 不一致 → 过期（「读不出来」不是「没变」）。
 func indexProbeFresh(p: ProjectEntry): (Bool, Option<SourceProbe>, Option<SourceProbe>) {
     let now = sourceProbeNow(p.path)
+    // schema 版本也是新鲜度的一部分：旧版（v1）库即使源探针一致也算过期——
+    // 它没有成员级列与 sites 表，拿它跑 v2 查询只会得到「查不到」的假答案。
+    let schemaCurrent = indexDbIsCurrent(indexDbPathOf(p))
     match (indexMetaRead(indexDbPathOf(p))) {
         case Some(m) =>
             match (m.probe()) {
                 case Some(old) =>
-                    if (probeMatches(old, now)) {
+                    if (probeMatches(old, now) && schemaCurrent) {
                         return (true, Some(old), Some(now))
                     }
                     return (false, Some(old), Some(now))
@@ -2720,13 +2727,15 @@ func renderArchCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     return 0
 }
 
-/// `moongit index <gen|overview|update|query>`：持久化代码索引的顶层命令。
+/// `moongit index <gen|overview|update|query|search|grep|refs|impact|file>`：持久化代码索引的顶层命令。
+/// 查询类子命令（query / search / refs / impact / file）读 codegraph.db（探针过期先自愈）；
+/// grep 直接读工作区文件，不依赖索引。
 func cmdIndex(rest: ArrayList<String>, ctx: CliContext): Int64 {
-    let subs = ["gen", "overview", "update", "query"]
+    let subs = ["gen", "overview", "update", "query", "search", "grep", "refs", "impact", "file"]
     if (rest.size == 0 || !subs.contains(rest[0])) {
         throw DgError.usage(T(
-            "Usage: moongit index <gen|overview|update|query> ...  (gen <project> [--depth N] [--format json|tree] [--stats] [--out F] / overview <project> / update <project> [--force] / query <symbol> | query --file <path>)",
-            "用法：moongit index <gen|overview|update|query> …（gen <项目> [--depth N] [--format json|tree] [--stats] [--out F] / overview <项目> / update <项目> [--force] / query <符号> | query --file <路径>）"))
+            "Usage: moongit index <gen|overview|update|query|search|grep|refs|impact|file> ...  (gen <project> [--depth N] [--format json|tree] [--stats] [--out F] / overview <project> / update <project> [--force] / query <symbol> [project] | query --file <path> [project] / search <pattern> [project] [--kind K] [--lang L] [--limit N] [--file F] / grep <pattern> [project] [--ignore-case] [--limit N] [--context K] [--glob G] / refs <symbol> [project] / impact <symbol> [project] [--depth N] / file <path> [project])",
+            "用法：moongit index <gen|overview|update|query|search|grep|refs|impact|file> …（gen <项目> [--depth N] [--format json|tree] [--stats] [--out 文件] / overview <项目> / update <项目> [--force] / query <符号> [项目] | query --file <路径> [项目] / search <模式> [项目] [--kind K] [--lang L] [--limit N] [--file F] / grep <模式> [项目] [--ignore-case] [--limit N] [--context K] [--glob G] / refs <符号> [项目] / impact <符号> [项目] [--depth N] / file <路径> [项目]）"))
     }
     let sub = rest[0]
     let args = ArrayList<String>()
@@ -2740,10 +2749,57 @@ func cmdIndex(rest: ArrayList<String>, ctx: CliContext): Int64 {
         case "overview" => return indexOverviewCmd(args, ctx)
         case "update" => return indexUpdateCmd(args, ctx)
         case "query" => return indexQueryCmd(args, ctx)
+        case "search" => return indexSearchCmd(args, ctx)
+        case "grep" => return indexGrepCmd(args, ctx)
+        case "refs" => return indexRefsCmd(args, ctx)
+        case "impact" => return indexImpactCmd(args, ctx)
+        case "file" => return indexFileCmd(args, ctx)
         case _ => throw DgError.usage(T(
-            "Unknown index subcommand (use gen|overview|update|query)",
-            "未知 index 子命令（可用 gen|overview|update|query）"))
+            "Unknown index subcommand (use gen|overview|update|query|search|grep|refs|impact|file)",
+            "未知 index 子命令（可用 gen|overview|update|query|search|grep|refs|impact|file）"))
     }
+}
+
+/// index 查询类子命令共用的项目解析：位置参数形态是 `<必填> [项目]`；
+/// 项目缺省 = cwd 所在的已注册项目（与 status / graph symbol 同一条路），
+/// 给了就按名字或 id 找（requireProject：找不到即报错，不猜）。
+func indexProjectOf(sub: String, refs: ArrayList<String>): ProjectEntry {
+    if (refs.size >= 2) { return requireProject(refs[1]) }
+    let cwd = normalizePath(expandHome(getCwd()))
+    match (findProject(cwd)) {
+        case Some(entry) => return entry
+        case None => throw DgError.notFound(T(
+            "Current directory is not a registered project; pass the argument together with a project name (moongit index ${sub} <arg> <project>)",
+            "当前目录不属于任何已注册项目；请把参数和项目名一起给（moongit index ${sub} <参数> <项目>）"))
+    }
+}
+
+/// `<必填> [项目] [--flags]` 形态的位置参数校验：至多 2 个、至少 1 个且非空。
+/// 返回第一个位置参数（符号 / 模式 / 路径）。
+func indexRequiredArg(sub: String, refs: ArrayList<String>, whatEn: String, whatZh: String,
+                      flagsEn: String): String {
+    rejectExtraPositionals("index ${sub}", refs, 2)
+    if (refs.size == 0 || refs[0].isEmpty()) {
+        throw DgError.usage(T(
+            "Usage: moongit index ${sub} <${whatEn}> [project]${flagsEn}",
+            "用法：moongit index ${sub} <${whatZh}> [项目]${flagsEn}"))
+    }
+    return refs[0]
+}
+
+/// 带下限的整数 flag：缺省值 + 非法即报 usage（不静默取默认值）。
+func indexIntFlag(args: ArrayList<String>, name: String, def: Int64, min: Int64): Int64 {
+    var v: Int64 = def
+    match (flagValue(args, name)) {
+        case Some(raw) =>
+            v = parseIntStrict(raw, name)
+            if (v < min) {
+                throw DgError.usage(T("${name} must be at least ${min} (got ${v})",
+                    "${name} 至少为 ${min}（收到 ${v}）"))
+            }
+        case None => ()
+    }
+    return v
 }
 
 /// `moongit index gen <项目> [--depth N] [--format json|tree] [--stats] [--out F]`。
@@ -2872,8 +2928,44 @@ func indexUpdateCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     return 0
 }
 
+/// overview 出口 JSON 的唯一构造点（CLI `index overview` 与 MCP `index_overview` 共用——
+/// 两处各抄一份必然漂移）。键集恒定，不随库的状态增减。
+func indexOverviewJson(p: ProjectEntry, count: Int64, generatedAt: String, healed: Bool,
+                       ov: IndexOverview): JsonValue {
+    let o = Json.obj()
+    Json.set(o, "project", Json.of(p.name))
+    Json.set(o, "updateCount", Json.of(count))
+    Json.set(o, "generatedAt", Json.of(generatedAt))
+    Json.set(o, "selfHealed", Json.of(healed))
+    Json.set(o, "nodes", Json.of(ov.nodes))
+    Json.set(o, "edges", Json.of(ov.edges))
+    Json.set(o, "files", Json.of(ov.files))
+    let bk = Json.obj()
+    for ((k, v) in ov.byKind) {
+        Json.set(bk, k, Json.of(v))
+    }
+    Json.set(o, "byKind", bk)
+    // 成员级索引新增（恒发）：调用点 / 未解析调用点 / 边的确信度分层
+    Json.set(o, "sites", Json.of(ov.sites))
+    Json.set(o, "unresolved", Json.of(ov.unresolved))
+    let tiers = Json.obj()
+    Json.set(tiers, "direct", Json.of(ov.tierDirect))
+    Json.set(tiers, "resolved", Json.of(ov.tierResolved))
+    Json.set(tiers, "guessed", Json.of(ov.tierGuessed))
+    Json.set(o, "tiers", tiers)
+    match (indexMetaRead(indexDbPathOf(p))) {
+        case Some(m) =>
+            match (m.probe()) {
+                case Some(pr) => Json.set(o, "probe", pr.toJson())
+                case None => Json.set(o, "probe", JNull)
+            }
+        case None => Json.set(o, "probe", JNull)
+    }
+    return o
+}
+
 /// `moongit index overview <项目>`：读 db 的 SQL 聚合统计
-///（nodes/edges/files/byKind——不是旧 overview 的全部投影；旧出口保留在
+///（nodes/edges/files/byKind + 调用点/未解析/确信度分层；旧出口保留在
 /// graph overview 兼容面）。探针过期先自愈重建（④A），并输出说明。
 func indexOverviewCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     let targets = resolveTargets(args, false)
@@ -2884,9 +2976,8 @@ func indexOverviewCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     }
     let p = targets[0]
     let (count, healed) = indexEnsureFresh(p)
-    let meta = indexMetaRead(indexDbPathOf(p))
     var generatedAt = ""
-    match (meta) {
+    match (indexMetaRead(indexDbPathOf(p))) {
         case Some(m) => generatedAt = m.generatedAt
         case None => ()
     }
@@ -2898,28 +2989,7 @@ func indexOverviewCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
             "读不出索引库：${dbPath}（先执行 moongit index gen）"))
     }
     if (ctx.json) {
-        let o = Json.obj()
-        Json.set(o, "project", Json.of(p.name))
-        Json.set(o, "updateCount", Json.of(count))
-        Json.set(o, "generatedAt", Json.of(generatedAt))
-        Json.set(o, "selfHealed", Json.of(healed))
-        Json.set(o, "nodes", Json.of(ov.nodes))
-        Json.set(o, "edges", Json.of(ov.edges))
-        Json.set(o, "files", Json.of(ov.files))
-        let bk = Json.obj()
-        for ((k, v) in ov.byKind) {
-            Json.set(bk, k, Json.of(v))
-        }
-        Json.set(o, "byKind", bk)
-        match (indexMetaRead(dbPath)) {
-            case Some(m) =>
-                match (m.probe()) {
-                    case Some(pr) => Json.set(o, "probe", pr.toJson())
-                    case None => Json.set(o, "probe", JNull)
-                }
-            case None => Json.set(o, "probe", JNull)
-        }
-        printOut(Json.pretty(o))
+        printOut(Json.pretty(indexOverviewJson(p, count, generatedAt, healed, ov)))
         return 0
     }
     let healedNote = if (healed) {
@@ -2931,6 +3001,8 @@ func indexOverviewCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
         "索引总览：${p.name} · ${indexVersionLabel(count)} · 生成于 ${generatedAt}${healedNote}"))
     printOut(T("  nodes ${ov.nodes} · edges ${ov.edges} · files ${ov.files}",
         "  符号 ${ov.nodes} · 调用边 ${ov.edges} · 文件 ${ov.files}"))
+    printOut(T("  call sites ${ov.sites} (${ov.unresolved} unresolved) · edges by tier: direct ${ov.tierDirect} / resolved ${ov.tierResolved} / guessed ${ov.tierGuessed}",
+        "  调用点 ${ov.sites}（未解析 ${ov.unresolved}）· 边分层：direct ${ov.tierDirect} / resolved ${ov.tierResolved} / guessed ${ov.tierGuessed}"))
     if (Int64(ov.byKind.size) > 0) {
         var line = ""
         for ((k, v) in ov.byKind) {
@@ -2938,13 +3010,13 @@ func indexOverviewCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
         }
         printOut(T("  byKind: ${line}", "  按种类：${line}"))
     }
-    printOut(T("  next: moongit index query <symbol> · moongit index query --file <path>",
-        "  下一步：moongit index query <符号> · moongit index query --file <路径>"))
+    printOut(T("  next: moongit index search <pattern> · index query <symbol> · index refs <symbol> · index impact <symbol> · index grep <text>",
+        "  下一步：moongit index search <模式> · index query <符号> · index refs <符号> · index impact <符号> · index grep <文本>"))
     return 0
 }
 
 /// `moongit index query <符号>` / `moongit index query --file <路径>`：
-/// 读 db（同样先自愈）→ 符号：defs + callers + callees 一体载荷；
+/// 读 db（同样先自愈）→ 符号：defs + callers + callees + perDef 一体载荷；
 /// 文件：符号清单 + 调入/调出文件与权重。查不到 → 报错（不编结果）。
 func indexQueryCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     var fileArg = ""
@@ -2959,11 +3031,7 @@ func indexQueryCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     var projectRef = ""
     if (!fileArg.isEmpty()) {
         // --file 模式：位置参数至多 1 个（项目）
-        if (refs.size > 1) {
-            throw DgError.usage(T(
-                "index query --file takes at most one project name (got ${refs.size})",
-                "index query --file 至多接受一个项目名（收到 ${refs.size} 个）"))
-        }
+        rejectExtraPositionals("index query --file", refs, 1)
         if (refs.size == 1) { projectRef = refs[0] }
     } else {
         // 符号模式：<符号> [项目]，1..2 个位置参数
@@ -2976,33 +3044,14 @@ func indexQueryCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
         if (refs.size == 2) { projectRef = refs[1] }
     }
     let p = if (projectRef.isEmpty()) {
-        let cwd = normalizePath(expandHome(getCwd()))
-        match (findProject(cwd)) {
-            case Some(entry) => entry
-            case None => throw DgError.notFound(T(
-                "Current directory is not a registered project; pass <symbol> <project> (or --file <path> <project>)",
-                "当前目录不属于任何已注册项目；请传 <符号> <项目>（或 --file <路径> <项目>）"))
-        }
+        indexProjectOf("query", refs)
     } else {
         requireProject(projectRef)
     }
     let (_, healed) = indexEnsureFresh(p)
     let dbPath = indexDbPathOf(p)
     if (!fileArg.isEmpty()) {
-        match (indexQueryFile(dbPath, fileArg)) {
-            case Some(q) =>
-                if (ctx.json) {
-                    printOut(Json.pretty(q))
-                } else {
-                    printOut(indexFileQueryText(q, healed))
-                }
-                return 0
-            case None =>
-                Log.error(T(
-                    "File not in the index: ${fileArg} (run `moongit index gen`; only supported source languages are indexed)",
-                    "文件不在索引中：${fileArg}（先执行 moongit index gen；索引只覆盖受支持的源码语言）"))
-                return 1
-        }
+        return indexPrintFileQuery(indexQueryFile(dbPath, fileArg), fileArg, healed, ctx)
     }
     match (indexQuerySymbol(dbPath, symbolName)) {
         case Some(q) =>
@@ -3014,44 +3063,126 @@ func indexQueryCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
             return 0
         case None =>
             Log.error(T(
-                "Symbol not found in the index: ${symbolName} (run `moongit index gen`; only supported source languages are indexed)",
-                "符号不在索引中：${symbolName}（先执行 moongit index gen；索引只覆盖受支持的源码语言）"))
+                "Symbol not found in the index: ${symbolName} (run `moongit index gen`; a bare name, a qualified name like Outer.method, or an id from `index search` all work)",
+                "符号不在索引中：${symbolName}（先执行 moongit index gen；可用裸名、限定名如 Outer.method、或 `index search` 给出的 id）"))
             return 1
     }
 }
 
-/// `index query <符号>` 文本视图（defs + callers + callees 一体）。
+/// `index query <符号>` 文本视图（defs + callers + callees 一体；歧义时逐定义展开）。
 func indexSymbolQueryText(q: JsonValue, healed: Bool): String {
     let healedNote = if (healed) { T(" (index auto-rebuilt)", "（索引已自动重建）") } else { "" }
     let sb = StringBuilder()
-    sb.append(T("Symbol: ${Json.strAt(q, "symbol", "")}${healedNote}\n", "符号：${Json.strAt(q, "symbol", "")}${healedNote}\n"))
-    sb.append(T("  defs (${Json.arrAt(q, "defs").size}):\n", "  定义（${Json.arrAt(q, "defs").size} 处）：\n"))
-    for (d in Json.arrAt(q, "defs")) {
-        sb.append(T("    ${Json.strAt(d, "kind", "")} ${Json.strAt(d, "file", "")}:${Json.intAt(d, "line", 0)} (lang ${Json.strAt(d, "lang", "")}, findings ${Json.intAt(d, "findings", 0)}, maxWeight ${Json.intAt(d, "maxWeight", 0)})\n",
-            "    ${Json.strAt(d, "kind", "")} ${Json.strAt(d, "file", "")}:${Json.intAt(d, "line", 0)}（语言 ${Json.strAt(d, "lang", "")}，疑点 ${Json.intAt(d, "findings", 0)}，最高权重 ${Json.intAt(d, "maxWeight", 0)}）\n"))
+    sb.append(T("Symbol: ${Json.strAt(q, "symbol", "")}${healedNote}\n",
+        "符号：${Json.strAt(q, "symbol", "")}${healedNote}\n"))
+    if (Json.boolAt(q, "ambiguous", false)) {
+        sb.append(T("  ambiguous: several distinct definitions share this name — use a qualified name (Outer.method) or an id to narrow down\n",
+            "  歧义：这个名字对应多个不同的定义——用限定名（Outer.method）或 id 收窄\n"))
     }
-    sb.append(T("  callers (${Json.arrAt(q, "callers").size}):\n", "  调用方（${Json.arrAt(q, "callers").size}）：\n"))
-    for (c in Json.arrAt(q, "callers")) {
-        sb.append(T("    ${Json.strAt(c, "name", "")} · ${Json.strAt(c, "file", "")}:${Json.intAt(c, "line", 0)} · weight ${Json.intAt(c, "weight", 0)} · ${Json.strAt(c, "tier", "")}\n",
-            "    ${Json.strAt(c, "name", "")} · ${Json.strAt(c, "file", "")}:${Json.intAt(c, "line", 0)} · 权重 ${Json.intAt(c, "weight", 0)} · ${Json.strAt(c, "tier", "")}\n"))
-    }
-    sb.append(T("  callees (${Json.arrAt(q, "callees").size}):\n", "  被调（${Json.arrAt(q, "callees").size}）：\n"))
-    for (c in Json.arrAt(q, "callees")) {
-        sb.append(T("    ${Json.strAt(c, "name", "")} · ${Json.strAt(c, "file", "")}:${Json.intAt(c, "line", 0)} · weight ${Json.intAt(c, "weight", 0)} · ${Json.strAt(c, "tier", "")}\n",
-            "    ${Json.strAt(c, "name", "")} · ${Json.strAt(c, "file", "")}:${Json.intAt(c, "line", 0)} · 权重 ${Json.intAt(c, "weight", 0)} · ${Json.strAt(c, "tier", "")}\n"))
+    let defs = Json.arrAt(q, "defs")
+    sb.append(T("  defs (${defs.size}):\n", "  定义（${defs.size} 处）：\n"))
+    for (d in defs) { sb.append(indexSymLines(d, "    ")) }
+    sb.append(indexEdgeListText(Json.arrAt(q, "callers"), true, "  "))
+    sb.append(indexEdgeListText(Json.arrAt(q, "callees"), false, "  "))
+    // 歧义时逐定义给出各自的调用关系（顶层是全部定义的汇总）
+    let perDef = Json.arrAt(q, "perDef")
+    if (perDef.size > 1) {
+        sb.append(T("  per def:\n", "  逐定义：\n"))
+        for (pd in perDef) {
+            sb.append(T("    · ${Json.strAt(Json.getOr(pd, "def"), "qual", "")}  ${indexLocOf(Json.getOr(pd, "def"))}\n",
+                "    · ${Json.strAt(Json.getOr(pd, "def"), "qual", "")}  ${indexLocOf(Json.getOr(pd, "def"))}\n"))
+            sb.append(indexEdgeListText(Json.arrAt(pd, "callers"), true, "      "))
+            sb.append(indexEdgeListText(Json.arrAt(pd, "callees"), false, "      "))
+        }
     }
     return sb.toString()
 }
 
-/// `index query --file` 文本视图（符号清单 + 调入/调出文件）。
+/// 一处 Sym 的位置串：`file:line:col`（列未知时只到行）。
+func indexLocOf(d: JsonValue): String {
+    let col = Json.intAt(d, "col", 0)
+    if (col > 0) { return "${Json.strAt(d, "file", "")}:${Json.intAt(d, "line", 0)}:${col}" }
+    return "${Json.strAt(d, "file", "")}:${Json.intAt(d, "line", 0)}"
+}
+
+/// 文本视图里一处 Sym：种类 + 限定名 + 位置 + 可见性 + 签名 + 声明处。
+func indexSymLines(d: JsonValue, indent: String): String {
+    let sb = StringBuilder()
+    sb.append("${indent}${Json.strAt(d, "kind", "")} ${Json.strAt(d, "qual", "")}  ${indexLocOf(d)}")
+    if (Json.boolAt(d, "declOnly", false)) { sb.append(T("  [decl only]", "  [仅声明]")) }
+    let vis = Json.strAt(d, "visibility", "")
+    if (!vis.isEmpty()) { sb.append("  [${vis}]") }
+    sb.append(T("  (findings ${Json.intAt(d, "findings", 0)}, maxWeight ${Json.intAt(d, "maxWeight", 0)})\n",
+        "  （疑点 ${Json.intAt(d, "findings", 0)}，最高权重 ${Json.intAt(d, "maxWeight", 0)}）\n"))
+    let sig = Json.strAt(d, "sig", "")
+    if (!sig.isEmpty()) { sb.append("${indent}  ${sig}\n") }
+    for (dl in Json.arrAt(d, "decls")) {
+        sb.append(T("${indent}  declared at ${Json.strAt(dl, "file", "")}:${Json.intAt(dl, "line", 0)}\n",
+            "${indent}  声明处 ${Json.strAt(dl, "file", "")}:${Json.intAt(dl, "line", 0)}\n"))
+    }
+    return sb.toString()
+}
+
+/// 调用方 / 被调清单的文本：每条边一行 + 调用点位置（至多列 4 处，其余以计数说明）。
+func indexEdgeListText(edges: ArrayList<JsonValue>, callers: Bool, indent: String): String {
+    let sb = StringBuilder()
+    if (callers) {
+        sb.append(T("${indent}callers (${edges.size}):\n", "${indent}调用方（${edges.size}）：\n"))
+    } else {
+        sb.append(T("${indent}callees (${edges.size}):\n", "${indent}被调（${edges.size}）：\n"))
+    }
+    for (e in edges) {
+        sb.append("${indent}  ${Json.strAt(e, "qual", "")}  ${Json.strAt(e, "file", "")}:${Json.intAt(e, "line", 0)}"
+            + T("  · weight ${Json.intAt(e, "weight", 0)} · ${Json.strAt(e, "tier", "")}\n",
+                "  · 权重 ${Json.intAt(e, "weight", 0)} · ${Json.strAt(e, "tier", "")}\n"))
+        let sites = Json.arrAt(e, "sites")
+        if (sites.size > 0) {
+            var line = ""
+            var shown: Int64 = 0
+            while (shown < 4 && shown < Int64(sites.size)) {
+                if (shown > 0) { line += "、" }
+                line += indexLocOf(sites[shown])
+                shown += 1
+            }
+            if (Int64(sites.size) > shown) { line += T(" … (${sites.size} sites)", " …（共 ${sites.size} 处）") }
+            sb.append(T("${indent}    call sites: ${line}\n", "${indent}    调用点：${line}\n"))
+        }
+    }
+    return sb.toString()
+}
+
+/// `index query --file` / `index file` 的输出分发（同一个载荷，两个命令共用）。
+func indexPrintFileQuery(qOpt: Option<JsonValue>, fileArg: String, healed: Bool, ctx: CliContext): Int64 {
+    match (qOpt) {
+        case Some(q) =>
+            if (ctx.json) {
+                printOut(Json.pretty(q))
+            } else {
+                printOut(indexFileQueryText(q, healed))
+            }
+            return 0
+        case None =>
+            Log.error(T(
+                "File not in the index: ${fileArg} (run `moongit index gen`; only supported source languages are indexed)",
+                "文件不在索引中：${fileArg}（先执行 moongit index gen；索引只覆盖受支持的源码语言）"))
+            return 1
+    }
+}
+
+/// `index file` / `index query --file` 文本视图（符号清单 + 调入/调出文件）。
 func indexFileQueryText(q: JsonValue, healed: Bool): String {
     let healedNote = if (healed) { T(" (index auto-rebuilt)", "（索引已自动重建）") } else { "" }
     let sb = StringBuilder()
-    sb.append(T("File: ${Json.strAt(q, "file", "")}${healedNote}\n", "文件：${Json.strAt(q, "file", "")}${healedNote}\n"))
-    sb.append(T("  symbols (${Json.arrAt(q, "symbols").size}):\n", "  符号（${Json.arrAt(q, "symbols").size} 个）：\n"))
-    for (s in Json.arrAt(q, "symbols")) {
-        sb.append(T("    ${Json.strAt(s, "kind", "")} ${Json.strAt(s, "name", "")}:${Json.intAt(s, "line", 0)}\n",
-            "    ${Json.strAt(s, "kind", "")} ${Json.strAt(s, "name", "")}:${Json.intAt(s, "line", 0)}\n"))
+    sb.append(T("File: ${Json.strAt(q, "file", "")}${healedNote}  (${Json.strAt(q, "lang", "")}, ${Json.intAt(q, "lines", 0)} lines)\n",
+        "文件：${Json.strAt(q, "file", "")}${healedNote}  （${Json.strAt(q, "lang", "")}，${Json.intAt(q, "lines", 0)} 行）\n"))
+    let syms = Json.arrAt(q, "symbols")
+    sb.append(T("  symbols (${syms.size}):\n", "  符号（${syms.size} 个）：\n"))
+    for (s in syms) {
+        sb.append("    ${Json.strAt(s, "kind", "")} ${Json.strAt(s, "qual", "")}  ${indexLocOf(s)}")
+        let end = Json.intAt(s, "endLine", 0)
+        if (end > Json.intAt(s, "line", 0)) { sb.append("-${end}") }
+        if (Json.boolAt(s, "declOnly", false)) { sb.append(T("  [decl only]", "  [仅声明]")) }
+        sb.append("\n")
     }
     sb.append(T("  calledBy (${Json.arrAt(q, "calledBy").size}):\n", "  调入（${Json.arrAt(q, "calledBy").size} 个文件）：\n"))
     for (c in Json.arrAt(q, "calledBy")) {
@@ -3064,6 +3195,255 @@ func indexFileQueryText(q: JsonValue, healed: Bool): String {
             "    ${Json.strAt(c, "file", "")} · 权重 ${Json.intAt(c, "weight", 0)}\n"))
     }
     return sb.toString()
+}
+
+/// `moongit index search <模式> [项目] [--kind K] [--lang L] [--limit N] [--file F]`：
+/// 符号模糊搜索（name 与 qual，大小写不敏感；名精确 > 限定名相等 > 前缀 > 子串 > 子序列）。
+func indexSearchCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
+    let refs = positionalsOnly(args, VALUE_FLAGS)
+    let pattern = indexRequiredArg("search", refs, "pattern", "模式",
+        " [--kind K] [--lang L] [--limit N] [--file F]")
+    let p = indexProjectOf("search", refs)
+    var kind = ""
+    match (flagValue(args, "--kind")) {
+        case Some(v) => kind = v.trimAscii()
+        case None => ()
+    }
+    // 种类 id 是契约值：拼错（--kind fn）不许静默变成「0 条结果」
+    let kinds: Array<String> = ["func", "class", "struct", "interface", "enum", "extension", "typealias"]
+    if (!kind.isEmpty() && !kinds.contains(kind)) {
+        throw DgError.usage(T("--kind accepts one of ${joinStrings(kinds, "|")} (got: ${kind})",
+            "--kind 只支持 ${joinStrings(kinds, "|")}（收到：${kind}）"))
+    }
+    var lang = ""
+    match (flagValue(args, "--lang")) {
+        case Some(v) => lang = v.trimAscii()
+        case None => ()
+    }
+    var file = ""
+    match (flagValue(args, "--file")) {
+        case Some(v) => file = v.trimAscii()
+        case None => ()
+    }
+    let limit = indexIntFlag(args, "--limit", 30, 1)
+    let (_, healed) = indexEnsureFresh(p)
+    let q = indexSearch(indexDbPathOf(p), pattern, kind, lang, file, limit)
+    if (ctx.json) {
+        printOut(Json.pretty(q))
+    } else {
+        printOut(indexSearchText(q, healed))
+    }
+    return 0
+}
+
+/// `index search` 文本视图（CLI 与 MCP index_search 共用的唯一文本构造点）。
+func indexSearchText(q: JsonValue, healed: Bool): String {
+    let healedNote = indexHealedNote(healed)
+    let results = Json.arrAt(q, "results")
+    let cutNote = if (Json.boolAt(q, "truncated", false)) {
+        T(" (showing ${results.size}, raise the limit)", "（显示 ${results.size} 条，提高上限看更多）")
+    } else {
+        ""
+    }
+    let sb = StringBuilder()
+    sb.append(T("Symbol search: ${Json.strAt(q, "query", "")}${healedNote} · ${Json.intAt(q, "total", 0)} match(es)${cutNote}\n",
+        "符号搜索：${Json.strAt(q, "query", "")}${healedNote} · 命中 ${Json.intAt(q, "total", 0)} 处${cutNote}\n"))
+    for (r in results) {
+        sb.append("  ${Json.intAt(r, "score", 0)}  ${Json.strAt(r, "kind", "")}  ${Json.strAt(r, "qual", "")}  ${indexLocOf(r)}\n")
+        let sig = Json.strAt(r, "sig", "")
+        if (!sig.isEmpty()) { sb.append("        ${sig}\n") }
+    }
+    return sb.toString()
+}
+
+/// `moongit index grep <模式> [项目] [--ignore-case] [--limit N] [--context K] [--glob G]`：
+/// 工作区定字符串搜索。不依赖索引（没有索引、索引过期都能搜）；扫描范围与索引器同源。
+func indexGrepCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
+    let refs = positionalsOnly(args, VALUE_FLAGS)
+    let pattern = indexRequiredArg("grep", refs, "text", "文本",
+        " [--ignore-case] [--limit N] [--context K] [--glob G]")
+    let p = indexProjectOf("grep", refs)
+    let ignoreCase = hasFlag(args, "--ignore-case") || hasFlag(args, "-i")
+    let limit = indexIntFlag(args, "--limit", GREP_DEFAULT_LIMIT, 1)
+    let context = indexIntFlag(args, "--context", 0, 0)
+    var glob = ""
+    match (flagValue(args, "--glob")) {
+        case Some(v) => glob = v.trimAscii()
+        case None => ()
+    }
+    let o = indexGrepJson(grepSources(p.path, pattern, ignoreCase, limit, context, glob), pattern, ignoreCase)
+    if (ctx.json) {
+        printOut(Json.pretty(o))
+    } else {
+        printOut(indexGrepText(o))
+    }
+    return 0
+}
+
+/// `index grep` JSON 的唯一构造点（CLI 与 MCP index_grep 共用）。键集恒定。
+func indexGrepJson(r: GrepResult, pattern: String, ignoreCase: Bool): JsonValue {
+    let o = Json.obj()
+    Json.set(o, "query", Json.of(pattern))
+    Json.set(o, "ignoreCase", Json.of(ignoreCase))
+    Json.set(o, "matches", Json.of(Int64(r.hits.size)))
+    Json.set(o, "truncated", Json.of(r.truncated))
+    Json.set(o, "filesScanned", Json.of(r.filesScanned))
+    let hits = ArrayList<JsonValue>()
+    for (h in r.hits) {
+        let d = Json.obj()
+        Json.set(d, "file", Json.of(h.file))
+        Json.set(d, "line", Json.of(h.line))
+        Json.set(d, "col", Json.of(h.col))
+        Json.set(d, "text", Json.of(h.text))
+        Json.set(d, "before", Json.strArray(h.before.toArray()))
+        Json.set(d, "after", Json.strArray(h.after.toArray()))
+        hits.add(d)
+    }
+    Json.set(o, "hits", JArr(hits))
+    return o
+}
+
+/// JSON 字符串值的文本（非字符串 = ""）。
+func jsonTextOf(v: JsonValue): String {
+    match (v) {
+        case JStr(t) => return t
+        case _ => return ""
+    }
+}
+
+/// `index grep` 文本视图。上下文行的前缀是 `file-行号-`（之前）/ `file-行号+`（之后）。
+func indexGrepText(o: JsonValue): String {
+    let ignoreCase = Json.boolAt(o, "ignoreCase", false)
+    let caseNote = if (ignoreCase) { T(" (ignore case)", "（忽略大小写）") } else { "" }
+    let cutNote = if (Json.boolAt(o, "truncated", false)) {
+        T(" (truncated, raise the limit)", "（已截断，提高上限）")
+    } else {
+        ""
+    }
+    let sb = StringBuilder()
+    sb.append(T("Text search: \"${Json.strAt(o, "query", "")}\"${caseNote} · ${Json.intAt(o, "matches", 0)} hit(s)${cutNote} · ${Json.intAt(o, "filesScanned", 0)} file(s) scanned\n",
+        "内容搜索：「${Json.strAt(o, "query", "")}」${caseNote} · 命中 ${Json.intAt(o, "matches", 0)} 处${cutNote} · 扫描 ${Json.intAt(o, "filesScanned", 0)} 个文件\n"))
+    for (h in Json.arrAt(o, "hits")) {
+        let file = Json.strAt(h, "file", "")
+        let line = Json.intAt(h, "line", 0)
+        let before = Json.arrAt(h, "before")
+        var bi: Int64 = 0
+        while (bi < Int64(before.size)) {
+            sb.append("${file}-${line - Int64(before.size) + bi}-  ${jsonTextOf(before[bi])}\n")
+            bi += 1
+        }
+        sb.append("${file}:${line}:${Json.intAt(h, "col", 0)}  ${Json.strAt(h, "text", "")}\n")
+        let after = Json.arrAt(h, "after")
+        var ai: Int64 = 0
+        while (ai < Int64(after.size)) {
+            sb.append("${file}-${line + ai + 1}+  ${jsonTextOf(after[ai])}\n")
+            ai += 1
+        }
+    }
+    return sb.toString()
+}
+
+/// `moongit index refs <符号> [项目]`：解析到该符号定义的每一个调用点（file:line:col + 调用方）。
+func indexRefsCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
+    let refs = positionalsOnly(args, VALUE_FLAGS)
+    let symbol = indexRequiredArg("refs", refs, "symbol", "符号", "")
+    let p = indexProjectOf("refs", refs)
+    let (_, healed) = indexEnsureFresh(p)
+    match (indexRefs(indexDbPathOf(p), symbol)) {
+        case Some(q) =>
+            if (ctx.json) {
+                printOut(Json.pretty(q))
+            } else {
+                printOut(indexRefsText(q, healed))
+            }
+            return 0
+        case None =>
+            Log.error(indexSymbolNotFound(symbol))
+            return 1
+    }
+}
+
+/// `index refs` 文本视图（CLI 与 MCP index_refs 共用）。
+func indexRefsText(q: JsonValue, healed: Bool): String {
+    let sites = Json.arrAt(q, "sites")
+    let sb = StringBuilder()
+    sb.append(T("References: ${Json.strAt(q, "symbol", "")}${indexHealedNote(healed)} · ${sites.size} call site(s)\n",
+        "引用点：${Json.strAt(q, "symbol", "")}${indexHealedNote(healed)} · ${sites.size} 处\n"))
+    sb.append(T("  defs:\n", "  定义：\n"))
+    for (d in Json.arrAt(q, "defs")) { sb.append(indexSymLines(d, "    ")) }
+    for (s in sites) {
+        let caller = Json.strAt(s, "callerQual", "")
+        var tail = T("  (no enclosing function)", "  （不在任何函数体内）")
+        if (!caller.isEmpty()) {
+            tail = "  ${caller}  ${Json.strAt(s, "callerFile", "")}:${Json.intAt(s, "callerLine", 0)}"
+        }
+        sb.append("  ${indexLocOf(s)}  [${Json.strAt(s, "tier", "")}]${tail}\n")
+    }
+    return sb.toString()
+}
+
+/// `moongit index impact <符号> [项目] [--depth N]`：沿 direct / resolved 调用边反向传递闭包。
+func indexImpactCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
+    let refs = positionalsOnly(args, VALUE_FLAGS)
+    let symbol = indexRequiredArg("impact", refs, "symbol", "符号", " [--depth N]")
+    let p = indexProjectOf("impact", refs)
+    let depth = indexIntFlag(args, "--depth", 4, 1)
+    let (_, healed) = indexEnsureFresh(p)
+    match (indexImpact(indexDbPathOf(p), symbol, depth)) {
+        case Some(q) =>
+            if (ctx.json) {
+                printOut(Json.pretty(q))
+            } else {
+                printOut(indexImpactText(q, healed))
+            }
+            return 0
+        case None =>
+            Log.error(indexSymbolNotFound(symbol))
+            return 1
+    }
+}
+
+/// `index impact` 文本视图（CLI 与 MCP index_impact 共用）。
+func indexImpactText(q: JsonValue, healed: Bool): String {
+    let impacted = Json.arrAt(q, "impacted")
+    let files = Json.arrAt(q, "files")
+    let sb = StringBuilder()
+    sb.append(T("Impact: ${Json.strAt(q, "symbol", "")}${indexHealedNote(healed)} · depth ${Json.intAt(q, "depth", 0)} · ${impacted.size} symbol(s) in ${files.size} file(s)\n",
+        "影响面：${Json.strAt(q, "symbol", "")}${indexHealedNote(healed)} · 深度 ${Json.intAt(q, "depth", 0)} · ${impacted.size} 个符号 / ${files.size} 个文件\n"))
+    sb.append(T("  (reverse closure over direct/resolved call edges — lexical, not a compiler closure)\n",
+        "  （沿 direct/resolved 调用边反向闭包；词法级，不是编译器闭包）\n"))
+    sb.append(T("  def:\n", "  定义：\n"))
+    sb.append(indexSymLines(Json.getOr(q, "def"), "    "))
+    for (r in impacted) {
+        sb.append(T("  distance ${Json.intAt(r, "distance", 0)}  ${Json.strAt(r, "kind", "")} ${Json.strAt(r, "qual", "")}  ${indexLocOf(r)}\n",
+            "  距离 ${Json.intAt(r, "distance", 0)}  ${Json.strAt(r, "kind", "")} ${Json.strAt(r, "qual", "")}  ${indexLocOf(r)}\n"))
+    }
+    sb.append(T("  files:\n", "  文件：\n"))
+    for (f in files) {
+        sb.append(T("    ${Json.strAt(f, "file", "")} · ${Json.intAt(f, "symbols", 0)} symbol(s)\n",
+            "    ${Json.strAt(f, "file", "")} · ${Json.intAt(f, "symbols", 0)} 个符号\n"))
+    }
+    return sb.toString()
+}
+
+/// `moongit index file <路径> [项目]`：文件大纲（符号清单 + 调入/调出文件）。
+/// 与 `index query --file <路径>` 是同一个载荷。
+func indexFileCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
+    let refs = positionalsOnly(args, VALUE_FLAGS)
+    let file = indexRequiredArg("file", refs, "path", "路径", "")
+    let p = indexProjectOf("file", refs)
+    let (_, healed) = indexEnsureFresh(p)
+    return indexPrintFileQuery(indexQueryFile(indexDbPathOf(p), file), file, healed, ctx)
+}
+
+func indexHealedNote(healed: Bool): String {
+    if (healed) { return T(" (index auto-rebuilt)", "（索引已自动重建）") }
+    return ""
+}
+
+func indexSymbolNotFound(symbol: String): String {
+    return T("Symbol not found in the index: ${symbol} (use `moongit index search` to see nearby names; a bare name, a qualified name like Outer.method, or an id all work)",
+        "符号不在索引中：${symbol}（用 `moongit index search` 看近似名字；可用裸名、限定名如 Outer.method、或 id）")
 }
 
 func cmdTools(rest: ArrayList<String>, ctx: CliContext): Int64 {
@@ -3529,7 +3909,9 @@ func printHelp(): Unit {
         printOut("  graph db [project] [--out F]  Write the symbol-level index to a single-file SQLite DB (nodes/edges with confidence tiers; query callers/callees via SQL)")
         printOut("  confidence db [project] [--out F]  Write the confidence report to a single-file SQLite DB (findings/dimensions/penalty table)")
         printOut("  arch <gen|update|query> <project>  Architecture index: gen (arch.json, layout included) / update (probe-driven, --force) / query [module] [--violations]")
-        printOut("  index <gen|overview|update|query>  Persistent code index: gen (db + index.json) / overview (SQL counts) / update (probe-driven) / query <symbol> | --file <path>")
+        printOut("  index <gen|overview|update|query|search|grep|refs|impact|file>  Persistent code index (member-level, stable ids): gen (db + index.json) / overview (SQL counts) / update (probe-driven)")
+        printOut("                           query <symbol> (name | Outer.method | id) | --file <path> · search <pattern> [--kind K] [--lang L] [--limit N] [--file F]")
+        printOut("                           grep <text> [--ignore-case] [--limit N] [--context K] [--glob G] (literal; works without an index) · refs <symbol> · impact <symbol> [--depth N] · file <path>")
         printOut("  confidence <gen|query> <project>   Confidence: gen (confidence.json; rebuilds the index first when stale; --db also writes confidence.db) / query (read-only snapshot, filters --file/--symbol/--kind/--weight/--top)")
         printOut("  render <arch|index> <project>  Render deliverables from the persisted payload (reuses when unchanged; --force redraws; render index --confidence overlays confidence.json)")
         printOut("  config <list|get|set> [k] [v]  Configuration (AI preset, etc.)")
@@ -3584,7 +3966,9 @@ func printHelp(): Unit {
     printOut("  graph db [项目] [--out F]  符号级索引写入单文件 SQLite（nodes/edges，含 tier 确信度；agent 用 SQL 查 callers/callees）")
     printOut("  confidence db [项目] [--out F]  置信度报告写入单文件 SQLite（findings/dimensions/罚分表）")
     printOut("  arch <gen|update|query> <项目>  架构索引：gen（arch.json，含布局坐标）/ update（探针增量，--force 强制）/ query [模块] [--violations]")
-    printOut("  index <gen|overview|update|query>  持久化代码索引：gen（db + index.json）/ overview（SQL 计数）/ update（探针增量）/ query <符号> | --file <路径>")
+    printOut("  index <gen|overview|update|query|search|grep|refs|impact|file>  持久化代码索引（成员级，稳定 id）：gen（db + index.json）/ overview（SQL 计数）/ update（探针增量）")
+    printOut("                           query <符号>（裸名 | Outer.method | id）| --file <路径> · search <模式> [--kind K] [--lang L] [--limit N] [--file F]")
+    printOut("                           grep <文本> [--ignore-case] [--limit N] [--context K] [--glob G]（定字符串，不依赖索引）· refs <符号> · impact <符号> [--depth N] · file <路径>")
     printOut("  confidence <gen|query> <项目>   置信度：gen（confidence.json；索引过期先自动重建；--db 额外写 confidence.db）/ query（只读快照，过滤 --file/--symbol/--kind/--weight/--top）")
     printOut("  render <arch|index> <项目>  用持久化 payload 渲染交付物（未变即复用；--force 重绘；render index --confidence 叠加 confidence.json）")
     printOut("  config <list|get|set> [k] [v]  配置（AI 预设等）")

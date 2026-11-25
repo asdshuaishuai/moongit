@@ -63,6 +63,14 @@ func mcpToolDeprecated(name: String, desc: String, schema: JsonValue, replacedBy
     return t
 }
 
+/// 只读的 index 查询工具（不改任何文件；索引过期时的自愈重建只写项目库目录，不碰工作区）。
+/// 顶层 let 必须先定义后使用（仓颉按文件顺序解析）——放在 mcpToolList 之前。
+let MCP_READONLY_TOOLS: Array<String> = ["index_query", "index_search", "index_grep", "index_refs",
+    "index_impact", "index_outline"]
+
+/// index_search 的 kind 取值（= symKindId 的 7 个契约值）。
+let INDEX_KINDS: Array<String> = ["func", "class", "struct", "interface", "enum", "extension", "typealias"]
+
 /// MCP 工具全集（与 `moongit tools --json` 同源能力，进程内直连）
 public func mcpToolList(): JsonValue {
     let arr = ArrayList<JsonValue>()
@@ -113,7 +121,16 @@ public func mcpToolList(): JsonValue {
     arr.add(mcpTool("index_gen", "符号级索引生成：写 codegraph.db（store_meta 含探针/版本/时间）+ index.json，返回统计（文件/符号/边/版本明话）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("depth", "integer", "目录深度，默认 6"), ("format", "string", "json|tree（回执视图），默认 json"), ("db", "boolean", "写库（默认 true）")], ["name"])))
     arr.add(mcpTool("index_update", "索引增量更新：源探针一致则跳过（已最新），过期/缺失则重建（版本 +1）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("force", "boolean", "源未变也强制重建")], ["name"])))
     arr.add(mcpTool("index_overview", "索引总览：db 的 SQL 聚合统计（符号/调用边/文件/按种类分桶）+ 版本与探针；探针过期先自动重建", mcpSchemaObject([("name", "string", "项目名或 ID")], ["name"])))
-    arr.add(mcpTool("index_query", "索引查询：symbol 模式 = 定义处 + 调用方 + 被调（含权重与确信度分层）；file 模式 = 该文件符号清单 + 调入/调出文件与权重。查不到报错，不编结果", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名（与 file 二选一）"), ("file", "string", "文件相对路径（与 symbol 二选一）")], ["name"])))
+    arr.add(mcpTool("index_query", "索引查询：symbol 模式 = 定义处（id/qual/file:line:col/签名/可见性/声明处）+ 调用方 + 被调（每条带确信度 tier 与调用点 file:line:col）；裸名命中多个定义时 ambiguous=true 且 perDef 逐定义给出调用关系。file 模式 = 该文件符号大纲 + 调入/调出文件与权重。查不到报错，不编结果", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号：裸名、限定名（Outer.method）或 index_search 给出的 id（与 file 二选一）"), ("file", "string", "文件相对路径（与 symbol 二选一）")], ["name"])))
+    // ── 成员级索引的查询工具面（只读）──
+    // 典型链路：index_search 拿到 qual/id → index_query 看定义与调用关系 →
+    // index_refs 看每个调用点 → index_impact 看改它波及谁；index_outline 看一个文件的骨架；
+    // index_grep 直接搜工作区文本（不依赖索引）。
+    arr.add(mcpTool("index_search", "符号模糊搜索：按名字/限定名找符号（大小写不敏感；名字精确相等 > 限定名相等 > 名字前缀 > 子串 > 子序列），每条带稳定 id、qual、file:line:col、签名与 score。拿不准全名时先用它，再把 id 或 qual 交给 index_query / index_refs / index_impact", mcpSchemaObject([("name", "string", "项目名或 ID"), ("pattern", "string", "搜索模式：名字或片段"), ("kind", "string", "按种类过滤：func|class|struct|interface|enum|extension|typealias"), ("lang", "string", "按语言过滤：swift|kotlin|java|ts|python|go|rust|cangjie|c"), ("limit", "integer", "至多返回条数，默认 30（超出时 truncated=true）"), ("file", "string", "只在这个文件（相对路径）里找")], ["name", "pattern"])))
+    arr.add(mcpTool("index_grep", "工作区文本搜索（定字符串，不是正则）：扫描索引器会扫的那些源码文件，返回 file:line:col、行文本与上下文行。不依赖索引——没建过索引、索引过期都能搜。查调用点请用 index_refs（它按符号解析，不受同名变量/注释干扰）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("pattern", "string", "要搜索的字面文本"), ("ignoreCase", "boolean", "忽略 ASCII 大小写，默认 false"), ("limit", "integer", "至多返回条数，默认 200"), ("context", "integer", "每个命中前后各带几行上下文，默认 0，至多 20"), ("glob", "string", "只搜路径匹配的文件（* 与 ? 通配，如 *.kt）")], ["name", "pattern"])))
+    arr.add(mcpTool("index_refs", "引用点：解析到某符号定义的每一个调用点（file:line:col、接收者、确信度 tier、所在函数 caller/callerQual/callerFile/callerLine）。改签名前用它找全要动的地方", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号：裸名、限定名（Outer.method）或 id")], ["name", "symbol"])))
+    arr.add(mcpTool("index_impact", "影响面：沿 direct/resolved 调用边反向求传递闭包——这个符号改了，哪些符号会跟着坏（每个带 distance 距离），并按文件汇总。词法级结果，不是编译器闭包；guessed 边不参与", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号：裸名、限定名（Outer.method）或 id"), ("depth", "integer", "传递深度，默认 4")], ["name", "symbol"])))
+    arr.add(mcpTool("index_outline", "文件大纲：一个文件里的全部符号（种类、qual、file:line:col、行范围、签名、可见性、仅声明的标记）+ 调入/调出文件与权重。读一个陌生文件前先看它", mcpSchemaObject([("name", "string", "项目名或 ID"), ("file", "string", "文件相对路径")], ["name", "file"])))
     arr.add(mcpTool("confidence_gen", "置信度生成：前置自愈索引（过期先重建并披露）→ 结构性疑点确定性度量 → 持久化 confidence.json（render index --confidence 的消费端就吃它）。no_ast=true 跳过语法树层；db=true 额外写 confidence.db", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "text|json|llm（llm = 可直接喂给模型的逐条复核提示词），默认 json"), ("no_ast", "boolean", "跳过语法树层（纯词法）"), ("db", "boolean", "额外写 confidence.db")], ["name"])))
     arr.add(mcpTool("confidence_query", "置信度快照查询：只读持久化 confidence.json，绝不重算（报告缺席报错，提示先 confidence_gen）。无过滤出总览（分数/维度/罚分 Top/限流披露）；file/symbol/kind/weight/top 过滤 findings；回执恒带快照元信息（generatedAt + 依据的索引版本）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("file", "string", "按文件过滤（精确或路径后缀）"), ("symbol", "string", "按符号过滤"), ("kind", "string", "按类别 id 过滤（如 orphan）"), ("weight", "integer", "按权重下限过滤"), ("top", "integer", "取前 N 条"), ("json", "boolean", "返回 JSON（默认 true）")], ["name"])))
     arr.add(mcpTool("render", "渲染交付物：持久化 payload → 单文件交互 HTML（落盘到项目库，回执只带路径与复用/新绘判定，不内塞 HTML 全文）。target=arch|index；confidence=true 时 index 叠加 confidence.json（缺席则纯结构渲染并注明）；force=true 强制重绘", mcpSchemaObject([("name", "string", "项目名或 ID"), ("target", "string", "arch|index，默认 index"), ("confidence", "boolean", "index 叠加 confidence.json"), ("force", "boolean", "强制重绘")], ["name"])))
@@ -129,9 +146,29 @@ public func mcpToolList(): JsonValue {
     arr.add(mcpTool("codegraph_patch_confidence", "补丁级置信度 Layer 1（算法层）：S1..S10 信号 + certain/uncertain 分层。uncertain 是给 Agent 的待办清单（配合 --skill 的任务说明）。name=项目名，patch_path=diff 文件路径", mcpSchemaObject([("name", "string", "项目名或 ID"), ("patch_path", "string", "unified diff 文件路径")], ["name", "patch_path"])))
     arr.add(mcpTool("codegraph_patch_merge", "补丁级置信度 Layer 3（合并器）：algorithm.json + agent.json → final.json。规则：agent resolved ×0.9 / unresolved 计负分 / ambiguous 0.5 / 未处理 deferred 0.5", mcpSchemaObject([("algorithm_json", "string", "Layer 1 输出的 JSON 文本"), ("agent_json", "string", "Layer 2 输出的 JSON 文本")], ["algorithm_json", "agent_json"])))
     arr.add(mcpToolDeprecated("codegraph_confidence", "代码置信度：结构性疑点（孤儿/占位/吞错/魔法数/重复体…）的确定性度量。被动能力——只在本工具被显式调用时分析。format=json|text|llm（llm 产出可直接喂模型的逐条复核提示词）（旧名别名，将移除——新面用 confidence_gen / confidence_query）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "json|text|llm，默认 json")], ["name"]), "confidence_gen"))
+    // 只读工具带 `annotations.readOnlyHint`（MCP 工具注解：宿主据此免确认直接执行）。
+    // 清单行保持 `arr.add(mcpTool("…"))` 的标准形态（schema 与处理器一致性的 lint 按它解析），
+    // 注解在这里统一补，不另造第二种构造器。
+    for (t in arr) {
+        let n = Json.strAt(t, "name", "")
+        if (MCP_READONLY_TOOLS.contains(n)) {
+            let a = Json.obj()
+            Json.set(a, "readOnlyHint", Json.of(true))
+            Json.set(t, "annotations", a)
+        }
+    }
     let o = Json.obj()
     Json.set(o, "tools", JArr(arr))
     return o
+}
+
+/// 结构化结果：`content[0].text` 是文本摘要，`structuredContent` 是同一个 JSON 对象。
+/// 两个都给、说同一件事：认 structuredContent 的宿主直接拿对象，不认的退回读文本。
+/// 本服务器不声明 outputSchema（没有为结果建 schema 的基础设施），所以文本不能省。
+func mcpStructured(text: String, structured: JsonValue): JsonValue {
+    let r = mcpText(text, false)
+    Json.set(r, "structuredContent", structured)
+    return r
 }
 
 // ------------------------------ 工具执行 ------------------------------
@@ -782,47 +819,125 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                 let (newCount, newProbe) = indexRebuild(p, indexCurrentDepth(p), count)
                 return mcpOk("${p.name}：索引已重建——${indexVersionLabel(newCount)}\n  ${indexProbeChangeText(oldProbe, newProbe)}\n  index.json：${indexJsonPathOf(p)}")
             case "index_overview" =>
+                // 形状与 CLI `index overview --json` 同一个构造点（indexOverviewJson）
                 let p = mcpRequireProject(getStr("name"))
                 let (count, healed) = indexEnsureFresh(p)
                 let dbPath = indexDbPathOf(p)
                 match (indexOverviewRead(dbPath)) {
                     case Some(ov) =>
-                        let o = Json.obj()
-                        Json.set(o, "project", Json.of(p.name))
-                        Json.set(o, "updateCount", Json.of(count))
-                        Json.set(o, "generatedAt", match (indexMetaRead(dbPath)) {
-                            case Some(m) => Json.of(m.generatedAt)
-                            case None => Json.of("")
-                        })
-                        Json.set(o, "selfHealed", Json.of(healed))
-                        Json.set(o, "nodes", Json.of(ov.nodes))
-                        Json.set(o, "edges", Json.of(ov.edges))
-                        Json.set(o, "files", Json.of(ov.files))
-                        let bk = Json.obj()
-                        for ((k, v) in ov.byKind) {
-                            Json.set(bk, k, Json.of(v))
+                        var generatedAt = ""
+                        match (indexMetaRead(dbPath)) {
+                            case Some(m) => generatedAt = m.generatedAt
+                            case None => ()
                         }
-                        Json.set(o, "byKind", bk)
-                        return mcpOk(Json.pretty(o))
+                        return mcpStructured(Json.pretty(indexOverviewJson(p, count, generatedAt, healed, ov)),
+                            indexOverviewJson(p, count, generatedAt, healed, ov))
                     case None =>
                         return mcpErr("读不出索引库：${dbPath}——先调 index_gen")
                 }
             case "index_query" =>
+                // 与 CLI `index query` 同一条路：索引过期先自愈（只写项目库目录）
                 let p = mcpRequireProject(getStr("name"))
+                let (_, healed) = indexEnsureFresh(p)
                 let fileArg = getStr("file")
                 let symbolArg = getStr("symbol")
+                // ⚠️ index_query 的文本**保持是 JSON 全文**（既有契约：调用方一直把
+                //   content[0].text 当 JSON 解），structuredContent 是同一个对象的机读出口。
+                //   文本摘要只给新增的五个工具（它们没有旧调用方）。
                 if (!fileArg.isEmpty()) {
                     match (indexQueryFile(indexDbPathOf(p), fileArg)) {
-                        case Some(q) => return mcpOk(Json.pretty(q))
-                        case None => return mcpErr("文件不在索引中：${fileArg}（先调 index_gen；索引只覆盖受支持的源码语言）")
+                        case Some(q) => return mcpStructured(Json.pretty(q), q)
+                        case None => return mcpErr("文件不在索引中：${fileArg}（索引只覆盖受支持的源码语言）")
                     }
                 }
                 if (symbolArg.isEmpty()) {
                     return mcpErr("symbol 与 file 至少给一个")
                 }
                 match (indexQuerySymbol(indexDbPathOf(p), symbolArg)) {
-                    case Some(q) => return mcpOk(Json.pretty(q))
-                    case None => return mcpErr("符号不在索引中：${symbolArg}（先调 index_gen；索引只覆盖受支持的源码语言）")
+                    case Some(q) => return mcpStructured(Json.pretty(q), q)
+                    case None => return mcpErr(indexSymbolNotFound(symbolArg))
+                }
+            case "index_search" =>
+                let p = mcpRequireProject(getStr("name"))
+                let pattern = getStr("pattern")
+                if (pattern.isEmpty()) { return mcpErr("pattern 必填：要搜索的名字或片段") }
+                let kind = getStr("kind")
+                if (!kind.isEmpty() && !INDEX_KINDS.contains(kind)) {
+                    return mcpErr("kind 只支持 func|class|struct|interface|enum|extension|typealias（收到：${kind}）")
+                }
+                var limit: Int64 = 30
+                if (Json.has(args, "limit")) {
+                    match (strictIntArg("limit")) {
+                        case Some(n) =>
+                            if (n < 1) { return mcpErr("limit 需要不小于 1 的整数，收到：${n}") }
+                            limit = n
+                        case None => return mcpErr("limit 需要整数")
+                    }
+                }
+                let (_, healed) = indexEnsureFresh(p)
+                let q = indexSearch(indexDbPathOf(p), pattern, kind, getStr("lang"), getStr("file"), limit)
+                return mcpStructured(indexSearchText(q, healed), q)
+            case "index_grep" =>
+                let p = mcpRequireProject(getStr("name"))
+                let pattern = getStr("pattern")
+                if (pattern.isEmpty()) { return mcpErr("pattern 必填：要搜索的字面文本") }
+                let ignoreCase = boolArg("ignoreCase")
+                var limit: Int64 = GREP_DEFAULT_LIMIT
+                var context: Int64 = 0
+                if (Json.has(args, "limit")) {
+                    match (strictIntArg("limit")) {
+                        case Some(n) =>
+                            if (n < 1) { return mcpErr("limit 需要不小于 1 的整数，收到：${n}") }
+                            limit = n
+                        case None => return mcpErr("limit 需要整数")
+                    }
+                }
+                if (Json.has(args, "context")) {
+                    match (strictIntArg("context")) {
+                        case Some(n) =>
+                            if (n < 0) { return mcpErr("context 需要不小于 0 的整数，收到：${n}") }
+                            context = n
+                        case None => return mcpErr("context 需要整数")
+                    }
+                }
+                let o = indexGrepJson(grepSources(p.path, pattern, ignoreCase, limit, context, getStr("glob")),
+                    pattern, ignoreCase)
+                return mcpStructured(indexGrepText(o), o)
+            case "index_refs" =>
+                let p = mcpRequireProject(getStr("name"))
+                let symbol = getStr("symbol")
+                if (symbol.isEmpty()) { return mcpErr("symbol 必填：符号名、限定名或 id（可先用 index_search 取得）") }
+                let (_, healed) = indexEnsureFresh(p)
+                match (indexRefs(indexDbPathOf(p), symbol)) {
+                    case Some(q) => return mcpStructured(indexRefsText(q, healed), q)
+                    case None => return mcpErr(indexSymbolNotFound(symbol))
+                }
+            case "index_impact" =>
+                let p = mcpRequireProject(getStr("name"))
+                let symbol = getStr("symbol")
+                if (symbol.isEmpty()) { return mcpErr("symbol 必填：符号名、限定名或 id（可先用 index_search 取得）") }
+                var depth: Int64 = 4
+                if (Json.has(args, "depth")) {
+                    match (strictIntArg("depth")) {
+                        case Some(n) =>
+                            if (n < 1) { return mcpErr("depth 需要不小于 1 的整数，收到：${n}") }
+                            depth = n
+                        case None => return mcpErr("depth 需要整数")
+                    }
+                }
+                let (_, healed) = indexEnsureFresh(p)
+                match (indexImpact(indexDbPathOf(p), symbol, depth)) {
+                    case Some(q) => return mcpStructured(indexImpactText(q, healed), q)
+                    case None => return mcpErr(indexSymbolNotFound(symbol))
+                }
+            case "index_outline" =>
+                let p = mcpRequireProject(getStr("name"))
+                let fileArg = getStr("file")
+                if (fileArg.isEmpty()) { return mcpErr("file 必填：文件相对路径") }
+                let (_, healed) = indexEnsureFresh(p)
+                match (indexQueryFile(indexDbPathOf(p), fileArg)) {
+                    case Some(q) => return mcpStructured(indexFileQueryText(q, healed), q)
+                    case None => return mcpErr("文件不在索引中：${fileArg}（索引只覆盖受支持的源码语言）")
                 }
             case "confidence_gen" =>
                 let p = mcpRequireProject(getStr("name"))

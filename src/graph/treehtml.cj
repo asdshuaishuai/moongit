@@ -70,19 +70,19 @@ public func tierOf(files: Int64, symbols: Int64): String {
 
 // MARK: - 函数级图谱数据（代码图谱 × 置信度的结合点）
 
-/// 函数级节点/调用边/异常实码。边 = 「函数体 → 被调函数」（词法近似：
-/// 函数体内自由调用按名匹配全局定义）；置信度 findings 按所在函数聚合，
-/// 异常函数内嵌实码片段（截 40 行，页面点击即看）。
+/// 函数级节点/调用边/异常实码。边 = 「调用方函数 → 被调函数」，来自**解析后的调用点**
+/// （resolve.cj：scanSource 逐行采集 `name(`，工程级解析到定义）——不再是
+/// 「函数体里出现过这个裸名字」的按行启发式；每个调用点带 file:line:col。
+/// 置信度 findings 按所在函数聚合，异常函数内嵌实码片段（截 40 行，页面点击即看）。
 ///
 /// 每条边自带确信度分层 tier（codereviewgraph 的 edge confidence 概念）：
-///   direct   = 调用方所在文件就有该名字的定义（词法上看得见，最确定）
-///   resolved = 跨文件且候选集中该名字只有一个定义（唯一命中）
-///   guessed  = 无同文件定义且候选集中有多个同名定义，按序取了首个
-///              （词法近似的固有不确定）
-/// 同文件可见定义**优先于**全库重名判定：全库别处还有同名定义不否定
-/// 「本文件里看得见的那一份」——否则同文件调用被画成虚线、边目标指向
-/// 任意另一处定义，与 direct 的语义自述矛盾。页面把 guessed 画成虚线——
-/// 不确定的关系必须看起来不确定。
+///   direct   = 限定命中：`Type.name(` / `Type::name(`，或 `self.name(` / 类型体内
+///              省略 this 的裸调用恰是外层类型自己的成员
+///   resolved = 裸名唯一：同文件 / 全工程（同语言优先）/ 同模块恰一个同名定义
+///   guessed  = 裸名歧义：候选多个且无法进一步收窄，**全部连边**
+///              （词法级没有类型信息：`obj.load(` 不知道 obj 的类型）
+/// 页面把 guessed 画成虚线——不确定的关系必须看起来不确定。
+/// tier 的完整判据与「同语言优先」的理由见 resolve.cj 的头注释。
 public func functionGraphData(graph: CodeGraph, findings: ConfidenceReport, en: Bool): JsonValue {
     // 对外签名恒为全量（depth 0）——cli.cj / mcp.cj 的既有调用面零改动（契约D）
     return functionGraphDataD(graph, findings, en, 0)
@@ -95,14 +95,10 @@ public func functionGraphData(graph: CodeGraph, findings: ConfidenceReport, en: 
 /// 回车 / 搜索 / 公开 API setFocus 全部静默无反应。callee 候选同样限制在深度
 /// 内，否则边会指向函数清单里不存在的端点——点它照样没反应。
 func functionGraphDataD(graph: CodeGraph, findings: ConfidenceReport, en: Bool, maxDepth: Int64): JsonValue {
-    let idx = graph.symbolIndex()
     let out = Json.obj()
     let fns = ArrayList<JsonValue>()
-    let edgeAgg = HashMap<String, Int64>()
-    let edgeTier = HashMap<String, String>()
     let byFile = HashMap<String, ArrayList<JsonValue>>()
-    // 深度内文件集一次算完：函数体每一行的每个自由调用都要查候选定义，
-    // 预建索引避免逐行重复算 dirDepthOf
+    // 深度内文件集一次算完
     let inDepth = HashMap<String, Bool>()
     for (fe0 in graph.files) {
         inDepth[fe0.relPath] = maxDepth <= 0 || dirDepthOf(fe0.relPath) <= maxDepth
@@ -146,8 +142,11 @@ func functionGraphDataD(graph: CodeGraph, findings: ConfidenceReport, en: Bool, 
         while (i < Int64(syms.size)) {
             let s = syms[i]
             let bodyStart = s.line
-            let bodyEnd = if (i + 1 < Int64(syms.size)) { syms[i + 1].line - 1 } else { Int64(srcLines.size) }
-            let id = "f:" + fe.relPath + ":" + s.line.toString() + ":" + s.name
+            var bodyEnd = if (i + 1 < Int64(syms.size)) { syms[i + 1].line - 1 } else { Int64(srcLines.size) }
+            // 已知声明末行时以此收窄：函数后的文档注释不再算进上一个函数体；
+            // 函数体内的局部类型也不会「一直长到下一个顶层符号」。
+            if (s.endLine >= bodyStart && s.endLine < bodyEnd) { bodyEnd = s.endLine }
+            let id = s.id(fe.relPath)
             let fd = ArrayList<JsonValue>()
             var maxW: Int64 = 0
             match (fileFindings) {
@@ -161,62 +160,6 @@ func functionGraphDataD(graph: CodeGraph, findings: ConfidenceReport, en: Bool, 
                         }
                     }
                 case None => ()
-            }
-            var j = bodyStart - 1
-            while (j < bodyEnd && j < Int64(srcLines.size)) {
-                let stripped = srcLines[j]
-                if (!stripped.isEmpty()) {
-                    for ((cname, _) in freeCallsIn(stripped)) {
-                        if (cname == s.name) { continue }
-                        match (idx.get(cname)) {
-                            case Some(defs) =>
-                                // callee 候选限制在深度内：边两端都必须是页面
-                                // 可见数据域里的函数（超出的一律不解析成边）
-                                var cand = defs
-                                if (maxDepth > 0) {
-                                    let kept = ArrayList<(String, SymDecl)>()
-                                    for (d in defs) {
-                                        if (keeps(d[0])) { kept.add(d) }
-                                    }
-                                    cand = kept
-                                }
-                                if (Int64(cand.size) > 0) {
-                                    // 同文件可见定义优先：先找 dfile==fe.relPath
-                                    // 的候选，命中则边指向它且 tier=direct——
-                                    // 全库重名不再一票压过同文件（否则同文件调用
-                                    // 被判 guessed 虚线、边目标指向按序排列的
-                                    // 任意首个定义）
-                                    var sameIdx: Int64 = -1
-                                    var k: Int64 = 0
-                                    while (k < Int64(cand.size)) {
-                                        let (df, _) = cand[k]
-                                        if (df == fe.relPath) { sameIdx = k; break }
-                                        k += 1
-                                    }
-                                    let pick = if (sameIdx >= 0) { sameIdx } else { 0 }
-                                    let (dfile, ddecl) = cand[pick]
-                                    let calleeId = "f:" + dfile + ":" + ddecl.line.toString() + ":" + cname
-                                    if (calleeId != id) {
-                                        let ek = id + "=>" + calleeId
-                                        // tier 按 (调用方, 被调) 解析结果唯一确定；
-                                        // 同名 callee 的多次调用解析相同，记一次即可
-                                        if (!edgeTier.contains(ek)) {
-                                            let tier = if (sameIdx >= 0) { "direct" }
-                                                else if (Int64(cand.size) > 1) { "guessed" }
-                                                else { "resolved" }
-                                            edgeTier[ek] = tier
-                                        }
-                                        match (edgeAgg.get(ek)) {
-                                            case Some(v) => edgeAgg[ek] = v + 1
-                                            case None => edgeAgg[ek] = 1
-                                        }
-                                    }
-                                }
-                            case None => ()
-                        }
-                    }
-                }
-                j += 1
             }
             let o = Json.obj()
             Json.set(o, "id", Json.of(id))
@@ -240,24 +183,16 @@ func functionGraphDataD(graph: CodeGraph, findings: ConfidenceReport, en: Bool, 
             i += 1
         }
     }
-    let sorted = ArrayList<(String, Int64)>()
-    for ((ek, w) in edgeAgg) { sorted.add((ek, w)) }
-    insertionSortBy(sorted, { a, b => a[0] < b[0] })
+    // 调用边：解析后的调用点聚合（两端都在数据域内的才成边）
+    let edges = callEdgesFrom(graph.callSites, { p => keeps(p) })
     let ea = ArrayList<JsonValue>()
-    for (p in sorted) {
-        let segs = p[0].split("=>")
-        if (segs.size == 2) {
-            let tv = match (edgeTier.get(p[0])) {
-                case Some(v) => v
-                case None => "resolved"
-            }
-            let e = Json.obj()
-            Json.set(e, "from", Json.of(segs[0]))
-            Json.set(e, "to", Json.of(segs[1]))
-            Json.set(e, "w", Json.of(p[1]))
-            Json.set(e, "tier", Json.of(tv))
-            ea.add(e)
-        }
+    for (e in edges) {
+        let o = Json.obj()
+        Json.set(o, "from", Json.of(e.from))
+        Json.set(o, "to", Json.of(e.to))
+        Json.set(o, "w", Json.of(e.weight))
+        Json.set(o, "tier", Json.of(e.tier))
+        ea.add(o)
     }
     Json.set(out, "functions", JArr(fns))
     Json.set(out, "functionEdges", JArr(ea))

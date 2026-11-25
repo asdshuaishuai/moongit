@@ -59,16 +59,151 @@ public func symKindLabel(k: SymKind): String {
 
 // MARK: - 实体
 
+/// 符号的稳定 id：`f:<relPath>:<line>:<name>`（与 HTML/SQLite 的节点键同一格式）。
+///
+/// 「稳定」的含义：同一份源码两次索引得到同一个 id（不含自增整数、不含迭代序），
+/// 所以 agent 可以把 id 当句柄存下来回传（`index query <id>` / `index refs <id>`）。
+/// 行号是 id 的一部分 ⇒ 符号上移/下移一行 id 就变——这是**如实**的：
+/// 词法级索引无法给出跨编辑恒定的身份，宁可在 id 里带着可核验的坐标，
+/// 也不编一个看起来恒定、实际会漂的哈希。
+public func symId(file: String, line: Int64, name: String): String {
+    return "f:" + file + ":" + line.toString() + ":" + name
+}
+
 /// 一处符号声明。
+///
+/// 【三参构造器保留】`SymDecl(kind, name, line)` 是既有调用形态，新字段全带默认值——
+/// 只关心「叫什么、在哪一行」的旧消费方零改动。
+///
+/// 【成员级字段】owner/qual/endLine/col/sig/visibility/declOnly 让符号从
+/// 「文件里出现过一个名字」升级为「哪个类型的哪个成员、占哪些行、长什么样」：
+///   · owner     外层类型限定的**限定名**（"" = 顶层）。extension/extend/impl 体的
+///               成员以被扩展类型为 owner；Go 接收者方法以接收者类型为 owner。
+///   · qual      owner.name（顶层符号 qual == name）——同名成员的**消歧键**。
+///   · endLine   声明的最后一行（花括号语言 = 闭括号行；Python = 缩进体末行；
+///               无体声明 = 签名末行）；0 = 未知。
+///   · col       声明名在 line 行**原始源码**里的 1 起字符列；0 = 未知。
+///   · sig       签名文本（声明起点到函数体 `{` 之前，注释剥除、空白折叠），
+///               至多 SIG_MAX_BYTES 字节；"" = 不可得。
+///   · visibility public|private|protected|internal|package|""（未指明）。
+///   · declOnly  只有声明没有体：C/C++ 原型、接口/抽象方法签名、TS 重载签名。
+///               同一工程里另有同语言同 qual 的定义时，它作为该定义的「声明处」
+///               呈现（defs[].decls），不再单独算一个定义。
 public struct SymDecl {
     public let kind: SymKind
     public let name: String
     public let line: Int64
+    public let owner: String
+    public let qual: String
+    public let endLine: Int64
+    public let col: Int64
+    public let sig: String
+    public let visibility: String
+    public let declOnly: Bool
+    /// 同文件内「同一行、同一个名字」的第几个符号：1 = 首个，≥2 = 其后同名者。
+    /// id 的唯一性靠它——同文件同 (line, name) 的第 2 个起在 id 后追加 `#2`/`#3`。
+    /// 不进任何 JSON 出口。
+    public let dup: Int64
 
     public init(kind: SymKind, name: String, line: Int64) {
+        this(kind, name, line, "", 0, 0, "", "", false)
+    }
+
+    public init(kind: SymKind, name: String, line: Int64, owner: String,
+                endLine: Int64, col: Int64, sig: String, visibility: String,
+                declOnly: Bool) {
+        this(kind, name, line, owner, endLine, col, sig, visibility, declOnly, 1)
+    }
+
+    init(kind: SymKind, name: String, line: Int64, owner: String,
+         endLine: Int64, col: Int64, sig: String, visibility: String,
+         declOnly: Bool, dup: Int64) {
         this.kind = kind
         this.name = name
         this.line = line
+        this.owner = owner
+        this.qual = if (owner.isEmpty()) { name } else { owner + "." + name }
+        this.endLine = endLine
+        this.col = col
+        this.sig = sig
+        this.visibility = visibility
+        this.declOnly = declOnly
+        this.dup = dup
+    }
+
+    /// 稳定 id（见 symId）。同文件同 (line, name) 的第 2 个起带 `#n` 后缀。
+    public func id(file: String): String {
+        let base = symId(file, this.line, this.name)
+        if (this.dup <= 1) {
+            return base
+        }
+        return base + "#" + this.dup.toString()
+    }
+}
+
+/// 签名文本的字节上限（截断走 safeSlice，不切 UTF-8）。
+public let SIG_MAX_BYTES: Int64 = 240
+
+/// 一处调用点（scanSource 在**剥过注释与字符串**的代码上逐行采集）。
+///
+/// `receiver`：0 = 无接收者（自由调用 `name(`）；
+///             1 = 实例接收者（`expr.name(` / `expr->name(` / `expr::name(`，接收者文本首字母小写）；
+///             2 = 类型限定（`Type.name(` / `Type::name(`，接收者文本首字母大写）。
+/// `receiverText`：紧邻分隔符之前的那个标识符（原样，不改写）。
+/// `caller`：**内层被索引函数**在 `SourceFacts.symbols` 里的下标；-1 = 不在任何
+///            被索引函数体内（属性初始化器、类体直接初始化、模块级代码）。
+/// 内建的 `print(` / `println(` 这类**照记**——它们是不是内建由解析阶段按语言判定
+/// （见 resolve.cj），扫描阶段不做名字白名单。
+public struct CallSite {
+    public let name: String
+    public let line: Int64
+    public let col: Int64
+    public let receiver: Int64
+    public let receiverText: String
+    public let caller: Int64
+
+    public init(name: String, line: Int64, col: Int64, receiver: Int64,
+                receiverText: String, caller: Int64) {
+        this.name = name
+        this.line = line
+        this.col = col
+        this.receiver = receiver
+        this.receiverText = receiverText
+        this.caller = caller
+    }
+}
+
+/// 一处调用点的**解析结果**（工程级解析之后；codegraph.db 的 sites 表每行一条）。
+///
+/// caller/dst 都是稳定 id（`f:…`），"" = 无：caller 为空 = 该调用点不在任何被
+/// 索引函数体内；dst 为空 = 未解析（全工程没有该名字的定义，且不是内建）。
+/// tier = direct | resolved | guessed（未解析为 ""）。
+/// dstFile 是 dst 所在文件（depth 截断时判「被调方在不在数据域里」用；不进 JSON）。
+public struct ResolvedSite {
+    public let file: String
+    public let line: Int64
+    public let col: Int64
+    public let receiver: Int64
+    public let receiverText: String
+    public let name: String
+    public let caller: String
+    public let dst: String
+    public let tier: String
+    public let dstFile: String
+
+    public init(file: String, line: Int64, col: Int64, receiver: Int64,
+                receiverText: String, name: String, caller: String,
+                dst: String, tier: String, dstFile!: String = "") {
+        this.file = file
+        this.line = line
+        this.col = col
+        this.receiver = receiver
+        this.receiverText = receiverText
+        this.name = name
+        this.caller = caller
+        this.dst = dst
+        this.tier = tier
+        this.dstFile = dstFile
     }
 }
 
@@ -162,6 +297,12 @@ public class CodeGraph {
     /// 缺席——与「空目录」在图谱里完全同构（契约A：出口必须恒发
     /// unreadableDirs / unreadableDirsTruncated 披露这一事实）。
     public let unreadableDirs: ArrayList<String>
+    /// 调用点的解析结果（工程级：扫描完全部文件后统一解析，见 resolve.cj）。
+    /// 每 (调用点, 解析目标) 一条；未解析的调用点 dst 为 ""。
+    /// 按全序排定（file ↑ → line ↑ → col ↑ → name ↑ → dst ↑），出口字节序确定。
+    /// 函数级调用边（functionGraph.functionEdges / codegraph.db 的 edges 与 sites）
+    /// 的**唯一数据源**——没有第二份「按行猜调用」的扫描。
+    public let callSites: ArrayList<ResolvedSite>
 
     public init(root: String, files: ArrayList<FileEntry>,
                 importEdges: ArrayList<(String, String)>,
@@ -172,7 +313,8 @@ public class CodeGraph {
                 unusedImports: ArrayList<(String, String, Int64)>,
                 oversizeSkipped: Int64,
                 unreadableDirs: ArrayList<String>,
-                archRefEdges: ArrayList<(String, String, Int64)>) {
+                archRefEdges: ArrayList<(String, String, Int64)>,
+                callSites!: ArrayList<ResolvedSite> = ArrayList<ResolvedSite>()) {
         this.root = root
         this.files = files
         this.importEdges = importEdges
@@ -185,6 +327,7 @@ public class CodeGraph {
         this.unusedImports = unusedImports
         this.oversizeSkipped = oversizeSkipped
         this.unreadableDirs = unreadableDirs
+        this.callSites = callSites
     }
 
     /// 符号名 → 定义处列表（同名符号可能多处定义，全部列出，不装作唯一）。

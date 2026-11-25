@@ -445,6 +445,9 @@ public func buildGraphProbed(root: String): (CodeGraph, SourceProbe) {
     // edgesDropped）。「看了但没留下痕迹」与「这里没有文件」在响应里同构 ——
     // 截断必须披露，否则语言分布/影响面都在一份未声明的残缺样本上说话。
     let oversize = ReferVar(0)
+    // 各文件的调用点（scanSource 同一次扫描采到；FileEntry 不带它——引用边/孤儿检测
+    // 这些既有消费方不需要）。全部文件扫完后统一解析（resolve.cj）。
+    let refsOfFile = HashMap<String, ArrayList<CallSite>>()
     for ((absDir, rel) in files) {
         let lang = detectLang(rel)
         if (lang.isEmpty()) { continue }
@@ -457,6 +460,7 @@ public func buildGraphProbed(root: String): (CodeGraph, SourceProbe) {
                 }
                 let f = scanSource(text, lang)
                 facts.add(FileEntry(rel, lang, f.lineCount, f.symbols, f.imports, f.importLines))
+                refsOfFile[rel] = f.refs
                 // 架构口径的声明侧收集（archRefEdges 判据①④，语义见 model.cj
                 // 的字段注释）：顶格公开的顶层声明 = 跨模块可达符号集；声明行的
                 // 泛型参数名 = 声明不是引用；剥后仍在的 import 行号。用同一次
@@ -467,6 +471,10 @@ public func buildGraphProbed(root: String): (CodeGraph, SourceProbe) {
         }
     }
     insertionSortBy(facts, { a, b => a.relPath < b.relPath })
+
+    // ── 调用点解析（工程级：全工程符号表建好之后才能判唯一/同文件/成员）──
+    // 函数级调用边的唯一来源。按全序排定，下游出口字节序确定。
+    let callSites = resolveCallSites(facts, refsOfFile)
 
     // ── 文件 → 模块索引 + 文件级 import 解析 ──
     // ⚠️ 性能审查 §2.1：原来是「每个 import × 扫描全部文件」的嵌套扫描
@@ -908,7 +916,7 @@ public func buildGraphProbed(root: String): (CodeGraph, SourceProbe) {
     return (CodeGraph(root, facts, importEdges, refEdges,
                      files.size >= Int64(GRAPH_MAX_FILES), skipped.value,
                      referencedNames, unresolvedList, unusedImports,
-                     oversize.value, unreadableDirs, archRefEdges),
+                     oversize.value, unreadableDirs, archRefEdges, callSites: callSites),
             probeAcc.snapshot())
 }
 

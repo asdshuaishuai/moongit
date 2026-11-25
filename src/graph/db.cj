@@ -27,7 +27,12 @@ import moongit.util.*
 
 /// graph db 的 meta.generator。schema 演进时递增版本（v1 → v2），
 /// 读方据此判断能否信任键集。
-public let GRAPH_DB_GENERATOR: String = "moongit graph db v1"
+///
+/// v2（成员级索引）：nodes 增 sid / qual / end_line / col / sig / visibility /
+/// decl_only 七列，新增 sites 表（每个调用点一行，含未解析的）。v1 库对 v2 读方
+/// 是**过期**的——`indexDbIsCurrent` 是唯一判据，新鲜度判定（indexProbeFresh）
+/// 据此把 v1 库当过期重建，而不是拿缺列的库去跑 v2 查询。
+public let GRAPH_DB_GENERATOR: String = "moongit graph db v2"
 
 /// confidence db 的 meta.generator（同上）。
 public let CONFIDENCE_DB_GENERATOR: String = "moongit confidence db v1"
@@ -124,11 +129,17 @@ public func indexMetaRead(dbPath: String): Option<IndexMeta> {
 // A. 符号级索引图库（moongit graph db）
 //
 //   meta(key, value)          generator / project / root / files / symbols
-//   nodes(id, kind, name, file, line, lang, findings, max_weight)
-//   edges(src, dst, tier, weight)          src/dst = nodes.id
+//   nodes(id, kind, name, file, line, lang, findings, max_weight,
+//         sid, qual, end_line, col, sig, visibility, decl_only)      ← v2 新增后七列
+//   edges(src, dst, tier, weight)          src/dst = nodes.id（调用方 → 被调方）
+//   sites(src, dst, file, line, col, receiver, tier, name)           ← v2 新增
+//         每个调用点 × 解析目标一行；未解析的 dst = 0，不在任何函数体内的 src = 0。
+//         receiver 是接收者文本（"" = 自由调用）。name / tier 两列是比规格多出来的：
+//         没有名字，「未解析调用」这一行就说不清调的是谁。
 //   files(path, lang, lines, symbols)      graph.files 原样
-//   索引：idx_nodes_name / idx_nodes_file / idx_edges_src / idx_edges_dst
-//         —— agent 高频查询是「谁调我 / 我调谁 / 按名找符号」
+//   索引：idx_nodes_name / idx_nodes_file / idx_nodes_sid(unique) / idx_nodes_qual /
+//         idx_edges_src / idx_edges_dst / idx_sites_src / idx_sites_dst
+//         —— agent 高频查询是「谁调我 / 我调谁 / 按名找符号 / 调用点在哪」
 // ─────────────────────────────────────────────────────────────────
 
 /// 把 functionGraphData 的返回值（functions/functionEdges/codeSnippets）
@@ -161,13 +172,18 @@ func graphDbWriteCore(path: String, graph: CodeGraph, funcPayload: JsonValue,
         let ddl: Array<String> = [
             "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)",
             "CREATE TABLE store_meta(key TEXT PRIMARY KEY, value)",
-            "CREATE TABLE nodes(id INTEGER PRIMARY KEY, kind TEXT, name TEXT, file TEXT, line INTEGER, lang TEXT, findings INTEGER, max_weight INTEGER)",
+            "CREATE TABLE nodes(id INTEGER PRIMARY KEY, kind TEXT, name TEXT, file TEXT, line INTEGER, lang TEXT, findings INTEGER, max_weight INTEGER, sid TEXT, qual TEXT, end_line INTEGER, col INTEGER, sig TEXT, visibility TEXT, decl_only INTEGER)",
             "CREATE TABLE edges(src INTEGER, dst INTEGER, tier TEXT, weight INTEGER)",
+            "CREATE TABLE sites(src INTEGER, dst INTEGER, file TEXT, line INTEGER, col INTEGER, receiver TEXT, tier TEXT, name TEXT)",
             "CREATE TABLE files(path TEXT PRIMARY KEY, lang TEXT, lines INTEGER, symbols INTEGER)",
             "CREATE INDEX idx_nodes_name ON nodes(name)",
             "CREATE INDEX idx_nodes_file ON nodes(file)",
+            "CREATE UNIQUE INDEX idx_nodes_sid ON nodes(sid)",
+            "CREATE INDEX idx_nodes_qual ON nodes(qual)",
             "CREATE INDEX idx_edges_src ON edges(src)",
             "CREATE INDEX idx_edges_dst ON edges(dst)",
+            "CREATE INDEX idx_sites_src ON sites(src)",
+            "CREATE INDEX idx_sites_dst ON sites(dst)",
         ]
         for (s in ddl) {
             if (!db.exec(s)) { ok = false; break }
@@ -229,10 +245,13 @@ func graphDbFill(db: SqliteDb, graph: CodeGraph, funcPayload: JsonValue): Bool {
 
     // payload id（"f:file:line:name"）→ 整数主键（与 nodes 插入同序 1..N）
     let idMap = HashMap<String, Int64>()
+    // 本次数据域里有节点的文件（--depth 截断时是 graph.files 的子集）
+    let fileInPayload = HashSet<String>()
     var nextId: Int64 = 0
     for (f in functions) {
         nextId += 1
         idMap[Json.strAt(f, "id", "")] = nextId
+        fileInPayload.add(Json.strAt(f, "file", ""))
     }
 
     // ── meta ──
@@ -255,16 +274,29 @@ func graphDbFill(db: SqliteDb, graph: CodeGraph, funcPayload: JsonValue): Bool {
     stMeta.finalize()
     if (!ok) { return false }
 
+    // ── 成员级列的数据源：CodeGraph 的符号表（按稳定 id 对齐 payload 的节点）──
+    // payload 的 functions[] 是渲染投影，成员级字段的唯一事实在 graph.files[].symbols。
+    let symById = HashMap<String, SymDecl>()
+    for (fe in graph.files) {
+        for (sy in fe.symbols) { symById[sy.id(fe.relPath)] = sy }
+    }
+
     // ── nodes ──
-    let stNodeOpt = db.prepare("INSERT INTO nodes(id, kind, name, file, line, lang, findings, max_weight) VALUES(?, ?, ?, ?, ?, ?, ?, ?)")
+    let stNodeOpt = db.prepare("INSERT INTO nodes(id, kind, name, file, line, lang, findings, max_weight, sid, qual, end_line, col, sig, visibility, decl_only) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
     if (stNodeOpt.isNone()) { return false }
     let stNode = stNodeOpt.getOrThrow()
     for (f in functions) {
         // 同一 payload 产出的 id 一定在 idMap（同一循环建的表）；防御性 getOrThrow
-        let id = idMap.get(Json.strAt(f, "id", "")).getOrThrow()
+        let sid = Json.strAt(f, "id", "")
+        let id = idMap.get(sid).getOrThrow()
         let nFindings = match (Json.get(f, "findings")) {
             case Some(JArr(a)) => Int64(a.size)
             case _ => 0
+        }
+        var sy = SymDecl(Func, "", 0)
+        match (symById.get(sid)) {
+            case Some(v) => sy = v
+            case None => ()
         }
         var row = stNode.bindInt(1, id)
         row = row && stNode.bindText(2, Json.strAt(f, "kind", ""))
@@ -275,11 +307,50 @@ func graphDbFill(db: SqliteDb, graph: CodeGraph, funcPayload: JsonValue): Bool {
         row = row && stNode.bindInt(7, nFindings)
         // weight = 该函数内疑点的最高档位（functionGraphData 的 maxW 既有口径）
         row = row && stNode.bindInt(8, Json.intAt(f, "weight", 0))
+        row = row && stNode.bindText(9, sid)
+        row = row && stNode.bindText(10, sy.qual)
+        row = row && stNode.bindInt(11, sy.endLine)
+        row = row && stNode.bindInt(12, sy.col)
+        row = row && stNode.bindText(13, sy.sig)
+        row = row && stNode.bindText(14, sy.visibility)
+        row = row && stNode.bindInt(15, if (sy.declOnly) { 1 } else { 0 })
         row = row && stNode.stepFinish()
         if (!row) { stNode.finalize(); return false }
         stNode.reset()
     }
     stNode.finalize()
+
+    // ── sites（调用点）──
+    // 只收「文件在本次数据域里」的调用点：depth 截断掉的文件里，调用方与被调方都
+    // 不在 nodes 里，留下来只会是一批 src = 0 的孤儿行，把「有调用方」说成「没有」。
+    let stSiteOpt = db.prepare("INSERT INTO sites(src, dst, file, line, col, receiver, tier, name) VALUES(?, ?, ?, ?, ?, ?, ?, ?)")
+    if (stSiteOpt.isNone()) { return false }
+    let stSite = stSiteOpt.getOrThrow()
+    for (site in graph.callSites) {
+        if (!fileInPayload.contains(site.file)) { continue }
+        var src: Int64 = 0
+        var dst: Int64 = 0
+        match (idMap.get(site.caller)) {
+            case Some(v) => src = v
+            case None => ()
+        }
+        match (idMap.get(site.dst)) {
+            case Some(v) => dst = v
+            case None => ()
+        }
+        var row = stSite.bindInt(1, src)
+        row = row && stSite.bindInt(2, dst)
+        row = row && stSite.bindText(3, site.file)
+        row = row && stSite.bindInt(4, site.line)
+        row = row && stSite.bindInt(5, site.col)
+        row = row && stSite.bindText(6, site.receiverText)
+        row = row && stSite.bindText(7, site.tier)
+        row = row && stSite.bindText(8, site.name)
+        row = row && stSite.stepFinish()
+        if (!row) { stSite.finalize(); return false }
+        stSite.reset()
+    }
+    stSite.finalize()
 
     // ── edges ──
     let stEdgeOpt = db.prepare("INSERT INTO edges(src, dst, tier, weight) VALUES(?, ?, ?, ?)")
@@ -448,6 +519,83 @@ func confidenceDbFill(db: SqliteDb, report: ConfidenceReport): Bool {
 // 行序确定 ⇒ 出口逐字节确定（agent 对账前提，同构建纪律）。
 // ─────────────────────────────────────────────────────────────────
 
+/// nodes 表的读列清单（v2）。NodeRow 的字段与它**同序**——列下标只在这里出现一次。
+let NODE_COLS: String = "id, sid, kind, name, qual, file, line, end_line, col, lang, sig, visibility, decl_only, findings, max_weight"
+
+/// 一行符号（nodes 表的读出形态）。
+struct NodeRow {
+    let id: Int64
+    let sid: String
+    let kind: String
+    let name: String
+    let qual: String
+    let file: String
+    let line: Int64
+    let endLine: Int64
+    let col: Int64
+    let lang: String
+    let sig: String
+    let visibility: String
+    let declOnly: Bool
+    let findings: Int64
+    let maxWeight: Int64
+
+    init(id: Int64, sid: String, kind: String, name: String, qual: String, file: String,
+         line: Int64, endLine: Int64, col: Int64, lang: String, sig: String,
+         visibility: String, declOnly: Bool, findings: Int64, maxWeight: Int64) {
+        this.id = id
+        this.sid = sid
+        this.kind = kind
+        this.name = name
+        this.qual = qual
+        this.file = file
+        this.line = line
+        this.endLine = endLine
+        this.col = col
+        this.lang = lang
+        this.sig = sig
+        this.visibility = visibility
+        this.declOnly = declOnly
+        this.findings = findings
+        this.maxWeight = maxWeight
+    }
+}
+
+func readNodeRow(st: SqliteStmt): NodeRow {
+    return NodeRow(st.columnInt(0), st.columnText(1), st.columnText(2), st.columnText(3),
+        st.columnText(4), st.columnText(5), st.columnInt(6), st.columnInt(7), st.columnInt(8),
+        st.columnText(9), st.columnText(10), st.columnText(11), st.columnInt(12) != 0,
+        st.columnInt(13), st.columnInt(14))
+}
+
+/// 「有效定义」判据的 SQL 片段：不是只有声明的符号，**或者**全工程（同语言）没有
+/// 与它同 qual 的定义（纯接口方法、只有原型没有实现的声明仍然是可查的终点）。
+/// 有定义的声明不单独算一个 def——它作为该定义的 decls 呈现。
+let EFFECTIVE_DEF_SQL: String = "(n.decl_only = 0 OR NOT EXISTS (SELECT 1 FROM nodes d WHERE d.decl_only = 0 AND d.lang = n.lang AND d.qual = n.qual))"
+
+/// 库是不是当前 schema。缺库 / 缺 meta 表 / generator 不是当前版本 ⇒ false。
+/// 新鲜度判定（cli.indexProbeFresh）据它把旧版库当**过期**：v1 库的源探针可能
+/// 与当前源一致，但它的 nodes 没有 sid/qual 列、也没有 sites 表——拿它跑 v2 查询
+/// 只会得到一堆「查不到」的假答案。
+public func indexDbIsCurrent(dbPath: String): Bool {
+    if (!fileExists(dbPath)) { return false }
+    let dbOpt = SqliteDb.openReadonly(dbPath)
+    if (dbOpt.isNone()) { return false }
+    let db = dbOpt.getOrThrow()
+    var gen = ""
+    try {
+        let stOpt = db.prepare("SELECT value FROM meta WHERE key = 'generator'")
+        if (stOpt.isSome()) {
+            let st = stOpt.getOrThrow()
+            if (st.stepHasRow()) { gen = st.columnText(0) }
+            st.finalize()
+        }
+    } finally {
+        db.close()
+    }
+    return gen == GRAPH_DB_GENERATOR
+}
+
 /// index overview 的统计（SQL 聚合，不是旧 overview 的全部投影）。
 public struct IndexOverview {
     public let nodes: Int64
@@ -455,12 +603,31 @@ public struct IndexOverview {
     public let files: Int64
     /// 符号按 kind 计数（kind ↑ 排定；空库 = 空数组恒发）
     public let byKind: ArrayList<(String, Int64)>
+    /// 调用点总数（sites 表行数 = 每个「调用点 × 解析目标」一行）
+    public let sites: Int64
+    /// 未解析的调用点数（全工程无同名定义、且不是内建——外部依赖或拼错的名字）
+    public let unresolved: Int64
+    /// 按确信度分层的边数
+    public let tierDirect: Int64
+    public let tierResolved: Int64
+    public let tierGuessed: Int64
 
     public init(nodes: Int64, edges: Int64, files: Int64, byKind: ArrayList<(String, Int64)>) {
+        this(nodes, edges, files, byKind, 0, 0, 0, 0, 0)
+    }
+
+    public init(nodes: Int64, edges: Int64, files: Int64, byKind: ArrayList<(String, Int64)>,
+                sites: Int64, unresolved: Int64, tierDirect: Int64, tierResolved: Int64,
+                tierGuessed: Int64) {
         this.nodes = nodes
         this.edges = edges
         this.files = files
         this.byKind = byKind
+        this.sites = sites
+        this.unresolved = unresolved
+        this.tierDirect = tierDirect
+        this.tierResolved = tierResolved
+        this.tierGuessed = tierGuessed
     }
 }
 
@@ -484,6 +651,9 @@ func sqlScalarCount(db: SqliteDb, sql: String): Option<Int64> {
 }
 
 /// index overview 统计。库读不出来 → None（调用方向用户报错）。
+/// v2 新增的三个数（sites / unresolved / tiers）在 v1 库上取不到（没有 sites 表）：
+/// 按 0 发——键集恒定，不因库的版本而漂。v1 库不会真的走到这里
+/// （新鲜度判定先把它当过期重建），这一支只为绕开自愈的直接读路径兜底。
 public func indexOverviewRead(dbPath: String): Option<IndexOverview> {
     let dbOpt = indexDbOpenReadonly(dbPath)
     if (dbOpt.isNone()) { return None }
@@ -506,7 +676,33 @@ public func indexOverviewRead(dbPath: String): Option<IndexOverview> {
                                     byKind.add((st.columnText(0), st.columnInt(1)))
                                 }
                                 st.finalize()
-                                return Some(IndexOverview(nn, ne, nf, byKind))
+                                var nSites: Int64 = 0
+                                var nUnres: Int64 = 0
+                                var tDirect: Int64 = 0
+                                var tResolved: Int64 = 0
+                                var tGuessed: Int64 = 0
+                                match (sqlScalarCount(db, "SELECT COUNT(*) FROM sites")) {
+                                    case Some(v) => nSites = v
+                                    case None => ()
+                                }
+                                match (sqlScalarCount(db, "SELECT COUNT(*) FROM sites WHERE dst = 0")) {
+                                    case Some(v) => nUnres = v
+                                    case None => ()
+                                }
+                                let stTOpt = db.prepare("SELECT tier, COUNT(*) FROM edges GROUP BY tier ORDER BY tier")
+                                if (stTOpt.isSome()) {
+                                    let stT = stTOpt.getOrThrow()
+                                    while (stT.stepHasRow()) {
+                                        let t = stT.columnText(0)
+                                        let c = stT.columnInt(1)
+                                        if (t == "direct") { tDirect = c }
+                                        else if (t == "resolved") { tResolved = c }
+                                        else if (t == "guessed") { tGuessed = c }
+                                    }
+                                    stT.finalize()
+                                }
+                                return Some(IndexOverview(nn, ne, nf, byKind, nSites, nUnres,
+                                    tDirect, tResolved, tGuessed))
                             case None => return None
                         }
                     case None => return None
@@ -518,74 +714,67 @@ public func indexOverviewRead(dbPath: String): Option<IndexOverview> {
     }
 }
 
-/// `index query <符号>` 的一体载荷：defs（按名命中）+ callers/callees
-///（函数级调用边 JOIN）。None = 一个定义都没有（查不到 → 上层报错，不编结果）。
+/// `index query <符号>` 的一体载荷：defs + callers/callees（函数级调用边 JOIN）
+/// + perDef（逐定义的调用关系，消歧用）。None = 一个定义都没有（查不到 → 上层报错，不编结果）。
 /// callers/callees 恒发（空数组也是「没有调用方」的有意义事实）。
+///
+/// `<符号>` 的三种形态：稳定 id（`f:…`）> 限定名（`Outer.start`）> 裸名。
+/// 裸名命中多个不同的定义时 ambiguous = true，perDef 逐个给出各自的调用关系。
+/// 顶层 callers/callees 是全部 defs 的汇总（既有键，语义不变）。
 public func indexQuerySymbol(dbPath: String, name: String): Option<JsonValue> {
     let dbOpt = indexDbOpenReadonly(dbPath)
     if (dbOpt.isNone()) { return None }
     let db = dbOpt.getOrThrow()
     try {
-        // ── defs ──
-        let defs = ArrayList<JsonValue>()
-        let stDOpt = db.prepare("SELECT id, kind, file, line, lang, findings, max_weight FROM nodes WHERE name = ? ORDER BY file, line")
-        if (stDOpt.isNone()) { return None }
-        let stD = stDOpt.getOrThrow()
-        if (stD.bindText(1, name)) {
-            while (stD.stepHasRow()) {
-                let d = Json.obj()
-                Json.set(d, "id", Json.of(stD.columnInt(0)))
-                Json.set(d, "kind", Json.of(stD.columnText(1)))
-                Json.set(d, "file", Json.of(stD.columnText(2)))
-                Json.set(d, "line", Json.of(stD.columnInt(3)))
-                Json.set(d, "lang", Json.of(stD.columnText(4)))
-                Json.set(d, "findings", Json.of(stD.columnInt(5)))
-                Json.set(d, "maxWeight", Json.of(stD.columnInt(6)))
-                defs.add(d)
-            }
-        }
-        stD.finalize()
-        if (Int64(defs.size) == 0) { return None }
-
-        // ── callers：谁调我（按调用方聚合权重；同文件同名一处一行）──
-        // MIN(e.tier)：同一调用方对同名被调的多条边各带 tier，取字典序最小
-        // 做代表——direct < guessed < resolved 恰是字典序，倾向报更确定的
-        // 那一档；聚合是展示口径，明细在 edges 表里一查便知。
-        func relRows(sql: String, param: String): ArrayList<JsonValue> {
-            let out = ArrayList<JsonValue>()
-            let stOpt = db.prepare(sql)
-            if (stOpt.isNone()) { return out }
-            let st = stOpt.getOrThrow()
-            if (st.bindText(1, param)) {
-                while (st.stepHasRow()) {
-                    let r = Json.obj()
-                    Json.set(r, "name", Json.of(st.columnText(0)))
-                    Json.set(r, "file", Json.of(st.columnText(1)))
-                    Json.set(r, "line", Json.of(st.columnInt(2)))
-                    Json.set(r, "weight", Json.of(st.columnInt(3)))
-                    Json.set(r, "tier", Json.of(st.columnText(4)))
-                    out.add(r)
-                }
-            }
-            st.finalize()
-            return out
-        }
-        let callers = relRows("SELECT n.name, n.file, n.line, SUM(e.weight), MIN(e.tier) FROM edges e JOIN nodes n ON e.src = n.id JOIN nodes d ON e.dst = d.id WHERE d.name = ? GROUP BY n.id ORDER BY n.file, n.line, n.name", name)
-        let callees = relRows("SELECT n.name, n.file, n.line, SUM(e.weight), MIN(e.tier) FROM edges e JOIN nodes n ON e.dst = n.id JOIN nodes c ON e.src = c.id WHERE c.name = ? GROUP BY n.id ORDER BY n.file, n.line, n.name", name)
-
+        let (defs, mode) = resolveSymbolRows(db, name)
+        if (defs.size == 0) { return None }
         let o = Json.obj()
         Json.set(o, "symbol", Json.of(name))
-        Json.set(o, "defs", JArr(defs))
+        Json.set(o, "ambiguous", Json.of(lookupIsAmbiguous(defs, mode)))
+        let defArr = ArrayList<JsonValue>()
+        for (d in defs) { defArr.add(symJsonOf(db, d)) }
+        Json.set(o, "defs", JArr(defArr))
+        // ── 顶层汇总（按对方符号聚合：权重求和、tier 取最确定的一档）──
+        let callers = ArrayList<JsonValue>()
+        for (rel in aggregateRelations(db, defs, true)) {
+            callers.add(edgeJsonOf(db, rel.other, rel.tier, rel.weight, defs, true))
+        }
+        let callees = ArrayList<JsonValue>()
+        for (rel in aggregateRelations(db, defs, false)) {
+            callees.add(edgeJsonOf(db, rel.other, rel.tier, rel.weight, defs, false))
+        }
         Json.set(o, "callers", JArr(callers))
         Json.set(o, "callees", JArr(callees))
+        // ── 逐定义 ──
+        let perDef = ArrayList<JsonValue>()
+        for (d in defs) {
+            let one = ArrayList<NodeRow>()
+            one.add(d)
+            let pd = Json.obj()
+            Json.set(pd, "def", symJsonOf(db, d))
+            let pc = ArrayList<JsonValue>()
+            for (rel in aggregateRelations(db, one, true)) {
+                pc.add(edgeJsonOf(db, rel.other, rel.tier, rel.weight, one, true))
+            }
+            let pe = ArrayList<JsonValue>()
+            for (rel in aggregateRelations(db, one, false)) {
+                pe.add(edgeJsonOf(db, rel.other, rel.tier, rel.weight, one, false))
+            }
+            Json.set(pd, "callers", JArr(pc))
+            Json.set(pd, "callees", JArr(pe))
+            perDef.add(pd)
+        }
+        Json.set(o, "perDef", JArr(perDef))
         return Some(o)
     } finally {
         db.close()
     }
 }
 
-/// `index query --file <路径>` 的一体载荷：该文件的符号清单 + 调入/调出
-/// 文件与权重。None = 该文件不在索引里（查不到 → 上层报错，不编结果）。
+/// `index query --file <路径>` / `index file <路径>` 的一体载荷：该文件的符号清单 +
+/// 调入/调出文件与权重。None = 该文件不在索引里（查不到 → 上层报错，不编结果）。
+/// calledBy / calls **不含文件自身**：文件内函数互调不是「调入/调出」，
+/// 把它列出来等于让每个文件都「调用自己」。
 public func indexQueryFile(dbPath: String, file: String): Option<JsonValue> {
     let dbOpt = indexDbOpenReadonly(dbPath)
     if (dbOpt.isNone()) { return None }
@@ -594,32 +783,32 @@ public func indexQueryFile(dbPath: String, file: String): Option<JsonValue> {
         // 前提：文件真的在索引里（files 表一行）。没有就 None——
         // 「这个文件没被索引过」不许被渲染成「它没有任何符号」。
         var exists = false
-        let stEOpt = db.prepare("SELECT COUNT(*) FROM files WHERE path = ?")
+        var lang = ""
+        var lines: Int64 = 0
+        let stEOpt = db.prepare("SELECT lang, lines FROM files WHERE path = ?")
         if (stEOpt.isNone()) { return None }
         let stE = stEOpt.getOrThrow()
-        if (stE.bindText(1, file) && stE.stepHasRow() && stE.columnInt(0) > 0) {
+        if (stE.bindText(1, file) && stE.stepHasRow()) {
             exists = true
+            lang = stE.columnText(0)
+            lines = stE.columnInt(1)
         }
         stE.finalize()
         if (!exists) { return None }
 
-        // ── 符号清单 ──
+        // ── 符号清单（文件里的全部符号，含只有声明的——outline 就要如实列出）──
         let symbols = ArrayList<JsonValue>()
-        let stSOpt = db.prepare("SELECT name, kind, line FROM nodes WHERE file = ? ORDER BY line, name")
+        let stSOpt = db.prepare("SELECT ${NODE_COLS} FROM nodes n WHERE n.file = ? ORDER BY n.line, n.id")
         if (stSOpt.isNone()) { return None }
         let stS = stSOpt.getOrThrow()
         if (stS.bindText(1, file)) {
             while (stS.stepHasRow()) {
-                let s = Json.obj()
-                Json.set(s, "name", Json.of(stS.columnText(0)))
-                Json.set(s, "kind", Json.of(stS.columnText(1)))
-                Json.set(s, "line", Json.of(stS.columnInt(2)))
-                symbols.add(s)
+                symbols.add(symJsonOf(db, readNodeRow(stS)))
             }
         }
         stS.finalize()
 
-        // ── 调入/调出文件 + 权重（函数级边按文件对聚合）──
+        // ── 调入/调出文件 + 权重（函数级边按文件对聚合；排除文件自身）──
         func fileRows(sql: String): ArrayList<JsonValue> {
             let out = ArrayList<JsonValue>()
             let stOpt = db.prepare(sql)
@@ -636,11 +825,13 @@ public func indexQueryFile(dbPath: String, file: String): Option<JsonValue> {
             st.finalize()
             return out
         }
-        let calledBy = fileRows("SELECT f.file, SUM(e.weight) FROM edges e JOIN nodes f ON e.src = f.id JOIN nodes t ON e.dst = t.id WHERE t.file = ? GROUP BY f.file ORDER BY f.file")
-        let calls = fileRows("SELECT t.file, SUM(e.weight) FROM edges e JOIN nodes f ON e.src = f.id JOIN nodes t ON e.dst = t.id WHERE f.file = ? GROUP BY t.file ORDER BY t.file")
+        let calledBy = fileRows("SELECT f.file, SUM(e.weight) FROM edges e JOIN nodes f ON e.src = f.id JOIN nodes t ON e.dst = t.id WHERE t.file = ? AND f.file <> t.file GROUP BY f.file ORDER BY f.file")
+        let calls = fileRows("SELECT t.file, SUM(e.weight) FROM edges e JOIN nodes f ON e.src = f.id JOIN nodes t ON e.dst = t.id WHERE f.file = ? AND t.file <> f.file GROUP BY t.file ORDER BY t.file")
 
         let o = Json.obj()
         Json.set(o, "file", Json.of(file))
+        Json.set(o, "lang", Json.of(lang))
+        Json.set(o, "lines", Json.of(lines))
         Json.set(o, "symbols", JArr(symbols))
         Json.set(o, "calledBy", JArr(calledBy))
         Json.set(o, "calls", JArr(calls))

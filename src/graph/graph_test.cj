@@ -1001,7 +1001,12 @@ func testAllmanStyleCFunctionIsScanned(): Unit {
     @Assert(hasSub)
 }
 
-/// 批 Z ①的**负向防线**：原型声明（`;` 结尾）不许进符号表 —— 它不是定义。
+/// 批 Z ①的**负向防线**：原型声明（`;` 结尾）不算**定义** ——
+/// 它只能以「只有声明」的身份进表（declOnly），定义仍然只有一个。
+///
+/// 推翻旧断言：这里原先是「原型根本不进符号表」（addCount == 1 且无 declOnly）。
+/// 成员级索引（本轮）要求 agent 能在头文件里**找到声明处**，所以原型入表并带
+/// declOnly=true；「它不是定义」这条语义由 declOnly 承担——定义计数不变。
 @Test
 func testAllmanStyleCPrototypeIsNotScanned(): Unit {
     let src = "int add(int a, int b);\n" +
@@ -1011,11 +1016,14 @@ func testAllmanStyleCPrototypeIsNotScanned(): Unit {
         "    return a + b;\n" +
         "}\n"
     let facts = scanSource(src, "c")
-    var addCount = 0
+    var defCount = 0
+    var declCount = 0
     for (sym in facts.symbols) {
-        if (sym.name == "add") { addCount += 1 }
+        if (sym.name == "add" && sym.declOnly) { declCount += 1 }
+        if (sym.name == "add" && !sym.declOnly) { defCount += 1 }
     }
-    @Assert(addCount == 1)   // 只认定义，不认原型
+    @Assert(defCount == 1)    // 只认一个定义
+    @Assert(declCount == 1)   // 原型 = 声明处（declOnly），行号是签名行
 }
 
 /// 批 Z ②：**限定名**的函数定义必须进符号表。
@@ -1475,6 +1483,13 @@ package a
 
 public func helper(): Int64 { return other() + onlyB() }
 public func other(): Int64 { return 1 }
+
+public class Util {
+    public static func twice(x: Int64): Int64 { return x * 2 }
+}
+
+// 类型限定调用 `Util.twice(` ⇒ direct（限定名 Util.twice 在全工程符号表里唯一对应）
+public func useUtil(): Int64 { return Util.twice(3) }
 """)
         writeFileAtomic("${root}/b/helper.cj", """
 package b
@@ -1513,22 +1528,27 @@ public func entry(): Int64 { return helper() }
             if (tier == "resolved") { sawResolved = true }
             if (tier == "guessed") { sawGuessed = true }
         }
-        @Assert(sawDirect)    // a/helper → a/other（同文件，词法可见定义）
-        @Assert(sawResolved)  // a/helper → b/onlyB（跨文件唯一命中）
-        @Assert(sawGuessed)   // main/entry → helper（无同文件定义，三处重名取首个）
-        // T2 断言：同文件调用遇全库重名 ⇒ tier=direct 且边指向同文件定义
-        var sawSameFileDirect = false
+        @Assert(sawDirect)    // a/useUtil → Util.twice（类型限定命中：`Util.twice(`）
+        @Assert(sawResolved)  // a/helper → a/other（同文件唯一）与 a/helper → b/onlyB（跨文件唯一）
+        @Assert(sawGuessed)   // main/entry → helper（无同文件定义，三处重名全部连边）
+        // T2 断言：同文件调用遇全库重名 ⇒ 边指向同文件定义，且**不是** guessed。
+        // 推翻旧断言「tier == direct」：本轮起 tier 的语义是
+        //   direct = 限定命中（`Type.name(` / `self.name(` / 类型体内省略 this 的自身成员），
+        //   resolved = 裸名唯一（同文件 / 全工程 / 同模块恰一个）。
+        // 同文件唯一的裸调用从 direct 改判 resolved——T2 守的行为「同文件定义优先于
+        // 全库重名」没变，变的只是这个行为落在哪一档。
+        var sawSameFileResolved = false
         for (e in Json.arrAt(fg, "functionEdges")) {
             let from = Json.strAt(e, "from", "")
             if (from.startsWith("f:b/impl.cj:") && from.endsWith(":implUse")) {
-                @Assert(Json.strAt(e, "tier", "") == "direct")
+                @Assert(Json.strAt(e, "tier", "") == "resolved")
                 let to = Json.strAt(e, "to", "")
                 @Assert(to.startsWith("f:b/impl.cj:"))
                 @Assert(to.endsWith(":helper"))
-                sawSameFileDirect = true
+                sawSameFileResolved = true
             }
         }
-        @Assert(sawSameFileDirect)   // 前提：这条边真的存在（否则空转绿）
+        @Assert(sawSameFileResolved)   // 前提：这条边真的存在（否则空转绿）
         // 按文件罚分表内嵌（热力图着色的唯一口径来源）
         let emb = confidenceEmbedJson(conf, false)
         @Assert(Json.has(emb, "files"))
@@ -3342,11 +3362,11 @@ func testTreeSymbolLayerDrillAndEdges(): Unit {
 
 // MARK: - SQLite 图库/置信度库（graph db / confidence db）
 //
-// 【为什么是自由调用夹具】functionGraphData 的边来自 freeCallsIn——它跳过
-// 接收者调用（a.b() 的前导点），只有「函数体内裸名字 + (」才算调用边。
-// 夹具必须写 `runUpdate(): Bool { return trimAll(" x ").isEmpty() }` 这种
-// 无接收者的自由调用；写成 t.trimAll() 不会有边，断言就空转着变绿
-//（不变量 22 的形态：抓到 0 个 = 检查不存在）。
+// 【为什么是自由调用夹具】边的来源是**解析后的调用点**（resolve.cj）：裸调用
+// `trimAll(` 在全工程（同语言）恰有一个同名定义 ⇒ resolved，断言钉的就是这一档。
+// 夹具不写成接收者调用 `t.trimAll()`：接收者按**裸名**解析，行为相同但这条测试
+// 想钉的是最朴素的「跨文件唯一命中」形态，多一个接收者只会让失败原因变含糊
+//（不变量 22 的形态：抓到 0 个 = 检查不存在——所以先断言夹具真的有节点和边）。
 func dbTreeFixture(): String {
     let root = testRoot()
     ensureDir("${root}/util")

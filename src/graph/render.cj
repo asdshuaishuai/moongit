@@ -189,6 +189,13 @@ public func fullGraphJson(graph: CodeGraph, maxDepth: Int64): JsonValue {
             Json.set(d, "kind", Json.of(symKindId(s.kind)))
             Json.set(d, "name", Json.of(s.name))
             Json.set(d, "line", Json.of(s.line))
+            // 成员级字段（恒发；早期版本只有上面三个键——键名不动，只增）
+            Json.set(d, "qual", Json.of(s.qual))
+            Json.set(d, "endLine", Json.of(s.endLine))
+            Json.set(d, "col", Json.of(s.col))
+            Json.set(d, "sig", Json.of(s.sig))
+            Json.set(d, "visibility", Json.of(s.visibility))
+            Json.set(d, "declOnly", Json.of(s.declOnly))
             syms.add(d)
         }
         Json.set(o, "symbols", JArr(syms))
