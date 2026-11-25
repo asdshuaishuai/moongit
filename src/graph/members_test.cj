@@ -1360,3 +1360,195 @@ func testGrepFixedString(): Unit {
         removeTree(root)
     }
 }
+
+// MARK: - 定义行不是调用点（阶段二 · 扫描器修复）
+
+/// 调用点里有没有某个名字（可选：只在指定行）。
+func hasRefNamed(refs: ArrayList<CallSite>, name: String, line: Int64): Bool {
+    for (r in refs) {
+        if (r.name != name) { continue }
+        if (line < 0 || r.line == line) { return true }
+    }
+    return false
+}
+
+/// 声明还在进行中的行（签名行 / 参数续行 / 签名延续）不是调用点：`name(` 里的
+/// name 是**被声明的名字**，不是调用。
+///
+/// ⚠ 修前：花括号另起一行（C++ Allman）或参数表跨行时，签名行整行被扫成代码，
+/// 定义行上编出一个 `name(` 调用点——解析后**连到符号自己**（`index refs` 报出
+/// 它自己的定义行；入度恒 ≥ 1，Allman 函数永远报不了 orphan）。探针工程实测
+/// 19040 个调用点里 744 个是这种、680 个解析到自己。
+/// 六种语言各一例，全部走真实扫描路径 scanSource；正控：函数体里的调用照记。
+@Test
+func testDefinitionLineIsNotACallSite(): Unit {
+    // (语言, 源码, 声明行, 被声明的名字, 体里的调用)
+    let cases: Array<(String, String, Int64, String, String)> = [
+        // C++ Allman：`{` 在签名下一行；前面的类内原型由分号收尾，本来就不采
+        ("c", """
+class Widget {
+public:
+    void refresh(int n);
+};
+
+void Widget::refresh(int n)
+{
+    repaint();
+}
+""", 6, "refresh", "repaint"),
+        // C：参数表跨行 + 花括号另起一行
+        ("c", """
+int wide(int a,
+         int b)
+{
+    return helper(a);
+}
+""", 1, "wide", "helper"),
+        // Kotlin / Swift：参数表跨行，`)` 之后同行开体
+        ("kotlin", """
+package a
+
+fun wide(
+    a: Int,
+    b: Int
+): Int {
+    return helper(a)
+}
+""", 3, "wide", "helper"),
+        ("swift", """
+func wide(
+    _ a: Int,
+    _ b: Int
+) -> Int {
+    return helper(a)
+}
+""", 1, "wide", "helper"),
+        // Go / Rust：参数表跨行（尾逗号），`) 返回值 {` 同行开体
+        ("go", """
+package main
+
+func wide(
+    a int,
+    b int,
+) int {
+    return helper(a)
+}
+""", 3, "wide", "helper"),
+        ("rust", """
+fn wide(
+    a: i32,
+    b: i32,
+) -> i32 {
+    helper(a)
+}
+""", 1, "wide", "helper"),
+        // Java：类体内，参数表在下一行闭合
+        ("java", """
+class W {
+    int wide(
+        int a,
+        int b) {
+        return helper(a);
+    }
+}
+""", 2, "wide", "helper"),
+        // Kotlin 一行式（表达式体）：`=` 之后才是代码
+        ("kotlin", """
+fun narrow(x: Int): Int = helper(x)
+""", 1, "narrow", "helper")
+    ]
+    for ((lang, src, declLine, declName, bodyCall) in cases) {
+        let refs = scanSource(src, lang).refs
+        @Assert(!hasRefNamed(refs, declName, -1))
+        // 正控：函数体里的真调用照记（声明感知不许把体里的调用一起吃掉）
+        @Assert(hasRefNamed(refs, bodyCall, -1))
+    }
+    // 构造函数：声明与初始化列表不是调用点（另起一行 / 同行两种写法），`{` 之后照常采。
+    // 修前只跳过名字 token，`: m_level(level)` 这类初始化列表行被编成假调用点。
+    let ctors = scanSource("""
+class Card {
+public:
+    explicit Card(int level = 0)
+        : m_level(level)
+    {
+        reset();
+    }
+
+    Card() : m_level(0) { tick(); }
+};
+""", "c").refs
+    @Assert(!hasRefNamed(ctors, "Card", -1))
+    @Assert(!hasRefNamed(ctors, "m_level", -1))
+    @Assert(hasRefNamed(ctors, "reset", 6))
+    @Assert(hasRefNamed(ctors, "tick", 9))
+    let ctorDef = scanSource("Card::Card(int level)\n    : m_level(level)\n{\n    tick();\n}\n", "c").refs
+    @Assert(!hasRefNamed(ctorDef, "Card", -1))
+    @Assert(!hasRefNamed(ctorDef, "m_level", -1))
+    @Assert(hasRefNamed(ctorDef, "tick", 4))
+    let javaCtor = scanSource("class App {\n    App() { init(); }\n}\n", "java").refs
+    @Assert(!hasRefNamed(javaCtor, "App", -1))
+    @Assert(hasRefNamed(javaCtor, "init", 2))
+    // K&R 一行式：声明与体同行，体里的调用必须照记（`{` 之后才扫）
+    let oneLine = scanSource("int f(int v) { return g(v); }\n", "c").refs
+    @Assert(hasRefNamed(oneLine, "g", 1))
+    @Assert(!hasRefNamed(oneLine, "f", -1))
+    // 同行开体的 C++ 成员定义：`{` 之后照记
+    let kr = scanSource("void Widget::tick() { repaint(); }\n", "c").refs
+    @Assert(hasRefNamed(kr, "repaint", 1))
+    @Assert(!hasRefNamed(kr, "tick", -1))
+    // 默认实参 / 尾随限定上的 `ident(` 属于声明，不是调用点（签名行不采）
+    let defaulted = scanSource("int f(int a = fallback(3))\n{\n    return a;\n}\n", "c").refs
+    @Assert(!hasRefNamed(defaulted, "f", -1))
+    @Assert(!hasRefNamed(defaulted, "fallback", -1))
+}
+
+/// 入库层面：sites 里没有「落在某个符号自己声明行上、名字也相同」的行，
+/// 没有解析到自己的调用点，没有自环边；`index refs` 不再把定义行报成引用。
+@Test
+func testSitesNeverPointAtTheSymbolOwnDeclarationLine(): Unit {
+    let root = testRoot()
+    try {
+        writeFileAtomic("${root}/widget.h", """
+class Widget {
+public:
+    void refresh(int n);
+};
+""")
+        writeFileAtomic("${root}/widget.cpp", """
+#include "widget.h"
+
+void Widget::refresh(int n)
+{
+    (void)n;
+}
+
+void use(Widget &w)
+{
+    w.refresh(2);
+}
+""")
+        writeFileAtomic("${root}/allman.go", """
+package main
+
+func wide(
+    a int,
+    b int,
+) int {
+    return helper(a, b)
+}
+""")
+        let g = buildGraph(root)
+        let dbPath = writeDbOf(root, g)
+        let ro = SqliteDb.openReadonly(dbPath).getOrThrow()
+        @Assert(dbScalar(ro, "SELECT COUNT(*) FROM sites s JOIN nodes n ON n.file = s.file AND n.line = s.line AND n.name = s.name") == "0")
+        @Assert(dbScalar(ro, "SELECT COUNT(*) FROM sites s JOIN nodes n ON n.id = s.dst WHERE n.file = s.file AND n.line = s.line AND n.name = s.name") == "0")
+        @Assert(dbScalar(ro, "SELECT COUNT(*) FROM edges WHERE src = dst") == "0")
+        // 正控：`w.refresh(2)` 是真调用点，照常入库并解析到 Widget.refresh
+        @Assert(dbScalar(ro, "SELECT tier FROM sites WHERE name='refresh' AND receiver='w'") == "resolved")
+        // 入库的调用点数 = 扫描器采到的调用点数（没有被丢行去凑数字）
+        @Assert(dbScalar(ro, "SELECT COUNT(*) FROM sites") == Int64(g.callSites.size).toString())
+        ro.close()
+    } finally {
+        removeTree(root)
+    }
+}

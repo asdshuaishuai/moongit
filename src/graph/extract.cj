@@ -1624,7 +1624,6 @@ class Scanner {
     // ── 行内一次性状态（每行开头复位）──
     var scanFrom: Int64 = 0      // 调用点扫描区间 [scanFrom, scanTo)
     var scanTo: Int64 = 0
-    var skipNameAt: Int64 = -1   // 本行声明的名字 token 起点（它自己不是调用）
     var bodyPos: Int64 = -1      // 本行声明的体 `{` 位置（-1 = 本行没有开体）
     var declKind: Option<SymKind> = None
     var declSym: Int64 = -1
@@ -1807,7 +1806,6 @@ class Scanner {
     func braceLine(raw: String, t: String, lineNo: Int64, strIn: Int64): Unit {
         scanFrom = 0
         scanTo = Int64(t.size)
-        skipNameAt = -1
         bodyPos = -1
         declKind = None
         declSym = -1
@@ -1851,6 +1849,8 @@ class Scanner {
             //   表达式体里的新调用。按行尾余额判会把这种行当成「参数还没写完」。
             let (d, closePos) = parenScan(t, 0, n, p.parenDepth)
             if (closePos < 0) {
+                // 参数表还没闭合：整行都在括号里（默认实参里的 `ident(` 属于声明）
+                scanOnlyBefore(0)
                 p.parenDepth = d
                 p.sigParts.add(sigPart(t, 0, n))
                 p.lastLine = lineNo
@@ -1895,7 +1895,6 @@ class Scanner {
         }
         scanFrom = pos + 1
         scanTo = n
-        skipNameAt = -1
         lineConsumed = true
         scanCaller = if (p.sym >= 0 && isFuncKind(p.kind)) { p.sym } else { innerFunc() }
     }
@@ -1915,6 +1914,10 @@ class Scanner {
         p.sigParts.add(sigPart(t, sigFrom, cut))
         p.lastLine = lineNo
         if (hit == 0) {
+            // 签名没在本行结束（花括号另起一行的 Allman 风格 / 尾随限定跨行）：
+            // 本行自签名起点起全是声明，不采调用点。修前整行照扫 ⇒ 定义行上编出
+            // `name(` 调用点并解析到符号自己（入度恒 ≥ 1，这类函数永远报不了 orphan）。
+            scanOnlyBefore(sigFrom)
             pending = Some(p)
             lineConsumed = true
             return
@@ -1999,7 +2002,9 @@ class Scanner {
             // 因为表达式体里的新调用而 >0——`fun of(…): T = BulkReport(`。
             let (d, closePos) = parenScan(t, p.parenOpen + 1, n, 1)
             if (closePos < 0) {
-                // 参数表跨行：余额带走，下一行从「参数续行」接起
+                // 参数表跨行：余额带走，下一行从「参数续行」接起。
+                // 本行自声明起点起全是签名——`name(` 是被声明的名字，不是调用点。
+                scanOnlyBefore(p.sigStart)
                 p.parenDepth = d
                 p.paramsClosed = false
                 p.sigParts.add(sigPart(t, p.sigStart, n))
@@ -2013,6 +2018,20 @@ class Scanner {
         tailCheck(p, t, lineNo, p.afterName, p.sigStart)
     }
 
+    /// 本行自 from 起属于一条**还在进行中的声明**（签名 / 参数续行 / 签名延续 /
+    /// 构造初始化列表）：调用点扫描区间收到 from 之前——声明不是调用。
+    ///
+    /// ⚠ 只收区间、不动别的状态。调用方都是「声明没在本行结束」的出口；声明在本行
+    /// 开体（armBody）/ 以分号收尾 / 表达式体（`=` 之后才是代码）的出口各自已经
+    /// 定好了区间。from 之前若还有代码（声明不在行首）照常扫。
+    func scanOnlyBefore(from: Int64): Unit {
+        var cut = from
+        if (cut < 0) { cut = 0 }
+        if (cut > scanTo) { cut = scanTo }
+        if (scanFrom > cut) { scanFrom = cut }
+        scanTo = cut
+    }
+
     /// 调用点扫描区间 [scanFrom, scanTo)。
     func collectCalls(raw: String, t: String, strIn: Int64, lineNo: Int64): Unit {
         let n = Int64(t.size)
@@ -2020,7 +2039,6 @@ class Scanner {
         if (to > n) { to = n }
         var i: Int64 = scanFrom
         if (i < 0) { i = 0 }
-        let skipAt = skipNameAt
         let caller = scanCaller
         let skipSet = CALL_SKIP.get(lang)
         while (i < to) {
@@ -2028,7 +2046,6 @@ class Scanner {
             let st = i
             while (i < to && isIdentByte(t[i])) { i += 1 }
             if (i >= to || t[i] != 40) { continue }
-            if (st == skipAt) { continue }
             // `~AppModel(`：析构函数的声明/定义（或显式析构调用），不是对 AppModel 的调用
             if (st > 0 && t[st - 1] == 126) { continue }
             let name = t[st..i]
@@ -2255,14 +2272,24 @@ class Scanner {
                 // 这一段就是函数名链
                 let last = chain[chain.size - 1]
                 if (!typeSeen) {
-                    // 没有返回类型 ⇒ 调用 / 宏 / 构造函数。两种构造函数写法都不入表，
-                    // 它们的声明行也不是调用点：
+                    // 没有返回类型 ⇒ 调用 / 宏 / 构造函数。两种构造函数写法都不入表：
                     //   · 类体内「与类同名 + (」：`AppModel(QObject *parent);`
                     //   · 类外的限定名定义：`AppModel::AppModel(QObject *parent)`
                     //     （链的最后两段同名——成员函数不可能与类同名）
+                    // 构造函数**照常走声明的跨行定性**（detect 把它路由到匿名属主域）：
+                    // 此前这里直接放弃整行，声明行其余部分与初始化列表行被当普通代码扫，
+                    // `: m_level(level)` 编出假调用点。
                     var isCtor = atMemberPos() && last[0] == lastDotSeg(frames[frames.size - 1].owner)
                     if (chain.size >= 2 && chain[chain.size - 2][0] == last[0]) { isCtor = true }
-                    if (isCtor) { skipNameAt = last[1] }
+                    if (isCtor) {
+                        p.name = last[0]
+                        p.nameStart = last[1]
+                        if (chain.size >= 2) { p.ownerChain = joinChain(chain, Int64(chain.size) - 1) }
+                        p.hasParen = true
+                        p.parenOpen = toks[i].s
+                        p.afterName = p.parenOpen + 1
+                        return true
+                    }
                     return false
                 }
                 if (!nameOk(lang, last[0])) { return false }
@@ -2651,11 +2678,15 @@ class Scanner {
         if (!p.ownerChain.isEmpty()) { p.owner = p.ownerChain }
         p.qual = if (p.owner.isEmpty()) { p.name } else { p.owner + "." + p.name }
         // 构造函数不入表：调用点 `Foo(` 解析到类型定义本身。
-        // 但它的**声明行**不是调用点——把名字 token 标成「跳过」，否则头文件里的
-        // `explicit AppModel(…);` 与源文件里的 `AppModel::AppModel(…) {` 会各编出
-        // 一个「在类体层构造了 AppModel」的假调用点（探针工程实测）。
+        // 但它的**声明**不是调用点。此前只把名字 token 标成「跳过」——声明行其余部分
+        // 与后续的初始化列表行仍被当普通代码扫：`Foo::Foo() : Base(parent), m_x(x) {`
+        // 与另起一行的 `: Base(parent)` / `, m_x(x)` 各编出假调用点（`Base(`、`m_x(`，
+        // 探针工程里是一批「幻觉调用」误报的来源）。改走匿名属主域（companion object
+        // 同一机制）：声明照常跨行定性，只是不进符号表；签名行 / 参数续行 / 初始化
+        // 列表行由 scanOnlyBefore 排除在调用点扫描区间之外，`{` 之后的照常采。
         if (!p.owner.isEmpty() && lastDotSeg(p.owner) == p.name && (lang == "c" || lang == "java")) {
-            skipNameAt = p.nameStart
+            p.anonOwner = true
+            start(p, raw, t, lineNo, strIn)
             return
         }
         if (p.vis.isEmpty()) {
@@ -2676,7 +2707,6 @@ class Scanner {
             // 续行（括号未配平 / 行尾反斜杠）：不判缩进、不判声明；调用点照常归内层函数
             scanFrom = 0
             scanTo = n
-            skipNameAt = -1
             scanCaller = innerFunc()
             collectCalls(raw, t, strIn, lineNo)
             pyContinue = endsWithBackslash(t)
@@ -2694,7 +2724,6 @@ class Scanner {
         }
         scanFrom = 0
         scanTo = n
-        skipNameAt = -1
         scanCaller = innerFunc()
         lineConsumed = false
         pyDecl(t, raw, lineNo, strIn)
