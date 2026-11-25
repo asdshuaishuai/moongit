@@ -1856,16 +1856,34 @@ function draw() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   drawMini();
 }
+var miniBox = null, miniShown = null;
+function setMiniVisible(visible) {
+  if (miniShown === visible) { return; }
+  miniShown = visible;
+  if (!miniBox) { miniBox = mini.parentNode; }
+  miniBox.style.display = visible ? '' : 'none';
+  if (visible) {
+    // 隐藏期间窗口变过尺寸时，canvas 的后备存储会按 0 记——重新显示时按容器实尺寸重设
+    mini.width = Math.round(mini.clientWidth * dpr); mini.height = Math.round(mini.clientHeight * dpr);
+  }
+}
 function drawMini() {
-  var w = mini.clientWidth, h = mini.clientHeight;
-  mctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  mctx.fillStyle = '#0b131c'; mctx.fillRect(0, 0, w, h);
-  if (!worldNodes.length) { return; }
   var minX = 1e18, maxX = -1e18, minY = 1e18, maxY = -1e18;
   worldNodes.forEach(function (n) {
     if (n.x < minX) { minX = n.x; } if (n.x + n.w > maxX) { maxX = n.x + n.w; }
     if (n.y < minY) { minY = n.y; } if (n.y + n.h > maxY) { maxY = n.y + n.h; }
   });
+  // 小地图是给「图比视口大」时导航用的：全图已在视口里（或没有节点）就整块隐藏——
+  // 否则单个模块卡被放大铺满整块小地图，看上去是一坨实心色块。
+  // 视口在世界坐标里是 [-panX / zoom, (cssW - panX) / zoom]，留 1px 余量防临界抖动。
+  var fits = worldNodes.length > 0
+    && -panX / zoom <= minX + 1 && -panY / zoom <= minY + 1
+    && (cssW - panX) / zoom >= maxX - 1 && (cssH - panY) / zoom >= maxY - 1;
+  setMiniVisible(!fits);
+  if (fits) { return; }
+  var w = mini.clientWidth, h = mini.clientHeight;
+  mctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  mctx.fillStyle = '#0b131c'; mctx.fillRect(0, 0, w, h);
   var pad = 10;
   var scale = Math.min((w - pad * 2) / Math.max(1, maxX - minX), (h - pad * 2) / Math.max(1, maxY - minY));
   var ox = (w - (maxX - minX) * scale) / 2 - minX * scale;
