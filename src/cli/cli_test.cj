@@ -3570,6 +3570,98 @@ public func gamma(): String {
     }
 }
 
+/// 阶段二 A：confidence query 把符号键带出来，键集恒定。
+/// confidence.json 的每条 finding 键集 = FINDING_JSON_KEYS（唯一构造点 findingJson）；
+/// beta（孤儿）的 id 与 codegraph.db 的 nodes.sid 同一个键；confidence.db 的 findings 表
+/// 同步带出；旧快照（加 id / qual 之前写的）经 query 出去键集不变（缺的键补空串）；
+/// MCP confidence_query 的文本与 structuredContent 是同一份 JSON。
+@Test
+func testConfidenceQueryCarriesSymbolKeys(): Unit {
+    let base = "/tmp/deepgit-cfkeys-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    func withKind(json: Bool): JsonValue {
+        let a = Json.obj()
+        Json.set(a, "name", Json.of("cf-keys"))
+        Json.set(a, "kind", Json.of("orphan"))
+        Json.set(a, "json", Json.of(json))
+        return a
+    }
+    try {
+        let p = dbCliFixtureProject(base, "cf-keys")
+        let store = deepgitPath(["store", p.id])
+        let ctx = CliContext(ArrayList<String>(["confidence"]))
+        @Assert(cmdConfidence(ArrayList<String>(["gen", "cf-keys", "--db"]), ctx) == 0)
+        let betaId = "f:src/a.cj:7:beta"
+        let keyText = joinStrings(FINDING_JSON_KEYS, " ")
+
+        // ① 持久化快照：键集恒定；beta 的符号键
+        let snap = Json.parse(readFileTextOr(store + "/confidence.json", "")).getOrThrow()
+        var sawBeta = false
+        for (f in Json.arrAt(snap, "findings")) {
+            @Assert(cliJsonKeysAre(f, keyText))
+            if (Json.strAt(f, "symbol", "") == "beta") {
+                sawBeta = true
+                @Assert(Json.strAt(f, "id", "") == betaId)
+                @Assert(Json.strAt(f, "qual", "") == "beta")
+            }
+        }
+        @Assert(sawBeta)
+        // ② 与索引同键：codegraph.db 里 beta 的 sid 就是它
+        let ro = SqliteDb.openReadonly(store + "/codegraph.db").getOrThrow()
+        @Assert(dbCountCli(ro, "SELECT COUNT(*) FROM nodes WHERE sid='" + betaId + "'") == 1)
+        ro.close()
+        // ③ confidence.db 同步带出
+        let cdb = SqliteDb.openReadonly(store + "/confidence.db").getOrThrow()
+        @Assert(cdb.prepare("SELECT sid FROM findings WHERE sid='" + betaId + "' AND qual='beta'").getOrThrow().stepHasRow())
+        @Assert(dbCountCli(cdb, "SELECT COUNT(*) FROM findings WHERE sid IS NULL OR qual IS NULL") == 0)
+        cdb.close()
+        // ④ query --json：同一份键
+        let q = confidenceQueryJson(snap, p, "", "", "orphan", -1, -1)
+        @Assert(Int64(Json.arrAt(q, "findings").size) >= 1)
+        for (f in Json.arrAt(q, "findings")) {
+            @Assert(cliJsonKeysAre(f, keyText))
+            @Assert(Json.strAt(f, "id", "") == betaId)
+        }
+        // ⑤ 旧快照（没有 id / qual）：出口键集不变——缺的键补空串，不缺键
+        let oldFs = ArrayList<JsonValue>()
+        for (f in Json.arrAt(snap, "findings")) {
+            let o = Json.obj()
+            for (k in ["file", "line", "kind", "weight", "dim", "label", "symbol", "evidence"]) {
+                Json.set(o, k, Json.getOr(f, k))
+            }
+            oldFs.add(o)
+        }
+        let oldSnap = Json.obj()
+        Json.set(oldSnap, "findings", JArr(oldFs))
+        Json.set(oldSnap, "generatedAt", Json.getOr(snap, "generatedAt"))
+        Json.set(oldSnap, "indexUpdateCount", Json.getOr(snap, "indexUpdateCount"))
+        let qo = confidenceQueryJson(oldSnap, p, "", "", "orphan", -1, -1)
+        @Assert(Int64(Json.arrAt(qo, "findings").size) == oldFs.size)
+        for (f in Json.arrAt(qo, "findings")) {
+            @Assert(cliJsonKeysAre(f, keyText))
+            @Assert(Json.strAt(f, "id", "x") == "")
+            @Assert(Json.strAt(f, "qual", "x") == "")
+        }
+        // ⑥ MCP：文本投影带符号 ID；structuredContent 与文本是同一份 JSON
+        let t = mcpCallTool("confidence_query", withKind(false))
+        @Assert(!mcpIsError(t))
+        @Assert(mcpTextOf(t).contains("符号 ID：" + betaId))
+        let sc = Json.getOr(t, "structuredContent")
+        @Assert(Json.strAt(Json.arrAt(sc, "findings")[0], "id", "") == betaId)
+        let j = mcpCallTool("confidence_query", withKind(true))
+        @Assert(mcpTextOf(j).contains("\"id\": \"" + betaId + "\""))
+        @Assert(Json.has(j, "structuredContent"))
+        @Assert(Json.strAt(Json.arrAt(Json.getOr(j, "structuredContent"), "findings")[0], "id", "") == betaId)
+    } finally {
+        exitTestHome()
+        removePathIfExists(base + "/repo")
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
 /// MCP 新工具面回执：arch_gen / arch_query / index_gen / index_query /
 /// confidence_gen / confidence_query / render 走与 CLI 相同的内部函数，
 /// 回执只带事实与路径（HTML 落盘，不内塞全文）；旧 codegraph_* 别名仍可用。

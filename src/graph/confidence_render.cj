@@ -14,14 +14,8 @@ import moongit.util.*
 public func confidenceJson(r: ConfidenceReport): JsonValue {
     let fs = ArrayList<JsonValue>()
     for (f in r.findings) {
-        let o = Json.obj()
-        Json.set(o, "kind", Json.of(flawId(f.kind)))
-        Json.set(o, "file", Json.of(f.file))
-        Json.set(o, "line", Json.of(f.line))
-        Json.set(o, "symbol", Json.of(f.symbol))
-        Json.set(o, "evidence", Json.of(f.evidence))
-        Json.set(o, "weight", Json.of(flawWeight(f.kind)))
-        fs.add(o)
+        // finding 对象只有 findingJson 一个构造点（键集 = FINDING_JSON_KEYS）
+        fs.add(findingJson(f, false))
     }
     let ks = ArrayList<JsonValue>()
     for ((k, v) in r.byKind) {

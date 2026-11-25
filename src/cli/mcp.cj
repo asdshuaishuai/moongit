@@ -132,7 +132,7 @@ public func mcpToolList(): JsonValue {
     arr.add(mcpTool("index_impact", "影响面：沿 direct/resolved 调用边反向求传递闭包——这个符号改了，哪些符号会跟着坏（每个带 distance 距离），并按文件汇总。词法级结果，不是编译器闭包；guessed 边不参与", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号：裸名、限定名（Outer.method）或 id"), ("depth", "integer", "传递深度，默认 4")], ["name", "symbol"])))
     arr.add(mcpTool("index_outline", "文件大纲：一个文件里的全部符号（种类、qual、file:line:col、行范围、签名、可见性、仅声明的标记）+ 调入/调出文件与权重。读一个陌生文件前先看它", mcpSchemaObject([("name", "string", "项目名或 ID"), ("file", "string", "文件相对路径")], ["name", "file"])))
     arr.add(mcpTool("confidence_gen", "置信度生成：前置自愈索引（过期先重建并披露）→ 结构性疑点确定性度量 → 持久化 confidence.json（render index --confidence 的消费端就吃它）。no_ast=true 跳过语法树层；db=true 额外写 confidence.db", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "text|json|llm（llm = 可直接喂给模型的逐条复核提示词），默认 json"), ("no_ast", "boolean", "跳过语法树层（纯词法）"), ("db", "boolean", "额外写 confidence.db")], ["name"])))
-    arr.add(mcpTool("confidence_query", "置信度快照查询：只读持久化 confidence.json，绝不重算（报告缺席报错，提示先 confidence_gen）。无过滤出总览（分数/维度/罚分 Top/限流披露）；file/symbol/kind/weight/top 过滤 findings；回执恒带快照元信息（generatedAt + 依据的索引版本）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("file", "string", "按文件过滤（精确或路径后缀）"), ("symbol", "string", "按符号过滤"), ("kind", "string", "按类别 id 过滤（如 orphan）"), ("weight", "integer", "按权重下限过滤"), ("top", "integer", "取前 N 条"), ("json", "boolean", "返回 JSON（默认 true）")], ["name"])))
+    arr.add(mcpTool("confidence_query", "置信度快照查询：只读持久化 confidence.json，绝不重算（报告缺席报错，提示先 confidence_gen）。无过滤出总览（分数/维度/罚分 Top/限流披露）；file/symbol/kind/weight/top 过滤 findings；回执恒带快照元信息（generatedAt + 依据的索引版本）。每条 finding 带 id / qual——挂靠符号的稳定 id 与限定名，与 codegraph.db 的 nodes.sid 同一个键，可直接交给 index_refs / index_query（定位不到为空串）。structuredContent 与文本是同一份 JSON", mcpSchemaObject([("name", "string", "项目名或 ID"), ("file", "string", "按文件过滤（精确或路径后缀）"), ("symbol", "string", "按符号过滤"), ("kind", "string", "按类别 id 过滤（如 orphan）"), ("weight", "integer", "按权重下限过滤"), ("top", "integer", "取前 N 条"), ("json", "boolean", "返回 JSON（默认 true）")], ["name"])))
     arr.add(mcpTool("render", "渲染交付物：持久化 payload → 单文件交互 HTML（落盘到项目库，回执只带路径与复用/新绘判定，不内塞 HTML 全文）。target=arch|index；confidence=true 时 index 叠加 confidence.json——快照缺席则纯结构渲染并注明；快照依据的 indexUpdateCount 与当前索引版本不一致则不叠加旧快照，回执 confidence=stale、staleConfidence=true、confidenceIndexUpdateCount=<快照依据的版本>（先调 confidence_gen）；staleConfidence 恒发；force=true 强制重绘", mcpSchemaObject([("name", "string", "项目名或 ID"), ("target", "string", "arch|index，默认 index"), ("confidence", "boolean", "index 叠加 confidence.json（仅当它与当前索引版本一致）"), ("force", "boolean", "强制重绘")], ["name"])))
     // ── CodeGraph：代码图谱（仓颉引擎的确定性词法分析，零依赖）──
     // ⚠️ 改名期兼容：旧 codegraph_*（patch 两工具除外）保留为**别名**——
@@ -1004,10 +1004,12 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                     }
                 }
                 let result = confidenceQueryJson(snap, p, getStr("file"), getStr("symbol"), getStr("kind"), weightArg, topArg)
+                // 文本与 structuredContent 是同一份 JSON（认结构的宿主直接拿对象）——
+                // findings 带 id / qual 符号键，拿去调 index_refs / index_query
                 if (Json.boolAt(args, "json", true)) {
-                    return mcpOk(Json.pretty(result))
+                    return mcpStructured(Json.pretty(result), result)
                 }
-                return mcpOk(confidenceQueryTextBrief(result))
+                return mcpStructured(confidenceQueryTextBrief(result), result)
             case "render" =>
                 let p = mcpRequireProject(getStr("name"))
                 var target = getStr("target")
@@ -1557,6 +1559,11 @@ func confidenceQueryTextBrief(o: JsonValue): String {
     }
     for (f in Json.arrAt(o, "findings")) {
         lines.add("  [${Json.strAt(f, "kind", "")}] ${Json.strAt(f, "file", "")}:${Json.intAt(f, "line", 0)} · 权重 ${Json.intAt(f, "weight", 0)}")
+        // 符号键：定位得到才说；拿它直接查索引（index_refs / index_query 的 id）
+        let sid = Json.strAt(f, "id", "")
+        if (!sid.isEmpty()) {
+            lines.add("    符号：${Json.strAt(f, "qual", "")} · 符号 ID：${sid}")
+        }
         lines.add("    ${Json.strAt(f, "evidence", "")}")
     }
     return joinStrings(lines, "\n")

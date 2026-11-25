@@ -269,19 +269,127 @@ public let CONF_COMPLEXITY: Int64 = 10
 public let CONF_PARAMS: Int64 = 5
 
 /// 一条疑点：类别 + 位置 + 证据。证据必须自足（人不开编辑器就能判断）。
+///
+/// 【符号键（阶段二 A）】symId / qual 让疑点能挂到索引里的符号上——置信度分析、
+/// 热力图、codegraph.db 靠它说同一个符号：
+///   · symId  稳定 id，与 nodes.sid 同一个键、同一个格式（model.cj 的 symId：
+///            `f:<相对路径>:<行>:<名字>`）；定位不到给 ""。
+///   · qual   限定名（`Owner.name`，顶层符号就是 name）；定位不到给 ""。
+/// 挂靠规则见 attachSymbolKeys：先认「疑点位置上正好是同名声明」，否则认
+/// 「疑点所在的最内层符号」（幻觉调用挂到调用它的函数上），都不是就留空——
+/// 没有符号的疑点（文件级 import / 顶层 TODO）不编一个句柄。
 public struct Finding {
     public let kind: FlawKind
     public let file: String
     public let line: Int64
     public let symbol: String
     public let evidence: String
+    /// 挂靠符号的稳定 id（"" = 定位不到）。检测器不填，analyzeConfidence 统一挂。
+    public let symId: String
+    /// 挂靠符号的限定名（"" = 定位不到）。
+    public let qual: String
 
     public init(kind: FlawKind, file: String, line: Int64, symbol: String, evidence: String) {
+        this(kind, file, line, symbol, evidence, "", "")
+    }
+
+    init(kind: FlawKind, file: String, line: Int64, symbol: String, evidence: String,
+         symId: String, qual: String) {
         this.kind = kind
         this.file = file
         this.line = line
         this.symbol = symbol
         this.evidence = evidence
+        this.symId = symId
+        this.qual = qual
+    }
+
+    /// 挂到某个符号上（struct 字段不可变，返回新值）。五参构造的 finding 一律
+    /// symId / qual 为空，由 analyzeConfidence 在检测器全部跑完后统一调用。
+    public func at(id: String, qual: String): Finding {
+        return Finding(this.kind, this.file, this.line, this.symbol, this.evidence, id, qual)
+    }
+}
+
+/// finding JSON 的键集（恒发、顺序固定）。**只有这一份清单**：唯一构造点
+/// findingJson 按它出键，只读快照的出口（confidence query）按它投影，键集测试
+/// 引它——三处各抄必漂移。
+///   id / qual   挂靠符号键（定位不到为 ""，键照样在）
+///   file / line 疑点位置（相对路径 + 1 起行号）
+///   kind / weight / dim / label   类别 / 权重 / 维度 / 类别标签（label 随语言）
+///   symbol      检测器给出的符号名（各检测器口径不同：孤儿 = 被声明的名字，
+///               幻觉调用 = 被调用的名字……要与索引对账用 id / qual）
+///   evidence    自足证据
+public let FINDING_JSON_KEYS: Array<String> = [
+    "id", "qual", "file", "line", "kind", "weight", "dim", "label", "symbol", "evidence"
+]
+
+/// finding JSON 的**唯一构造点**。所有出口都调它：confidenceJson（graph confidence
+/// --json / MCP codegraph_confidence）、confidenceEmbedJson（HTML 内嵌与持久化的
+/// confidence.json）、functionGraphData 的符号节点内嵌、confidence.db 的 findings 表
+/// （按 FINDING_JSON_KEYS 的键出列）。别在任何出口手拼第二个 finding 对象——
+/// 形状抄到第三份必漂（里程碑条目连栽过三次）；源码守卫
+/// __lintFindingJsonHasOneProducer 钉住这一点。
+public func findingJson(f: Finding, en: Bool): JsonValue {
+    let o = Json.obj()
+    Json.set(o, "id", Json.of(f.symId))
+    Json.set(o, "qual", Json.of(f.qual))
+    Json.set(o, "file", Json.of(f.file))
+    Json.set(o, "line", Json.of(f.line))
+    Json.set(o, "kind", Json.of(flawId(f.kind)))
+    Json.set(o, "weight", Json.of(flawWeight(f.kind)))
+    Json.set(o, "dim", Json.of(dimensionId(flawDimension(f.kind))))
+    Json.set(o, "label", Json.of(flawLabel(f.kind, en)))
+    Json.set(o, "symbol", Json.of(f.symbol))
+    Json.set(o, "evidence", Json.of(f.evidence))
+    return o
+}
+
+/// 给每条 finding 挂符号键（symId / qual）。检测器全部跑完后调一次。
+///
+/// 规则（先严后宽，都不中就留空）：
+///   ① 疑点位置上正好是**同名声明**：file 相同、line 相同、name == finding.symbol
+///      —— 孤儿 / 可疑命名 / 函数粒度信号 / 类型级信号都是这一类，挂到它自己；
+///   ② 否则挂到**疑点所在的最内层符号**：声明行 ≤ 疑点行 ≤ 声明末行，取声明行
+///      最靠后的那个（嵌套时最内层）。幻觉调用挂到调用它的函数上、未使用变量挂到
+///      声明它的函数上——这样 `id` 可以直接拿去查索引：`index refs <id>`、
+///      `SELECT … FROM sites WHERE src = (SELECT id FROM nodes WHERE sid = ?)`。
+///   末行未知（endLine == 0）的符号不参与 ②：没有边界就不能说「在它里面」。
+///
+/// 与索引对得上是因为同源：两侧的符号都出自同一次 scanSource，id 由 SymDecl.id
+/// 按同一个公式生成（confidence gen 先让 indexEnsureFresh 重建过期索引，所以两边
+/// 看到的是同一份源码的同一版索引）。
+func attachSymbolKeys(graph: CodeGraph, findings: ArrayList<Finding>): Unit {
+    let byFile = HashMap<String, ArrayList<SymDecl>>()
+    for (fe in graph.files) { byFile[fe.relPath] = fe.symbols }
+    for (i in 0..findings.size) {
+        let f = findings[i]
+        var syms = ArrayList<SymDecl>()
+        match (byFile.get(f.file)) {
+            case Some(list) => syms = list
+            case None => ()
+        }
+        var hit: Option<SymDecl> = None<SymDecl>
+        // ① 同名声明
+        for (s in syms) {
+            if (s.line == f.line && s.name == f.symbol) {
+                hit = Some(s)
+                break
+            }
+        }
+        // ② 最内层包含
+        if (hit.isNone()) {
+            var bestLine: Int64 = 0
+            for (s in syms) {
+                if (s.line <= f.line && s.endLine >= f.line && s.endLine > 0 && s.line >= bestLine) {
+                    hit = Some(s)
+                    bestLine = s.line
+                }
+            }
+        }
+        if (hit.isNone()) { continue }
+        let s = hit.getOrThrow()
+        findings[i] = f.at(s.id(f.file), s.qual)
     }
 }
 
@@ -461,6 +569,10 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
     // ── ⑫ 并发链路/细节（全局可变、锁不平衡、持锁调用）──
     detectConcurrencyRisks(graph, astNodes, astUsed, findings, kindCap)
 
+    // 挂符号键：全部检测器跑完后统一做一次（检测器只管产出 finding 的五元组，
+    // 符号键的挂靠规则只有 attachSymbolKeys 一份）。在排序之前——全序的最后一维
+    // 要用到 id。
+    attachSymbolKeys(graph, findings)
     // 排序：全序（见 sortFindings），确定性 + 重要的在前
     sortFindings(findings)
     // 总量截断（披露进 astNote，不静默）
@@ -579,7 +691,8 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
 /// 于是依赖**输入顺序** —— 而输入来自 `runAstGrep` 里按语言分组的 HashMap 迭代，
 /// 顺序不确定。实测 deepDolphin 两次运行 findings 的 (long-function, deep-nesting)
 /// 对在同一函数首行翻转（两者权重都是 4）。补足全序：
-/// 权重↓ → file↑ → line↑ → flawId↑ → symbol↑。
+/// 权重↓ → file↑ → line↑ → flawId↑ → symbol↑ → id↑。
+/// 最后一维是符号键：同一位置上两个同名声明（重载各挂各的 id）不许再判等。
 public func sortFindings(findings: ArrayList<Finding>): Unit {
     insertionSortBy(findings, { a, b => findingLess(a, b) })
 }
@@ -593,7 +706,8 @@ func findingLess(a: Finding, b: Finding): Bool {
     let ia = flawId(a.kind)
     let ib = flawId(b.kind)
     if (ia != ib) { return ia < ib }
-    return a.symbol < b.symbol
+    if (a.symbol != b.symbol) { return a.symbol < b.symbol }
+    return a.symId < b.symId
 }
 
 /// 分数标度。`density = 惩罚 / 文件数`（平均每文件的疑点权重），

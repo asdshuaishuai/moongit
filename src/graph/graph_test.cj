@@ -3850,3 +3850,142 @@ int caller(int *errOut)
         removeTree(root)
     }
 }
+
+// MARK: - 疑点挂符号键（阶段二 A）
+
+/// finding 带符号键 id / qual：与 codegraph.db 的 nodes.sid 是同一个键、同一个格式
+/// （同一次 scanSource、同一个 SymDecl.id 公式），置信度 / 热力图 / 索引靠它对账。
+///
+/// 挂靠规则：① 疑点位置上正好是同名声明 ⇒ 它自己；② 否则疑点所在的最内层符号
+/// （幻觉调用挂到调用它的函数上）；都不是 ⇒ 空串（不编句柄）。
+/// 键集恒定：confidenceJson / confidenceEmbedJson（中英）/ functionGraph 内嵌三个出口、
+/// 有疑点与空报告两种数据状态，finding 对象的键集都等于 FINDING_JSON_KEYS。
+@Test
+func testFindingsCarrySymbolKeysSharedWithIndex(): Unit {
+    let root = testRoot()
+    try {
+        writeFileAtomic("${root}/a.h", "int deadHelper(int v);\n")
+        writeFileAtomic("${root}/a.c", """
+// TODO: wire this into the tray
+int deadHelper(int v)
+{
+    return v;
+}
+
+int worker(int *out)
+{
+    *out = ghostCall(7);
+    return 0;
+}
+""")
+        let g = buildGraph(root)
+        // 索引侧的键：同一份符号表、同一个公式
+        let idWorker = "f:a.c:7:worker"
+        let idDead = "f:a.c:2:deadHelper"
+        let indexIds = HashSet<String>()
+        for (fe in g.files) {
+            for (s in fe.symbols) { indexIds.add(s.id(fe.relPath)) }
+        }
+        @Assert(indexIds.contains(idWorker))
+        @Assert(indexIds.contains(idDead))
+
+        // ── 挂靠规则（单元）──
+        let fs = ArrayList<Finding>()
+        fs.add(Finding(TodoResidue, "a.c", 1, "", "x"))               // 文件头：不在任何符号里
+        fs.add(Finding(UnresolvedCall, "a.c", 9, "ghostCall", "x"))   // 在 worker 里
+        fs.add(Finding(Orphan, "a.c", 2, "deadHelper", "x"))          // 同名声明
+        fs.add(Finding(Orphan, "a.h", 1, "deadHelper", "x"))          // 原型行：声明处也是符号
+        fs.add(Finding(MagicNumber, "gone.c", 3, "v", "x"))           // 文件不在图里
+        attachSymbolKeys(g, fs)
+        @Assert(fs[0].symId == "" && fs[0].qual == "")
+        @Assert(fs[1].symId == idWorker && fs[1].qual == "worker")
+        @Assert(fs[2].symId == idDead && fs[2].qual == "deadHelper")
+        @Assert(fs[3].symId == "f:a.h:1:deadHelper" && fs[3].qual == "deadHelper")
+        @Assert(fs[4].symId == "" && fs[4].qual == "")
+
+        // ── 端到端：检测器产出的 finding 自动带上，且挂上的 id 索引里一定有 ──
+        let rep = analyzeConfidence(g, false)
+        var sawDead = false
+        var sawGhost = false
+        for (f in rep.findings) {
+            if (!f.symId.isEmpty()) { @Assert(indexIds.contains(f.symId)) }
+            if (flawId(f.kind) == "orphan" && f.file == "a.c" && f.symbol == "deadHelper") {
+                sawDead = true
+                @Assert(f.symId == idDead && f.qual == "deadHelper")
+            }
+            if (flawId(f.kind) == "unresolved-call" && f.symbol == "ghostCall") {
+                sawGhost = true
+                @Assert(f.symId == idWorker && f.qual == "worker")
+            }
+        }
+        @Assert(sawDead)
+        @Assert(sawGhost)
+
+        // ── 键集恒定：三个出口 × 中英 × 有疑点 ──
+        let keysText = joinStrings(FINDING_JSON_KEYS, " ")
+        let exits = ArrayList<JsonValue>()
+        exits.add(confidenceJson(rep))
+        exits.add(confidenceEmbedJson(rep, false))
+        exits.add(confidenceEmbedJson(rep, true))
+        exits.add(functionGraphData(g, rep, false))
+        var checked: Int64 = 0
+        for (e in exits) {
+            if (Json.has(e, "findings")) {
+                for (o in Json.arrAt(e, "findings")) {
+                    @Assert(keysAre(o, keysText))
+                    checked += 1
+                }
+            }
+            if (Json.has(e, "functions")) {
+                for (fn in Json.arrAt(e, "functions")) {
+                    for (o in Json.arrAt(fn, "findings")) {
+                        @Assert(keysAre(o, keysText))
+                        checked += 1
+                    }
+                }
+            }
+        }
+        @Assert(checked >= 17)
+        // 空报告：findings 是空数组（键照样在）
+        let empty = ConfidenceReport(root, 100, ArrayList<Finding>(), false, "",
+            Int64(g.files.size), ArrayList<(FlawKind, Int64)>(), ArrayList<(String, Int64)>(),
+            ArrayList<(ConfDimension, Int64, Int64, Int64)>())
+        @Assert(Json.arrAt(confidenceJson(empty), "findings").size == 0)
+        @Assert(Json.arrAt(confidenceEmbedJson(empty, false), "findings").size == 0)
+
+        // ── confidence.db：findings 表带 sid / qual，与 JSON 同源 ──
+        let dbPath = root + "/confidence.db"
+        @Assert(confidenceDbWrite(dbPath, rep))
+        let ro = SqliteDb.openReadonly(dbPath).getOrThrow()
+        @Assert(dbScalar(ro, "SELECT value FROM meta WHERE key='generator'") == "moongit confidence db v2")
+        @Assert(dbScalar(ro, "SELECT sid || '|' || qual FROM findings WHERE kind='unresolved-call'") == idWorker + "|worker")
+        @Assert(dbScalar(ro, "SELECT sid || '|' || qual FROM findings WHERE kind='orphan' AND file='a.c'") == idDead + "|deadHelper")
+        // 定位不到：列在、值是空串（不是 NULL——键集与类型都不随数据漂）
+        @Assert(dbScalar(ro, "SELECT COUNT(*) FROM findings WHERE sid IS NULL OR qual IS NULL") == "0")
+        @Assert(dbScalar(ro, "SELECT COUNT(*) FROM findings WHERE sid = ''") == "1")
+        ro.close()
+    } finally {
+        removeTree(root)
+    }
+}
+
+/// 源码守卫：finding 的 JSON 对象只有 findingJson 一个构造点（confidence.cj）。
+/// 「形状只有一份」靠抄是守不住的——三个出口各拼一份，漏一处就分叉，而各自的
+/// 测试都只验自己那一份（AGENTS.md 不变量 60）。任何一个出口重新开始手拼
+/// `Json.set(o, "evidence", …)`，这里就红。
+@Test
+func __lintFindingJsonHasOneProducer(): Unit {
+    let producers = ArrayList<String>()
+    for (rel in ["confidence.cj", "confidence_render.cj", "treehtml.cj", "db.cj", "render.cj",
+                 "export.cj", "query.cj", "archscene.cj", "arch.cj"]) {
+        let raw = readFileTextChecked("src/graph/" + rel).getOrThrow()
+        var blk = CjStripState.Normal
+        for (r in raw.split("\n")) {
+            let (l, nb) = stripCjCommentEx(r, blk)
+            blk = nb
+            if (l.contains("\"evidence\"") && l.contains("Json.set(")) { producers.add(rel) }
+        }
+    }
+    @Assert(producers.size == 1)
+    @Assert(producers[0] == "confidence.cj")
+}

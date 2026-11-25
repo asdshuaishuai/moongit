@@ -35,7 +35,10 @@ import moongit.util.*
 public let GRAPH_DB_GENERATOR: String = "moongit graph db v2"
 
 /// confidence db 的 meta.generator（同上）。
-public let CONFIDENCE_DB_GENERATOR: String = "moongit confidence db v1"
+/// v2（阶段二 A）：findings 表增 sid / qual 两列——疑点挂靠符号的稳定 id 与限定名，
+/// 与 codegraph.db 的 nodes.sid 同一个键（`SELECT … FROM findings f JOIN nodes` 跨库
+/// 对账时按 sid = nodes.sid）。两列追加在表尾，既有列的位置不变。
+public let CONFIDENCE_DB_GENERATOR: String = "moongit confidence db v2"
 
 // ─────────────────────────────────────────────────────────────────
 // A0. store_meta —— index 的持久化元数据（codegraph.db 内）
@@ -401,7 +404,8 @@ func graphDbFill(db: SqliteDb, graph: CodeGraph, funcPayload: JsonValue): Bool {
 //
 //   meta(key, value)   score / files_analyzed / ast_used / ast_note /
 //                      capped_kind / capped_total / root
-//   findings(id, kind, file, line, symbol, weight, dim, evidence)
+//   findings(id, kind, file, line, symbol, weight, dim, evidence, sid, qual)
+//                       sid / qual = 挂靠符号键（阶段二 A；定位不到为空串，列照样在）
 //   dimensions(dim, label, penalty, findings, score)
 //   files(file, penalty)                   罚分表原样
 // ─────────────────────────────────────────────────────────────────
@@ -419,7 +423,7 @@ public func confidenceDbWrite(path: String, report: ConfidenceReport): Bool {
     try {
         let ddl: Array<String> = [
             "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)",
-            "CREATE TABLE findings(id INTEGER PRIMARY KEY, kind TEXT, file TEXT, line INTEGER, symbol TEXT, weight INTEGER, dim TEXT, evidence TEXT)",
+            "CREATE TABLE findings(id INTEGER PRIMARY KEY, kind TEXT, file TEXT, line INTEGER, symbol TEXT, weight INTEGER, dim TEXT, evidence TEXT, sid TEXT, qual TEXT)",
             "CREATE TABLE dimensions(dim TEXT PRIMARY KEY, label TEXT, penalty INTEGER, findings INTEGER, score INTEGER)",
             "CREATE TABLE files(file TEXT PRIMARY KEY, penalty INTEGER)",
         ]
@@ -464,7 +468,7 @@ func confidenceDbFill(db: SqliteDb, report: ConfidenceReport): Bool {
     if (!ok) { return false }
 
     // ── findings（显式 id 1..N：两次写入逐字节可 diff，不靠 rowid 隐式自增）──
-    let stFOpt = db.prepare("INSERT INTO findings(id, kind, file, line, symbol, weight, dim, evidence) VALUES(?, ?, ?, ?, ?, ?, ?, ?)")
+    let stFOpt = db.prepare("INSERT INTO findings(id, kind, file, line, symbol, weight, dim, evidence, sid, qual) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
     if (stFOpt.isNone()) { return false }
     let stF = stFOpt.getOrThrow()
     var fid: Int64 = 0
@@ -478,6 +482,9 @@ func confidenceDbFill(db: SqliteDb, report: ConfidenceReport): Bool {
         row = row && stF.bindInt(6, flawWeight(f.kind))
         row = row && stF.bindText(7, dimensionId(flawDimension(f.kind)))
         row = row && stF.bindText(8, f.evidence)
+        // 挂靠符号键（与 findingJson 的 id / qual 同源：都读 Finding 的 symId / qual）
+        row = row && stF.bindText(9, f.symId)
+        row = row && stF.bindText(10, f.qual)
         row = row && stF.stepFinish()
         if (!row) { stF.finalize(); return false }
         stF.reset()

@@ -110,16 +110,11 @@ func functionGraphDataD(graph: CodeGraph, findings: ConfidenceReport, en: Bool, 
         }
     }
     for (f in findings.findings) {
-        let o = Json.obj()
-        Json.set(o, "line", Json.of(f.line))
-        Json.set(o, "weight", Json.of(flawWeight(f.kind)))
-        Json.set(o, "kind", Json.of(flawId(f.kind)))
-        // 树节点内嵌的 finding 必须与 confidenceEmbedJson 字段对齐：
-        // 详情栏置信度 tab 按 dim 分组、渲染 label 与 evidence，
-        // 缺一个字段整组渲染就落空（验收时曾因此空白）。
-        Json.set(o, "dim", Json.of(dimensionId(flawDimension(f.kind))))
-        Json.set(o, "label", Json.of(flawLabel(f.kind, en)))
-        Json.set(o, "evidence", Json.of(f.evidence))
+        // 树节点内嵌的 finding 与 confidenceEmbedJson / confidence.json 走**同一个
+        // 构造点**（findingJson，键集 = FINDING_JSON_KEYS）。此前这里是手抄的一份
+        // 子集（少 file / symbol），注释还写着「必须与 confidenceEmbedJson 字段
+        // 对齐」——对齐靠抄必漂。带 id 之后页面按符号键把疑点绑到节点上。
+        let o = findingJson(f, en)
         match (byFile.get(f.file)) {
             case Some(list) => list.add(o)
             case None => byFile[f.file] = ArrayList<JsonValue>([o])
@@ -232,16 +227,8 @@ public func confidenceEmbedJson(conf: ConfidenceReport, en: Bool): JsonValue {
     Json.set(o, "files", JArr(fs2))
     let fs = ArrayList<JsonValue>()
     for (f in conf.findings) {
-        let d = Json.obj()
-        Json.set(d, "file", Json.of(f.file))
-        Json.set(d, "line", Json.of(f.line))
-        Json.set(d, "kind", Json.of(flawId(f.kind)))
-        Json.set(d, "weight", Json.of(flawWeight(f.kind)))
-        Json.set(d, "dim", Json.of(dimensionId(flawDimension(f.kind))))
-        Json.set(d, "label", Json.of(flawLabel(f.kind, en)))
-        Json.set(d, "symbol", Json.of(f.symbol))
-        Json.set(d, "evidence", Json.of(f.evidence))
-        fs.add(d)
+        // finding 对象只有 findingJson 一个构造点；id / qual 随之进 confidence.json
+        fs.add(findingJson(f, en))
     }
     Json.set(o, "findings", JArr(fs))
     return o

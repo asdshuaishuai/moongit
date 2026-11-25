@@ -2366,9 +2366,32 @@ func confidenceQueryCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     for (f in Json.arrAt(result, "findings")) {
         printOut(T("  [${Json.strAt(f, "kind", "")}] ${Json.strAt(f, "file", "")}:${Json.intAt(f, "line", 0)} · weight ${Json.intAt(f, "weight", 0)}",
             "  [${Json.strAt(f, "kind", "")}] ${Json.strAt(f, "file", "")}:${Json.intAt(f, "line", 0)} · 权重 ${Json.intAt(f, "weight", 0)}"))
+        // 符号键：定位得到才说（空句柄不占行）。拿它直接查索引：index refs <id>
+        let sid = Json.strAt(f, "id", "")
+        if (!sid.isEmpty()) {
+            printOut(T("    symbol: ${Json.strAt(f, "qual", "")} · id: ${sid}",
+                "    符号：${Json.strAt(f, "qual", "")} · 符号 ID：${sid}"))
+        }
         printOut("    ${Json.strAt(f, "evidence", "")}")
     }
     return 0
+}
+
+/// 快照里一条 finding 的出口形态：键集恒等于 FINDING_JSON_KEYS（findingJson 的
+/// 键集清单，只有那一处）。confidence.json 是持久化文件，可能出自加 id / qual
+/// 之前的引擎——缺的键补空串，不让「这份快照是哪一版引擎写的」体现在键集上
+/// （消费方按一套键解码）。findings 的构造仍在引擎的 findingJson，这里只是按键集
+/// 清单投影，不新增任何键。
+func findingFromSnapshot(f: JsonValue): JsonValue {
+    let o = Json.obj()
+    for (k in FINDING_JSON_KEYS) {
+        if (Json.has(f, k)) {
+            Json.set(o, k, Json.getOr(f, k))
+        } else {
+            Json.set(o, k, Json.of(""))
+        }
+    }
+    return o
 }
 
 /// confidence query 的核心（CLI --json 与 MCP confidence_query 共用；
@@ -2376,6 +2399,7 @@ func confidenceQueryCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
 /// capped/astNote/findingCount）；有过滤 → findings 清单形状（matched/shown/
 /// topTruncated/findings）。两种形状都恒带 project/generatedAt/indexUpdateCount
 ///（快照元信息——读的人必须知道快照新旧）。过滤全在快照内进行，不重算。
+/// findings 的每条按 FINDING_JSON_KEYS 投影（带 id / qual 符号键，键集恒定）。
 func confidenceQueryJson(snap: JsonValue, p: ProjectEntry,
                          fileArg: String, symbolArg: String, kindArg: String,
                          weightArg: Int64, topArg: Int64): JsonValue {
@@ -2430,7 +2454,7 @@ func confidenceQueryJson(snap: JsonValue, p: ProjectEntry,
         Json.set(o, "shown", Json.of(Int64(shown.size)))
         Json.set(o, "topTruncated", Json.of(topTruncated))
         let fs = ArrayList<JsonValue>()
-        for (f in shown) { fs.add(f) }
+        for (f in shown) { fs.add(findingFromSnapshot(f)) }
         Json.set(o, "findings", JArr(fs))
     }
     return o
