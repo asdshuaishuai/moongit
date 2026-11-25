@@ -1552,3 +1552,317 @@ func wide(
         removeTree(root)
     }
 }
+
+// MARK: - 置信度检测器吃解析后的调用点（阶段二 B）
+
+/// 孤儿检测的使用证据 = 提及证据 ∪ 调用证据；声明孪生不报。
+///
+/// ① 声明孪生（双向）：有同 qual 定义的原型不报——调用点连的是定义，原型的入度天然为 0，
+///    报它等于把同一个死函数报两遍；只有原型、没有定义的照报。
+/// ② 类型被当类型用（`struct Point origin;`，全仓没有一处 `Point(`）、函数被当值用
+///    （`int (*g_handler)(int) = usedOnlyByPointer;`）都算使用——只认调用点会把它们
+///    全部报成孤儿。真正没人用的（Dead / deadMethod 的定义）照报。
+/// ③ finding 的符号键指向定义，不是原型。
+@Test
+func testOrphanUsesCallEvidenceAndSkipsDeclTwins(): Unit {
+    let root = testRoot()
+    try {
+        writeFileAtomic("${root}/widget.h", """
+class Widget {
+public:
+    void refresh(int n);
+    void deadMethod();
+};
+int orphanProto(int v);
+int usedOnlyByPointer(int v);
+struct Point { int x; int y; };
+struct Dead { int z; };
+""")
+        writeFileAtomic("${root}/widget.cpp", """
+#include "widget.h"
+
+void Widget::refresh(int n)
+{
+    (void)n;
+}
+
+void Widget::deadMethod()
+{
+}
+
+int usedOnlyByPointer(int v)
+{
+    return v;
+}
+
+int (*g_handler)(int) = usedOnlyByPointer;
+
+struct Point origin;
+
+int main()
+{
+    Widget w;
+    w.refresh(2);
+    return 0;
+}
+""")
+        let g = buildGraph(root)
+        let rep = analyzeConfidence(g, false)
+        var orphanAt = HashSet<String>()
+        var deadMethodId = ""
+        for (f in rep.findings) {
+            if (flawId(f.kind) != "orphan") { continue }
+            orphanAt.add(f.file + ":" + f.line.toString() + ":" + f.symbol)
+            if (f.file == "widget.cpp" && f.symbol == "deadMethod") { deadMethodId = f.symId }
+        }
+        // ① 孪生：原型不报，定义照报，符号键指向定义
+        @Assert(!orphanAt.contains("widget.h:4:deadMethod"))
+        @Assert(orphanAt.contains("widget.cpp:8:deadMethod"))
+        @Assert(deadMethodId == "f:widget.cpp:8:deadMethod")
+        //    只有原型、没有定义 ⇒ 照报
+        @Assert(orphanAt.contains("widget.h:6:orphanProto"))
+        // ② 被调用的、被当值用的、被当类型用的：都不是孤儿
+        @Assert(!orphanAt.contains("widget.h:3:refresh"))
+        @Assert(!orphanAt.contains("widget.cpp:3:refresh"))
+        @Assert(!orphanAt.contains("widget.h:7:usedOnlyByPointer"))
+        @Assert(!orphanAt.contains("widget.cpp:12:usedOnlyByPointer"))
+        @Assert(!orphanAt.contains("widget.h:8:Point"))
+        //    真没人用的照报
+        @Assert(orphanAt.contains("widget.h:9:Dead"))
+    } finally {
+        removeTree(root)
+    }
+}
+
+/// 调用证据的判定（symbolsWithCallEvidence）：三种 tier 都算；声明位置上的调用点对被
+/// 声明的那个符号不算（证据给同址真调用的其他候选）；自调用不算。
+@Test
+func testCallEvidenceTiersAndExclusions(): Unit {
+    // tierTree：onlyB 被跨文件调用（resolved）与顶层调用；twice 限定 / 实例各一处；
+    // entry、userB 无人调用。
+    let root = tierTree()
+    try {
+        let g = buildGraph(root)
+        let used = symbolsWithCallEvidence(g)
+        @Assert(used.contains(ID_ONLY_B))
+        @Assert(used.contains(ID_TWICE))
+        @Assert(!used.contains(ID_ENTRY))
+        @Assert(!used.contains(ID_USER_B))
+        // 自调用不算：selfCall 体里只调了 twice
+        @Assert(!used.contains(ID_SELF_CALL))
+    } finally {
+        removeTree(root)
+    }
+    // 表达体声明行上的同名真调用：`override fun f(): Int = super.f() + 1`
+    // —— f( 在 Derived.f 的声明行上，裸名歧义把 Base.f 与 Derived.f 都列为候选；
+    // 这一处证据给 Base.f，不给 Derived.f 自己。
+    let root2 = testRoot()
+    try {
+        writeFileAtomic("${root2}/expr.kt", """
+open class Base {
+    open fun f(): Int = 1
+}
+
+class Derived : Base() {
+    override fun f(): Int = super.f() + 1
+}
+
+fun caller(b: Base): Int {
+    return b.f()
+}
+""")
+        let g = buildGraph(root2)
+        let baseF = "f:expr.kt:2:f"
+        let derivedF = "f:expr.kt:6:f"
+        let used = symbolsWithCallEvidence(g)
+        @Assert(used.contains(baseF))
+        // caller 里的 b.f() 也是歧义候选之一 ⇒ Derived.f 的证据来自 caller，不来自它自己的声明行
+        @Assert(used.contains(derivedF))
+        // 把 caller 拿掉：Derived.f 只剩自己声明行上的那一处 ⇒ 没有调用证据；Base.f 仍有
+        writeFileAtomic("${root2}/expr.kt", """
+open class Base {
+    open fun f(): Int = 1
+}
+
+class Derived : Base() {
+    override fun f(): Int = super.f() + 1
+}
+""")
+        let g2 = buildGraph(root2)
+        let used2 = symbolsWithCallEvidence(g2)
+        @Assert(used2.contains(baseF))
+        @Assert(!used2.contains(derivedF))
+    } finally {
+        removeTree(root2)
+    }
+}
+
+/// 未解析调用的证据来源 = 解析后的调用点里 dst 为空的行（不是另一遍按行猜调用）。
+///
+/// 旧证据源（build.cj 里逐行找 `name(`）不认声明：嵌套函数的定义行 `def vkey(f):` 被当成
+/// 「调用了全仓不存在的 vkey」——/tmp/itest 的 bootstrap-deps.py 就这样报过一条幻觉调用。
+/// 新证据源：def 行不是调用点，不报。正控：真正全仓无定义的自由调用照报。
+/// 带接收者的未解析调用点留在 callSites（sites.dst = 0）里，只是不进这份清单；
+/// 有定义的成员无论 `obj->m(` 还是裸调 `m(` 都不报。
+@Test
+func testUnresolvedCallsComeFromResolvedSites(): Unit {
+    let root = testRoot()
+    try {
+        // 与探针工程 bootstrap-deps.py 第 93–96 行同形：嵌套函数 + 按名传参
+        writeFileAtomic("${root}/tools.py", """
+def best(cands):
+    def vkey(f):
+        return len(f)
+    return max(cands, key=vkey) if cands else None
+
+def run(items):
+    ghostCall(items)
+    return best(items)
+""")
+        writeFileAtomic("${root}/card.h", """
+class Card {
+public:
+    void setLevel(int l);
+};
+
+inline void Card::setLevel(int l)
+{
+    (void)l;
+}
+""")
+        writeFileAtomic("${root}/use.cpp", """
+#include "card.h"
+
+int apply(Card *obj)
+{
+    obj->setLevel(2);
+    return 0;
+}
+""")
+        let g = buildGraph(root)
+        var names = HashSet<String>()
+        for ((_, name, _) in g.unresolvedCalls) { names.add(name) }
+        // 嵌套函数的定义行不是调用点 ⇒ 旧证据源报的 vkey 不再报
+        @Assert(!names.contains("vkey"))
+        @Assert(!names.contains("best"))
+        // 正控：真正全仓无定义的自由调用照报（判据没有放宽到空转）
+        @Assert(names.contains("ghostCall"))
+        // 有定义的成员：`obj->setLevel(2)` 解析到 Card.setLevel，不报
+        @Assert(!names.contains("setLevel"))
+        var sawResolved = false
+        for (s in g.callSites) {
+            if (s.name == "setLevel") {
+                sawResolved = true
+                @Assert(s.tier == "resolved")
+                @Assert(s.dst == "f:card.h:6:setLevel")
+            }
+        }
+        @Assert(sawResolved)
+        // 带接收者的未解析调用点：留在调用点里（dst 为空），只是不进清单、不报疑点
+        let rep = analyzeConfidence(g, false)
+        var sawGhost = false
+        for (f in rep.findings) {
+            if (flawId(f.kind) != "unresolved-call") { continue }
+            @Assert(f.symbol != "vkey")
+            @Assert(f.symbol != "setLevel")
+            if (f.symbol == "ghostCall") { sawGhost = true }
+        }
+        @Assert(sawGhost)
+    } finally {
+        removeTree(root)
+    }
+    // 带接收者的未解析调用点不被从索引里删掉
+    let root2 = testRoot()
+    try {
+        writeFileAtomic("${root2}/ui.cpp", """
+int paint(Window *w)
+{
+    w->frameworkOnly(1);
+    frameworkFree(2);
+    return 0;
+}
+""")
+        let g = buildGraph(root2)
+        var sawReceiverSite = false
+        var sawFreeSite = false
+        for (s in g.callSites) {
+            if (s.name == "frameworkOnly") {
+                sawReceiverSite = true
+                @Assert(s.receiver == 1)
+                @Assert(s.dst.isEmpty())
+            }
+            if (s.name == "frameworkFree") { sawFreeSite = true }
+        }
+        @Assert(sawReceiverSite)
+        @Assert(sawFreeSite)
+        var names = HashSet<String>()
+        for ((_, name, _) in g.unresolvedCalls) { names.add(name) }
+        @Assert(names.contains("frameworkFree"))
+        @Assert(!names.contains("frameworkOnly"))
+    } finally {
+        removeTree(root2)
+    }
+    // unresolvedCallsFrom 的判据：dst 为空 + 自由调用 + 名字只在一个文件出现；
+    // 每个 (file, name) 一条取首现处；输出全序。
+    let sites = ArrayList<ResolvedSite>()
+    func site(file: String, line: Int64, recv: Int64, name: String, dst: String): Unit {
+        sites.add(ResolvedSite(file, line, 1, recv, if (recv == 0) { "" } else { "obj" }, name, "", dst, if (dst.isEmpty()) { "" } else { "resolved" }))
+    }
+    site("b.kt", 9, 0, "multi", "")
+    site("a.kt", 5, 0, "multi", "")
+    site("a.kt", 3, 0, "ghost", "")
+    site("a.kt", 8, 0, "ghost", "")
+    site("a.kt", 4, 1, "member", "")
+    site("a.kt", 2, 0, "known", "f:a.kt:1:known")
+    let nameFiles = HashMap<String, HashSet<String>>()
+    func filesOf(name: String, fs: Array<String>): Unit {
+        let set = HashSet<String>()
+        for (x in fs) { set.add(x) }
+        nameFiles[name] = set
+    }
+    filesOf("multi", ["a.kt", "b.kt"])
+    filesOf("ghost", ["a.kt"])
+    filesOf("member", ["a.kt"])
+    let out = unresolvedCallsFrom(sites, nameFiles)
+    @Assert(out.size == 1)
+    @Assert(out[0][0] == "a.kt" && out[0][1] == "ghost" && out[0][2] == 3)
+}
+
+/// 检测器真的消费调用证据：名字从未被提及（referencedNames 为空）但有解析后的调用点
+/// 连到它 ⇒ 不是孤儿。手工构造图谱，把两路证据拆开——真实代码里两路几乎总是同时出现，
+/// 拿真实扫描测不出「少了调用证据这一路会怎样」。
+@Test
+func testOrphanDetectorConsumesCallEvidence(): Unit {
+    let root = testRoot()
+    try {
+        let syms = ArrayList<SymDecl>()
+        syms.add(SymDecl(Func, "called", 1))
+        syms.add(SymDecl(Func, "uncalled", 5))
+        let fe = FileEntry("g.c", "c", 9, syms, ArrayList<String>(), ArrayList<Int64>())
+        let files = ArrayList<FileEntry>()
+        files.add(fe)
+        let sites = ArrayList<ResolvedSite>()
+        sites.add(ResolvedSite("other.c", 2, 1, 0, "", "called", "f:other.c:1:caller", "f:g.c:1:called", "resolved"))
+        let g = CodeGraph(root, files, ArrayList<(String, String)>(), ArrayList<(String, String, Int64)>(),
+            false, 0, HashSet<String>(), ArrayList<(String, String, Int64)>(),
+            ArrayList<(String, String, Int64)>(), 0, ArrayList<String>(),
+            ArrayList<(String, String, Int64)>(), callSites: sites)
+        let fs = ArrayList<Finding>()
+        let cap = CapDropCounter()
+        detectOrphans(g, fs, cap)
+        @Assert(fs.size == 1)
+        @Assert(fs[0].symbol == "uncalled")
+        // 自调用不是证据：只被自己调用的函数照报
+        sites.clear()
+        sites.add(ResolvedSite("g.c", 7, 1, 0, "", "uncalled", "f:g.c:5:uncalled", "f:g.c:5:uncalled", "resolved"))
+        let g2 = CodeGraph(root, files, ArrayList<(String, String)>(), ArrayList<(String, String, Int64)>(),
+            false, 0, HashSet<String>(), ArrayList<(String, String, Int64)>(),
+            ArrayList<(String, String, Int64)>(), 0, ArrayList<String>(),
+            ArrayList<(String, String, Int64)>(), callSites: sites)
+        let fs2 = ArrayList<Finding>()
+        detectOrphans(g2, fs2, CapDropCounter())
+        @Assert(fs2.size == 2)
+    } finally {
+        removeTree(root)
+    }
+}

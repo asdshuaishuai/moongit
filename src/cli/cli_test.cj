@@ -3625,8 +3625,11 @@ func testConfidenceQueryCarriesSymbolKeys(): Unit {
             @Assert(Json.strAt(f, "id", "") == betaId)
         }
         // ⑤ 旧快照（没有 id / qual）：出口键集不变——缺的键补空串，不缺键
+        // 只取 orphan 一类：下面按 --kind orphan 查，条数才对得上（夹具里若还有别的类别，
+        // 「全部条数」与「orphan 条数」本来就不该相等）
         let oldFs = ArrayList<JsonValue>()
         for (f in Json.arrAt(snap, "findings")) {
+            if (Json.strAt(f, "kind", "") != "orphan") { continue }
             let o = Json.obj()
             for (k in ["file", "line", "kind", "weight", "dim", "label", "symbol", "evidence"]) {
                 Json.set(o, k, Json.getOr(f, k))

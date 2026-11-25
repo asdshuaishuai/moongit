@@ -567,11 +567,8 @@ public func buildGraphProbed(root: String): (CodeGraph, SourceProbe) {
         archDefMods[name] = ms
     }
     let referencedNames = HashSet<String>()
-    // 未解析调用：文件 → (函数名 → 首现行号)。构建后平坦化进 CodeGraph。
-    let unresolvedCalls = HashMap<String, HashMap<String, Int64>>()
     let tokBuf = ArrayList<String>()
     let dotBuf = ArrayList<Bool>()
-    let parenBuf = ArrayList<Bool>()
     // 名字 → 出现它的文件集合（幻觉调用的 FP 过滤：标准库函数被多文件调用）
     let nameFiles = HashMap<String, HashSet<String>>()
     for (f in facts) {
@@ -596,16 +593,11 @@ public func buildGraphProbed(root: String): (CodeGraph, SourceProbe) {
                 // 每 (文件, 符号) 只计一次）+ 本文件的泛型参数行表
                 let archSeen = HashSet<String>()
                 let lineGen = genericAtLine.get(f.relPath)
-                // 未解析调用（幻觉 API）检测的逐文件缓存
-                let seenUnresolved = HashSet<String>()
-                // 每行 token 缓冲（复用容量；带前导点标志，供接收者调用豁免；
-                // 带前导 < 标志，供泛型实参豁免——archRef 判据⑤；
-                // 带 `->` 与 `::` 隔断标志，供箭头/限定调用豁免）
+                // 每行 token 缓冲（复用容量；带前导点标志，供接收者调用豁免——
+                // 架构口径判据③；带前导 < 标志，供泛型实参豁免——判据⑤）
                 let tokBuf = ArrayList<String>()
                 let dotBuf = ArrayList<Bool>()
                 let ltBuf = ArrayList<Bool>()
-                let arrowBuf = ArrayList<Bool>()
-                let scopeBuf = ArrayList<Bool>()
                 for (line in text.lazySplit("\n")) {
                     lineNo += 1
                     // 注释与字符串内的标识符都不算引用（与 scanSource 同一套）
@@ -630,34 +622,21 @@ public func buildGraphProbed(root: String): (CodeGraph, SourceProbe) {
                         if (!isDecl && defFiles.get(tok).isSome()) { referencedNames.add(tok) }
                     }
                     if (blankLine(t)) { continue }
-                    // ── 未解析调用（幻觉 API）：`name(` 形态的**自由函数调用**，
-                    // 名字既不在全仓定义里，也不是语言内建/常见类型、不是语言
-                    // 关键词（KEYWORDS 表——`if(x)` / `for(` / `while(` 是控制流
-                    // 不是调用）。接收者调用（a.b()）豁免——方法可能定义在别的
-                    // 仓库/库里。
-                    // ⚠️ 位置感知扫描：tokenize 会丢掉括号，无法判断「后面是不是 (」。
-                    // ⚠️ G2：扫描对象必须是**剥过注释/字符串**的 t（跨行状态由
-                    // 上面的 strState 携带）——原实现扫原始行，与本循环开头那句
-                    // 「注释与字符串内的标识符都不算引用」相反：注释里的 `call(`
-                    // 与字符串里的 `call(` 都被指控为幻觉 API。
+                    // ── 逐行 token 流（架构口径引用边用）──
+                    // ⚠️ 未解析调用（幻觉 API）**不再在这里判**（阶段二 B）：此前这一段另有一遍
+                    // 「按行猜调用」的扫描（`name(` + 自带的关键词 / 内建表 + 接收者豁免），
+                    // 与 scanSource → resolveCallSites 是两份口径。现在唯一的来源是解析后的
+                    // 调用点里 dst 为空的那些行（unresolvedCallsFrom），内建 / 宏样名 / 语言
+                    // 标准库在解析阶段已经丢弃。
+                    // ⚠️ 扫描对象是**剥过注释/字符串**的 t（跨行状态由上面的 strState 携带）。
                     tokBuf.clear()
                     dotBuf.clear()
                     ltBuf.clear()
-                    arrowBuf.clear()
-                    scopeBuf.clear()
-                    parenBuf.clear()
                     let lb = t.toArray()
                     let ln2 = Int64(lb.size)
                     var i2: Int64 = 0
                     var prevDot = false
                     var prevLt = false
-                    // ⚠ 接收者/限定调用的三种隔断形态（豁免口径见下面那处判定）：
-                    //   `.`  obj.m(   ·  `->`  obj->m(   ·  `::`  Scope::m(
-                    //   判据用**紧邻的前一个字节**（不跳空白）：`a -> b(` 少写空格时
-                    //   不算箭头调用（保守：宁可多报一条，也不放过真幻觉）。
-                    var prevArrow = false
-                    var prevScope = false
-                    var prevByte: UInt8 = 0
                     while (i2 < ln2) {
                         let b = lb[i2]
                         if (isIdentByte(b)) {
@@ -666,56 +645,18 @@ public func buildGraphProbed(root: String): (CodeGraph, SourceProbe) {
                             tokBuf.add(fromUtf8Lossy(lb[st..i2]))
                             dotBuf.add(prevDot)
                             ltBuf.add(prevLt)
-                            arrowBuf.add(prevArrow)
-                            scopeBuf.add(prevScope)
-                            parenBuf.add(i2 < ln2 && lb[i2] == 40)   // '('
                             prevDot = false
                             prevLt = false
-                            prevArrow = false
-                            prevScope = false
-                            prevByte = lb[i2 - 1]
                         } else {
                             prevDot = (b == 46)   // '.'
                             prevLt = (b == 60)    // '<'
-                            prevArrow = (b == 62 && prevByte == 45)   // '>' 紧跟在 '-' 后
-                            prevScope = (b == 58 && prevByte == 58)   // ':' 紧跟在 ':' 后
-                            prevByte = b
                             i2 += 1
                         }
                     }
-                    var ti: Int64 = 0
-                    while (ti < Int64(tokBuf.size)) {
-                        let tok = tokBuf[ti]
-                        let isCall = parenBuf[ti]
-                        // ⚠⚠ **读当前 token 自己的隔断标记**（不是前一个 token 的）。
-                        //   原实现写的是 `dotBuf[ti - 1]` ⇒ 差一位 ⇒ 注释里承诺的
-                        //   「接收者调用（a.b()）豁免」**对最常见的一层成员调用不生效**：
-                        //   `a.b(` 的 "b" 去看 "a" 的标记（a 前面没有点）⇒ 被当自由调用指控。
-                        //   只有链式的 `a.b.c(` 恰好命中 ⇒ 掩盖了这条 bug。
-                        //   ⇒ 实测（deepin 客户端）：仅此一处就让 41 条 `obj.m(` 被误报成
-                        //   「幻觉调用」（连同 `->` 与 `::` 两种形态共 106 条）。
-                        let isReceiver = dotBuf[ti] || arrowBuf[ti] || scopeBuf[ti]
-                        if (isCall && !isReceiver && !isBuiltinName(tok)
-                            && !KEYWORDS.contains(tok)
-                            && defFiles.get(tok).isNone()) {
-                            let ukey = f.relPath + "|" + tok
-                            if (!seenUnresolved.contains(ukey)) {
-                                seenUnresolved.add(ukey)
-                                match (unresolvedCalls.get(f.relPath)) {
-                                    case Some(inner) => inner[tok] = lineNo
-                                    case None =>
-                                        let inner = HashMap<String, Int64>()
-                                        inner[tok] = lineNo
-                                        unresolvedCalls[f.relPath] = inner
-                                }
-                            }
-                        }
-                        ti += 1
-                    }
 
                     // ── 架构口径引用边（archRefEdges，判据见 model.cj 字段注释）──
-                    // 复用本行 tokBuf/dotBuf/ltBuf 的 token 流（与未解析调用
-                    // 同源同序），不再跑一遍字节扫描。每 (文件, 符号) 只计一次。
+                    // 复用本行 tokBuf/dotBuf/ltBuf 的 token 流，不再跑一遍字节扫描。
+                    // 每 (文件, 符号) 只计一次。
                     var ai: Int64 = 0
                     while (ai < Int64(tokBuf.size)) {
                         let tok = tokBuf[ai]
@@ -895,29 +836,10 @@ public func buildGraphProbed(root: String): (CodeGraph, SourceProbe) {
         }
     }
 
-    // unresolvedCalls 的嵌套 map → 平坦列表（file, name, firstLine）。
-    // ⚠️ FP 过滤：名字在 ≥2 个文件出现 ⇒ 大概率是标准库/依赖的函数（多文件共用），
-    // 不报；只在唯一文件出现的自由调用才报——那才是「幻觉 API」的形态。
-    let unresolvedList = ArrayList<(String, String, Int64)>()
-    for ((file, inner) in unresolvedCalls) {
-        for ((name, ln) in inner) {
-            match (nameFiles.get(name)) {
-                case Some(fs) =>
-                    if (Int64(fs.size) == 1) {
-                        unresolvedList.add((file, name, ln))
-                    }
-                case None => ()
-            }
-        }
-    }
-    // ⚠️ M10：本列表的顺序决定 confidence_detect 的**每文件每类限流留下哪 6 条**，
-    // 而它源自两层 HashMap 迭代 ⇒ 「报哪几条」由偶然顺序决定。AST 路径对同类
-    // 限流做了顺序无关处理（sortAstNodes），词法路径必须补上同一件事。
-    insertionSortBy(unresolvedList, { a, b =>
-        if (a[0] != b[0]) { return a[0] < b[0] }
-        if (a[1] != b[1]) { return a[1] < b[1] }
-        return a[2] < b[2]
-    })
+    // 未解析调用（幻觉 API）清单：**只统计解析后的调用点里 dst 为空的**——与
+    // codegraph.db 的 sites.dst = 0 是同一批行，没有第二遍「按行猜调用」的扫描。
+    // FP 过滤（口径不变）：只报自由调用、且名字只在唯一一个文件出现。
+    let unresolvedList = unresolvedCallsFrom(callSites, nameFiles)
 
     return (CodeGraph(root, facts, importEdges, refEdges,
                      files.size >= Int64(GRAPH_MAX_FILES), skipped.value,
@@ -931,6 +853,49 @@ public func buildGraphProbed(root: String): (CodeGraph, SourceProbe) {
 public func buildGraph(root: String): CodeGraph {
     let r = buildGraphProbed(root)
     return r[0]
+}
+
+/// 未解析调用清单 (file, name, firstLine)——置信度 detectUnresolvedCalls 的证据，
+/// **唯一来源是解析后的调用点**（与 codegraph.db 的 sites 表同一批行）。
+///
+/// 【判据（检测器的既有定义，口径不变）】
+///   · dst 为空：全工程没有该名字的同语言定义，且不是内建——内建 / 宏样名 / 各语言
+///     标准库在解析阶段已经丢弃（resolve.cj），这里不再判一遍；
+///   · 自由调用（receiver == 0）：带接收者的（`obj->m(` / `Type::m(`）不报——方法归属
+///     要类型信息，词法级分不清是哪个库的方法。/tmp/itest 实测：连它们一起报，封顶前
+///     3822 对、每文件封顶后 1016 条，绝大多数是 Qt / Compose / SwiftUI 的调用，会把
+///     high-complexity / dead-branch 整类挤出 400 条总上限。它们照常留在 sites（dst = 0）
+///     里，index overview 的未解析计数照带；
+///   · 名字只在唯一一个文件出现（nameFiles：标识符出现过的文件集合）：≥2 个文件共用的
+///     大概率是标准库 / 依赖的函数，不报——只在唯一文件出现的自由调用才像「幻觉 API」。
+/// 每个 (file, name) 一条，行号取首现处。输出按 file↑ → name↑ → line↑ 排定：
+/// 这份清单的顺序决定每文件每类限流留下哪 6 条（不变量 126），不许跟 HashMap 走。
+public func unresolvedCallsFrom(sites: ArrayList<ResolvedSite>,
+                                nameFiles: HashMap<String, HashSet<String>>): ArrayList<(String, String, Int64)> {
+    // (file, name) → 首现行号；值里带上 file / name，物化时不必拆键
+    let firstLine = HashMap<String, (String, String, Int64)>()
+    for (site in sites) {
+        if (!site.dst.isEmpty() || site.receiver != 0) { continue }
+        let key = site.file + "\u{1f}" + site.name
+        match (firstLine.get(key)) {
+            case Some(_) => ()
+            case None => firstLine[key] = (site.file, site.name, site.line)
+        }
+    }
+    let out = ArrayList<(String, String, Int64)>()
+    for ((_, item) in firstLine) {
+        match (nameFiles.get(item[1])) {
+            case Some(fs) =>
+                if (Int64(fs.size) == 1) { out.add(item) }
+            case None => ()
+        }
+    }
+    insertionSortBy(out, { a, b =>
+        if (a[0] != b[0]) { return a[0] < b[0] }
+        if (a[1] != b[1]) { return a[1] < b[1] }
+        return a[2] < b[2]
+    })
+    return out
 }
 
 // 泛型排序：**共享给全 graph 包**（render/arch 都在用）。

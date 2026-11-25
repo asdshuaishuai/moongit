@@ -3945,7 +3945,9 @@ int worker(int *out)
                 }
             }
         }
-        @Assert(checked >= 17)
+        // 夹具里有 4 条带符号的 finding（孤儿检测不重复报原型，见 testOrphanUsesCallEvidenceAndSkipsDeclTwins）：
+        // 三个出口各 4 条 + 符号节点内嵌 2 条
+        @Assert(checked >= 14)
         // 空报告：findings 是空数组（键照样在）
         let empty = ConfidenceReport(root, 100, ArrayList<Finding>(), false, "",
             Int64(g.files.size), ArrayList<(FlawKind, Int64)>(), ArrayList<(String, Int64)>(),

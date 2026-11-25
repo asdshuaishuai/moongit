@@ -284,8 +284,10 @@ public class CodeGraph {
     /// 供符号级孤儿检测（confidence_detect.detectOrphans）使用。
     /// 同文件内的使用也算（私有 helper 只要在本文件被调用过就不算孤儿）。
     public let referencedNames: HashSet<String>
-    /// 未解析调用（幻觉 API）：file → (函数名 → 首现行号)。
-    /// 自由函数调用、名字全仓无定义、非内建、非接收者调用。
+    /// 未解析调用（幻觉 API）：(file, 函数名, 首现行号)。
+    /// **派生自解析后的调用点**（build.cj 的 unresolvedCallsFrom）：dst 为空的自由调用
+    /// （没有同语言的定义、不是内建），且名字只在一个文件里出现。与 codegraph.db 的
+    /// sites.dst = 0 同源；带接收者的未解析调用点留在 callSites 里，不进这份清单。
     public let unresolvedCalls: ArrayList<(String, String, Int64)>
     /// 未使用 import：(file, 模块名, import 行号)。
     public let unusedImports: ArrayList<(String, String, Int64)>

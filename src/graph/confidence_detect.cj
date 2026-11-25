@@ -10,19 +10,83 @@ import moongit.util.*
 
 // MARK: - ① 孤儿符号
 
-/// 定义了、但全仓没有任何**非声明位置**的标识符引用它（**符号级**）。
-/// 数据来自 build.cj 累积的 `graph.referencedNames`（被使用过的符号名集合）。
+/// 有**调用证据**的符号集合：解析后的调用点（graph.callSites，与 codegraph.db 的 sites
+/// 表同一批行）里，dst 指向它、tier 为 direct / resolved / guessed 的都算「有人用」
+/// （guessed 是裸名歧义的全部候选——词法级分不清是哪一个，宁可都算用过）。
+/// 构造调用 `Foo(` 也在这里：它解析到 Class 本身。
 ///
-/// ⚠️ 边界如实说：词法级引用会**高估**引用（同名巧合）⇒ 这里的「孤儿」是
+/// 两类不算：
+///   · **声明位置上的调用点对被声明的那个符号不算**：`name(` 落在某个符号自己的声明行
+///     上、名字也相同——对它而言这是被声明的名字，不是调用（不变量 125：声明位置不算
+///     使用，否则「定义即使用」）。扫描器已不再采这种行（阶段二 · 扫描器修复）；但表达式体
+///     `fun f() = cfg.f()` 的真调用恰好也在 f 的声明行上，裸名歧义时 f 自己也是候选之一——
+///     这一处的证据给别的候选，不给 f 自己。
+///   · **自调用**：caller == dst。函数只被自己调用，等于没人用。
+func symbolsWithCallEvidence(graph: CodeGraph): HashSet<String> {
+    // (文件, 行, 名字) → 声明在这个位置上的符号 id
+    let declPos = HashMap<String, HashSet<String>>()
+    for (f in graph.files) {
+        for (s in f.symbols) {
+            let key = f.relPath + "\u{1f}" + s.line.toString() + "\u{1f}" + s.name
+            match (declPos.get(key)) {
+                case Some(ids) => ids.add(s.id(f.relPath))
+                case None =>
+                    let ids = HashSet<String>()
+                    ids.add(s.id(f.relPath))
+                    declPos[key] = ids
+            }
+        }
+    }
+    let used = HashSet<String>()
+    for (site in graph.callSites) {
+        if (site.dst.isEmpty()) { continue }
+        if (site.caller == site.dst) { continue }
+        var onOwnDecl = false
+        match (declPos.get(site.file + "\u{1f}" + site.line.toString() + "\u{1f}" + site.name)) {
+            case Some(ids) => onOwnDecl = ids.contains(site.dst)
+            case None => ()
+        }
+        if (onOwnDecl) { continue }
+        used.add(site.dst)
+    }
+    return used
+}
+
+/// 定义了、但全仓没有任何**使用证据**（**符号级**）。
+///
+/// 【使用证据是两路的并集（阶段二 B）】
+///   · 提及证据：名字在某个非声明位置作为标识符出现过（build.cj 累积的
+///     `graph.referencedNames`，剥注释、保留字符串——`${…}` 插值里嵌的是代码）；
+///   · 调用证据：有解析后的调用点连到它（symbolsWithCallEvidence）。
+/// 为什么不是「只认调用点」：调用点看不见三种真实使用——类型被当类型用（声明 / 泛型 /
+/// 返回类型，`struct Foo` 全仓没有一处 `Foo(`）、函数被当值用（`&AgentDialog::resendLast`
+/// 槽函数引用、回调传名）、只在字符串插值里被调用（不变量 125 记过这个坑）。拿
+/// /tmp/itest 实测（扫描器修复之后、同样套孪生规则）：只认调用点时 orphan 是 410 条
+/// （每文件封顶后；496 个候选里 358 个是 struct / enum / class / interface——被当类型用），
+/// 并集是 72 条。并集只增不减证据 ⇒ 相对「只认提及」孤儿只减不增；调用点那一路让
+/// 判定与索引说同一件事，并兜住提及证据自己的盲区（见 symbolsWithCallEvidence）。
+///
+/// 【声明孪生】只有声明没有体的符号（C/C++ 头文件原型、接口 / 抽象方法签名），同语言里
+/// 另有同 qual 的定义 ⇒ 不报：调用点连的是定义，原型的入度天然是 0，报它等于把同一个
+/// 死函数报两遍（/tmp/itest 实测 8 对）。只有原型、没有定义的照报。
+///
+/// ⚠️ 边界如实说：提及证据是词法级的，会**高估**引用（同名巧合）⇒ 这里的「孤儿」是
 /// **保守的**（宁可漏报）。真实使用但从未被提及名字的符号（纯入口 / 反射 /
 /// 协议实现）会被误报，靠 `isEntryLike` 豁免入口 / 测试文件降低噪声。
-/// 只判「名字从未在非声明处出现」；**传递性**死代码（如仅被同样已死的空壳引用的
-/// 类型）不追。
+/// 传递性死代码（如仅被同样已死的空壳引用的类型）不追。
 ///
 /// 早期版本判定单位是**文件**（整个文件无人引用才报）—— 文件里混有活符号与
 /// 死符号时漏报（只用到该文件里某一个活符号，整文件就被判为「被引用」）。
 func detectOrphans(graph: CodeGraph, findings: ArrayList<Finding>,
                    cap: CapDropCounter): Unit {
+    let usedByCall = symbolsWithCallEvidence(graph)
+    // 有定义的限定名（同语言）：声明孪生的判定键，与 resolve.cj 的 ResolveIndex 同口径
+    let definedQuals = HashSet<String>()
+    for (f in graph.files) {
+        for (s in f.symbols) {
+            if (!s.declOnly) { definedQuals.add(f.lang + "\u{1f}" + s.qual) }
+        }
+    }
     let perFile = HashMap<String, Int64>()
     for (f in graph.files) {
         if (f.symbols.size == 0) { continue }
@@ -31,6 +95,9 @@ func detectOrphans(graph: CodeGraph, findings: ArrayList<Finding>,
         if (isEntryLike(base)) { continue }
         for (s in f.symbols) {
             if (graph.referencedNames.contains(s.name)) { continue }
+            if (usedByCall.contains(s.id(f.relPath))) { continue }
+            // 声明孪生：有同 qual 的定义 ⇒ 不报（定义那一处照常判）
+            if (s.declOnly && definedQuals.contains(f.lang + "\u{1f}" + s.qual)) { continue }
             // 测试符号豁免：`@Test func testXxx` 由测试框架反射调用，源码里无引用
             if (isTestLike(s.name)) { continue }
             let c = match (perFile.get(f.relPath)) {
@@ -44,8 +111,8 @@ func detectOrphans(graph: CodeGraph, findings: ArrayList<Finding>,
             }
             perFile[f.relPath] = c + 1
             findings.add(Finding(Orphan, f.relPath, s.line, s.name,
-                "${symKindId(s.kind)} ${s.name}：定义后全仓无任何非声明处引用——"
-                + "可能从未被接入，或已被替代"))
+                "${symKindId(s.kind)} ${s.name}：定义后全仓无任何非声明处引用，"
+                + "也没有调用点连到它——可能从未被接入，或已被替代"))
         }
     }
 }
@@ -787,8 +854,14 @@ func isBuiltinName(name: String): Bool {
 
 // MARK: - 幻觉调用 / 未使用 import / 注释掉的代码
 
-/// 幻觉调用：自由函数调用 `name(`，名字全仓无定义、非内建、非接收者调用。
-/// AI 生成代码的标志性病症——编造不存在的 API。数据来自 buildGraph 第二遍。
+/// 幻觉调用：自由函数调用 `name(`，名字全仓没有同语言的定义、非内建。
+/// AI 生成代码的标志性病症——编造不存在的 API。
+///
+/// 【证据来源（阶段二 B）】`graph.unresolvedCalls` = 解析后的调用点里 dst 为空的那些行
+/// （build.cj 的 unresolvedCallsFrom；与 codegraph.db 的 sites.dst = 0 同一批行）。
+/// 此前这里是 build.cj 里另一遍「按行猜调用」的扫描：不认声明——嵌套函数的 `def f(`、
+/// 默认实参里的 `frozenset(`、关键字 `def` 后面的名字都被当成调用；自带的关键词 / 内建
+/// 表也和解析阶段的那份不一致。现在只有一份口径，置信度与索引对「未解析」的说法一致。
 func detectUnresolvedCalls(graph: CodeGraph, findings: ArrayList<Finding>,
                            cap: CapDropCounter): Unit {
     let perFile = HashMap<String, Int64>()
