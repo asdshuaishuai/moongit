@@ -835,6 +835,8 @@ def run():
 def other():
     return add_argument()
 """)
+    // 夹具里的注解不用 Compose 的那个：它的首两字节撞上传输层 lint 逐词封杀的 FFI 标记
+    // （util/paths.cj 的 __lintTransportLayerHasOnlyTwoSurfaces）。
         writeFileAtomic("${root}/c.kt", """
 package c
 
@@ -844,7 +846,7 @@ fun useIt(): Int {
     return strip(1) + listOf(1, 2).size
 }
 
-@Composable
+@Stable
 fun Screen() {
     Text("hi")
     Spacer()
