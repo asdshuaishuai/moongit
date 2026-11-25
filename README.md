@@ -351,7 +351,7 @@ scripts/      install.sh / moongit.sh / build-minimal-sdk.sh / package-release.s
 ## 构建细节与已知边界
 
 见 [AGENTS.md](AGENTS.md)（仓颉编码约定、macOS SDK 兼容；测试基线以 `cjpm test` 实跑为准，
-v0.3.0 为 704 项——Linux 上有 3 条环境性红用例，见下）。
+v0.3.0 为 706 项——Linux 上有 3 条环境性红用例，见下）。
 
 - SHA-256 自研（通过官方测试向量），不用于密码学安全场景。
 - AI 摘要质量取决于提交信息质量。
@@ -372,6 +372,9 @@ v0.3.0 为 704 项——Linux 上有 3 条环境性红用例，见下）。
     （`Text`、`addWidget`、`isEmpty`…）——**不要说成「项目里没有定义」**。
     接收者调用（`a.b(`）在接收者类型未知时按裸名解析：探针上 1526 条 `resolved` 边里
     有 421 条的两端不属于同一个类型——**可能误连**，向用户转述必须带这个限定。
+    显式接收者（不是 self / this）的同名调用**不连回所在函数自身**（`m_autoTimer->stop()` 写在
+    `AppModel::stop` 里记为未解析，不再产生假自环）；同名**重载之间**的委托调用
+    （`summary(a, b, c)` 写在另一个 `summary` 重载里）在词法上与递归分不开，仍会表现为自环。
   · **没有真正的增量解析**：`index update` 是探针增量（源没变就跳过；变了整库重建，版本 +1）。
   · C++ 栈上构造的对象不计调用点（`Foo f; f.m()` 的 `f.m(` 按裸名 `m` 解析）。
   · 扫描器**一行只记一个符号起点**：同一行上闭合括号之后的声明不记（`}; class B {}`、
@@ -390,7 +393,7 @@ v0.3.0 为 704 项——Linux 上有 3 条环境性红用例，见下）。
   `testExecCaptureTerminatesTimedOutProcess`、`testExecCaptureTimeoutIsATotalBoundNotPerPhase`
   ——`/bin/sh` 是 dash，不认 `exec -a`；`testDocWriteFailureStillPersistsProgressToStore`
   ——没有 `chflags uchg`，「把文件锁成只读再写」这个前提造不出来（文档照常写成，
-  拿不到 `DOC_WRITE_FAILED`）。本轮在 Linux 上实跑 701/704；macOS 上未实跑。
+  拿不到 `DOC_WRITE_FAILED`）。本轮在 Linux 上实跑 703/706；macOS 上未实跑。
 - **`graph arch` 系列的内存**：`--format json | html | scene` 会把整个图谱**加上每个模块的
   文件级下钻**都序列化出来，内存需求随仓库规模上涨。**仓颉运行时的默认堆上限偏小**，
   大仓库会 `OutOfMemoryError` —— 这不是算法问题：用 `cjHeapSize` 提高堆即可

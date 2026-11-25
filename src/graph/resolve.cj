@@ -248,6 +248,21 @@ class ResolveIndex {
             }
         }
         // ── 裸名解析 ──
+        // 显式接收者（不是 self / this）的调用不连回所在函数自身：`m_autoTimer->stop()` 写在
+        // `AppModel::stop` 里，接收者的类型未知，裸名的唯一候选恰好是所在函数 ⇒ 连回去是一条假自环
+        // （探针工程 51 条自环里 49 条是这种，真递归只有 2 条）。真递归不经过这里：
+        // `this->stop()` / `self.stop()` 上面已走限定解析，裸调 `stop()` 的接收者为空。
+        // 代价：委托给同类另一个实例的调用（`other.copy()` 写在 `copy()` 里）会被记成未解析——
+        // 词法上分不出它和前者，宁可少连、不假连。
+        if (site.receiver != 0 && site.caller >= 0
+            && !(site.receiver == 1 && (site.receiverText == "self" || site.receiverText == "this"))) {
+            let rest = ArrayList<DefRef>()
+            for (c in cands) {
+                if (!(c.file == fi && c.sym == site.caller)) { rest.add(c) }
+            }
+            cands = rest
+            if (cands.size == 0) { return (out, false) }
+        }
         let sameFile = ArrayList<DefRef>()
         for (c in cands) {
             if (c.file == fi) { sameFile.add(c) }

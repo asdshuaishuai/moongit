@@ -39,8 +39,8 @@ export SDKROOT="$HOME/.local/share/sdks/MacOSX.minimal/latest"  # macOS 26/27+ �
 
 cd engine
 cjpm build          # 构建 → target/release/bin/main
-cjpm test           # 704 项测试（graph 139 / kernel 258 / flow 95 / util 101 / cli 111）
-                    # Linux 上恰好 3 条环境性红（701/704），见不变量 148
+cjpm test           # 706 项测试（graph 141 / kernel 258 / flow 95 / util 101 / cli 111）
+                    # Linux 上恰好 3 条环境性红（703/706），见不变量 148
                       # ⚠️ 必须带 DEEPGIT_HOME，见下方红线
 cjpm build -i       # 增量构建（改单文件时更快）
 ```
@@ -3130,7 +3130,7 @@ version 字段没法引用代码常量 ⇒ 由**测试**钉死两处同值（改
   会干扰判断。要根治：给测试基类加 `defer` 清理，或统一走一个 `withSandbox` 辅助函数。
   临时清法：`mavis-trash -- /tmp/dg_<前缀>_<某次时间戳前缀>`（逐个传，批量会报假失败）。
 - **Linux 上恰好 3 条环境性红用例**（夹具依赖 macOS / bash 的行为，不是功能坏了）：
-  全量 `cjpm test --parallel 1` 的验收口径是 701/704。明细与处置见不变量 148。
+  全量 `cjpm test --parallel 1` 的验收口径是 703/706。明细与处置见不变量 148。
 - **代码索引是词法级的**（v0.3.0）：调用边是候选、不是编译器闭包；稳定 id 含行号；
   未解析的调用点大多是框架调用；成员级扫描器与 `build.cj` 的引用遍是两套词法口径。
   逐条与探针数字见 `README.md`「构建细节与已知边界」。
@@ -3336,7 +3336,11 @@ C/C++ 头文件原型、接口 / 抽象方法签名、TS 重载签名：agent �
 ⇒ 判据：
 1. tier 的值集与 JSON 键名不动；`impact` 只沿 direct / resolved 走，guessed 不参与（它本身就不确定）；
 2. 每个出口（CLI 文本 / `--json` / MCP / skill 配方）都带「词法级候选」的限定语；
-3. 误连的量级写进 README 已知边界，不藏。
+3. 误连的量级写进 README 已知边界，不藏；
+4. **显式接收者（非 self / this）的调用不连回所在函数自身**——接收者类型未知时，裸名的唯一候选
+   恰好是所在函数，连回去是假自环（探针 51 条自环里 49 条是这种）；真递归走 `this->stop()` 的
+   限定解析或裸调，不经过这条规则。同名重载之间的委托与递归在词法上不可分，如实留作边界
+   （判据：`testExplicitReceiverCallDoesNotLoopToItsOwnFunction`）。
 ⇒ 推广：给关系边打标签时，先问它标的是「确信度」还是「重要度」——两者混成一个字段，
 下游就没法既做保守闭包（只要确信的）又做探索（全要）。
 
@@ -3379,7 +3383,7 @@ FFI 标记）来封杀 foreign 导入。阶段一的成员级夹具用了注解 
 三条红的都是**夹具造不出前提**，不是功能坏了——引擎的超时路径另有用例且是绿的
 （`testExecCaptureTimeoutActuallyTimesOut` 等）。
 ⇒ 判据：
-1. 本机全量 `cjpm test --parallel 1` 的验收口径是 **701/704、红的恰好是这 3 条**——多一条、少一条都要查；
+1. 本机全量 `cjpm test --parallel 1` 的验收口径是 **703/706、红的恰好是这 3 条**——多一条、少一条都要查；
 2. 要在 Linux 上变绿，正规修法是改**夹具**（`/bin/sh` 换成 `bash`、不可写手段换成 `chattr +i` 或目录权限），
    不是改断言；动夹具前先在 macOS 上确认它还绿；
 3. 新写的用例不要依赖某平台才有的 shell 特性 / 命令；实在要依赖，在本表登记。
