@@ -4319,7 +4319,8 @@ func testSkillRecipesCoverCodeLocationPath(): Unit {
     let md = skillMarkdown()
     for (needle in ["index_search", "index_outline", "index_query", "index_grep",
                     "index_refs", "index_impact", "confidence_gen", "confidence_query",
-                    "render index", "ambiguous: true", "guessed", "f:<相对路径>:<行>:<名字>"]) {
+                    "render index", "ambiguous: true", "guessed", "f:<相对路径>:<行>:<名字>",
+                    "原型的 id 回的也是定义", "声明处列在 decls"]) {
         @Assert(md.contains(needle))
     }
 }

@@ -3718,7 +3718,7 @@ func skillMarkdown(): String {
     sb.append("- **项目说明文档**：get_project_context + get_project_docs → 生成 markdown 说明\n")
     sb.append("- **X 功能的代码在哪 / 我要改 X**：index_search(name, pattern) 按名字或片段搜符号"
         + "（拿不准全名就先搜，结果带 id、限定名、file:line:col、签名）→ index_outline(name, file) 读文件前先看结构 "
-        + "→ index_query(name, symbol=id 或限定名) 取定义、调用方与被调（每条带调用点 file:line:col）"
+        + "→ index_query(name, symbol=id 或限定名) 取定义、调用方与被调（每条带调用点 file:line:col；头文件里原型的 id 回的也是定义，声明处列在 decls）"
         + "→ index_grep(name, pattern) 找字面文本（报错信息、配置键、注解、字符串）。"
         + "回答时给「路径:行:列 + 限定名 + 签名」，不要只给文件名。\n")
     sb.append("- **改这个函数影响谁**：index_refs(name, symbol) 找全调用点 → index_impact(name, symbol) "
