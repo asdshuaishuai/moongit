@@ -162,6 +162,11 @@ func functionGraphDataD(graph: CodeGraph, findings: ConfidenceReport, en: Bool, 
             Json.set(o, "name", Json.of(s.name))
             Json.set(o, "kind", Json.of(symKindId(s.kind)))
             Json.set(o, "line", Json.of(s.line))
+            // 成员级三键（阶段二 D）：限定名 / 列 / 签名——详情面板的定位串与
+            // 「限定名 / 签名 / 复制符号 ID」直接吃，页面不另算。恒发（未知 = "" / 0）。
+            Json.set(o, "qual", Json.of(s.qual))
+            Json.set(o, "col", Json.of(s.col))
+            Json.set(o, "sig", Json.of(s.sig))
             Json.set(o, "lang", Json.of(detectLang(fe.relPath)))
             Json.set(o, "findings", JArr(fd))
             Json.set(o, "weight", Json.of(maxW))
@@ -489,6 +494,20 @@ public func indexContractJson(payload: JsonValue): JsonValue {
     return o
 }
 
+/// 去掉一个键的对象副本（逐键拷贝，键序不变）。JsonValue 没有删除接口；
+/// 这里只用于把绝对路径的 root 从内嵌数据里摘掉。
+func jsonObjectWithout(o: JsonValue, key: String): JsonValue {
+    let out = Json.obj()
+    match (o) {
+        case JObj(m) =>
+            for ((k, v) in m) {
+                if (k != key) { Json.set(out, k, v) }
+            }
+        case _ => ()
+    }
+    return out
+}
+
 /// 三参形态（规格签名）：不带 confMissing 标记的常规渲染。
 public func renderIndexHtml(payload: JsonValue, confOpt: Option<JsonValue>, en: Bool): String {
     return renderIndexHtml(payload, confOpt, en, false)
@@ -536,7 +555,14 @@ public func renderIndexHtml(payload: JsonValue, confOpt: Option<JsonValue>, en: 
     }
     // 驱动双语：en 进 payload（applyTexts 用 T 表覆盖模板静态中文）
     Json.set(root, "en", Json.of(en))
-    let json = jsonSafeForEmbed(Json.pretty(root))
+    // 持久化产物的页面数据**不带绝对路径的 root**（阶段二 D）：它是这台机器上的项目
+    // 目录，页面驱动从不读它（只用 D.project 的名字），而这一份 HTML 是要被分享 /
+    // 归档的——产物里不该带着本机绝对路径。只对带 updateCount 的 payload（index 持久化
+    // 产物）这样做；graph tree 的临时 payload 形状不变（兼容面）。root 是 graph tree
+    // --json / index gen --json 的契约键，那两个出口照发，这里只管内嵌进 HTML 的那一份。
+    var embed = root
+    if (Json.has(root, "updateCount")) { embed = jsonObjectWithout(root, "root") }
+    let json = jsonSafeForEmbed(Json.pretty(embed))
     let title = if (en) { "Code Graph" } else { "代码图谱" }
     // 文件数进 <title>：从 payload 读回（兼容面与持久化面同一个来源）
     var fileCount: Int64 = 0
@@ -569,6 +595,7 @@ public func renderIndexHtml(payload: JsonValue, confOpt: Option<JsonValue>, en: 
 .sidebar{min-width:0;min-height:0;background:linear-gradient(180deg,#101824,#0c131d 65%);display:flex;flex-direction:column}.side-head{height:64px;flex-shrink:0;padding:14px 17px 10px;border-bottom:1px solid #1e2a36;display:flex;align-items:center;gap:10px;background:linear-gradient(110deg,#121e2e,#101925 70%,#111b2b)}.side-icon{width:31px;height:31px;border-radius:8px;background:linear-gradient(145deg,#1a3842,#1f2941);border:1px solid #31566a;display:grid;place-items:center;color:#70dfb3;box-shadow:0 0 18px #5fdcff0e}.side-icon svg{width:17px;height:17px}.side-title{font-size:12px;font-weight:700}.side-sub{font:9px var(--mono);color:#70859a;margin-top:4px}.side-head .icon-btn{margin-left:auto;background:#111a24}.tabs{height:42px;flex-shrink:0;border-bottom:1px solid #24313e;display:flex;padding:0 11px;gap:1px;overflow-x:auto;scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}.tab-btn{flex-shrink:0;border:0;border-radius:0;border-bottom:2px solid transparent;background:none;padding:0 9px;font-size:10px;color:#7d91a5;white-space:nowrap}.tab-btn:hover{color:#d8e4ef}.tab-btn.active{border-bottom-color:#4bd4a0;color:#bcebd9}.side-body{flex:1;min-height:0;overflow:auto;padding:16px 16px 18px;scrollbar-width:thin;scrollbar-color:#2b3a49 transparent}.panel-section{margin-bottom:17px}.section-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;border-bottom:1px solid #29394d;padding-bottom:7px}.section-title{font-size:10px;font-weight:800;letter-spacing:.06em;color:#b8c6d3}.section-meta{font:9px var(--mono);color:#71859a}.confidence-card{padding:13px;background:radial-gradient(ellipse at 8% 0%,rgba(95,220,255,.055),transparent 55%),linear-gradient(145deg,#111e2e,#101824);border:1px solid #2b3e53;border-radius:10px;position:relative;overflow:hidden;box-shadow:inset 0 1px 0 #ffffff05,0 8px 24px #0001}.confidence-card:after{content:"";position:absolute;right:-25px;top:-35px;width:115px;height:115px;border-radius:50%;border:1px solid #59f0b818;box-shadow:0 0 0 12px #59f0b807,0 0 0 24px #59f0b805;pointer-events:none}.confidence-top{display:flex;justify-content:space-between;align-items:flex-start;position:relative;z-index:1}.confidence-label{font-size:10px;color:#9bb6aa}.confidence-value{font:700 32px var(--mono);letter-spacing:-.06em;margin-top:6px;color:#66e5ac}.confidence-value small{font-size:12px;color:#82a095;letter-spacing:0}.conf-state{font-size:9px;padding:4px 6px;border:1px solid #32694f;color:#71dfab;background:#173629;border-radius:5px;margin-top:2px}.meter{height:5px;background:#263932;border-radius:6px;overflow:hidden;margin:12px 0 7px;position:relative;z-index:1}.meter span{display:block;height:100%;border-radius:6px;background:linear-gradient(90deg,#e9b753,#59d99c);filter:drop-shadow(0 0 4px currentColor)}.meter-labels{display:flex;justify-content:space-between;font:9px var(--mono);color:#7e978d;position:relative;z-index:1}.metric-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.metric-box{border:1px solid #293b50;border-radius:8px;background:#111a23;padding:10px}.metric-box .label{font-size:9px;color:#7d91a4}.metric-box strong{font:700 17px var(--mono);display:block;margin-top:5px;color:#e0eaf2}.metric-box small{font-size:9px;color:#788c9f;display:block;margin-top:4px}.metric-box strong.green{color:#70dfae}.metric-box strong.yellow{color:#f0c766}.metric-box strong.red{color:#fb828b}.bar-list{display:flex;flex-direction:column;gap:10px}.bar-row{display:grid;grid-template-columns:83px 1fr 35px;align-items:center;gap:7px}.bar-row label{font-size:9px;color:#96a8b8;white-space:nowrap}.bar-track{height:5px;border-radius:4px;background:#202c38;overflow:hidden}.bar-track span{height:100%;display:block;border-radius:4px;filter:drop-shadow(0 0 4px currentColor)}.bar-row strong{font:10px var(--mono);text-align:right;color:#ccd8e4}.note{border:1px solid #293b50;border-left:2px solid #e0b44f;background:#151e26;border-radius:6px;padding:10px 11px;font-size:10px;line-height:1.65;color:#a9b6c3}.note strong{color:#e6c56f;font-weight:700}.pill-row{display:flex;gap:5px;flex-wrap:wrap}.pill{font-size:9px;color:#9db0c1;background:#17222d;border:1px solid #2a3b4a;border-radius:5px;padding:5px 7px}.list{display:flex;flex-direction:column;gap:6px}.list-row{border:1px solid #293b50;border-radius:7px;background:#111a23;padding:9px 9px;display:flex;gap:8px;align-items:center;cursor:pointer}.list-row:hover{border-color:#42596b;background:#14202a}.list-row .relation-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}.list-row .list-main{min-width:0;flex:1}.list-row strong{display:block;font-size:10px;color:#cbd8e4;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.list-row small{display:block;font:9px var(--mono);color:#6e8397;margin-top:4px}.list-row .list-score{font:700 10px var(--mono);color:#a9d9c2}.evidence-item{display:flex;gap:9px;padding:9px 0;border-bottom:1px solid #1e2a36}.evidence-item:last-child{border-bottom:0}.evi-icon{width:24px;height:24px;border:1px solid #2a3b4b;border-radius:6px;display:grid;place-items:center;color:#83a6bf;font-size:10px;flex-shrink:0;background:#15212c}.evi-main{flex:1;min-width:0}.evi-main strong{display:block;font-size:10px;color:#c3d0dd}.evi-main p{margin:4px 0 0;font-size:9px;line-height:1.55;color:#8295a7}.evi-score{font:10px var(--mono);color:#d5e0e9}.evi-score.good{color:#6bdfaa}.evi-score.mid{color:#f0c35b}.evi-score.low{color:#fa818b}.mini-table{width:100%;border-collapse:collapse;font-size:9px}.mini-table th{text-align:left;font-weight:600;color:#7790a4;padding:8px 5px;border-bottom:1px solid #293846}.mini-table td{padding:9px 5px;color:#aebdca;border-bottom:1px solid #202b36;vertical-align:middle}.mini-table tr:last-child td{border-bottom:0}.mini-table .score-cell{font:10px var(--mono);font-weight:700}.empty{padding:25px 12px;text-align:center;color:#778ba0;font-size:10px;border:1px dashed #2a3946;border-radius:8px}.empty strong{display:block;color:#b5c4d1;font-size:11px;margin-bottom:5px}.side-actions{display:flex;gap:7px;margin-top:11px}.side-actions button{flex:1}.stat-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #1c2834;font-size:10px;color:#91a4b6}.stat-row strong{font:10px var(--mono);color:#d0dce6}.stat-row:last-child{border-bottom:0}
 .bottom-status{height:25px;flex-shrink:0;border-top:1px solid #26384c;background:linear-gradient(90deg,#0f1927,#0d151f);display:flex;align-items:center;justify-content:space-between;padding:0 16px;color:#617488;font:9px var(--mono)}.status-left,.status-right{display:flex;align-items:center;gap:14px}.status-green{color:#71dcae}.kbd{border:1px solid #2c3a47;border-radius:3px;padding:1px 4px;color:#8da0b3}.toast{position:fixed;bottom:39px;left:50%;transform:translate(-50%,12px);opacity:0;pointer-events:none;z-index:99;padding:10px 13px;border-radius:8px;border:1px solid #365345;background:#11231c;color:#a8e9cb;font-size:11px;box-shadow:0 8px 28px #0008;transition:.2s}.toast.show{opacity:1;transform:translate(-50%,0)}.modal-backdrop{position:fixed;inset:0;background:rgba(4,8,12,.79);z-index:80;display:none;align-items:center;justify-content:center;backdrop-filter:blur(5px)}.modal-backdrop.show{display:flex}.modal{width:min(620px,calc(100vw - 32px));max-height:80vh;overflow:auto;border:1px solid #344555;border-radius:13px;background:#101923;box-shadow:0 30px 100px #000b;padding:20px}.modal-head{display:flex;align-items:center;justify-content:space-between}.modal h2{font-size:15px;margin:0}.modal p{font-size:11px;line-height:1.7;color:#9aabba}.formula{font:11px var(--mono);color:#9fe2c0;background:#0a1511;border:1px solid #253e32;padding:12px;border-radius:7px;overflow:auto}.weights{width:100%;border-collapse:collapse;margin-top:10px;font-size:10px}.weights td,.weights th{text-align:left;padding:8px;border-bottom:1px solid #263442}.weights th{color:#8197aa}.weights td{color:#c5d2de}.weights tr:last-child td{border-bottom:0}
 .breath-toggle{color:#75eac3;border-color:#367c69;background:linear-gradient(110deg,#12352f,#172c37);box-shadow:inset 0 0 14px #59f0b80b,0 0 16px #59f0b80a}.breath-toggle:not(.active){color:#8a9bad;border-color:#2a3949;background:#121b25;box-shadow:none}
+.loc-row{display:grid;grid-template-columns:78px minmax(0,1fr) auto;align-items:center;gap:7px;margin-top:7px}.loc-label{font-size:9px;color:#7d91a4}.loc-val{font:10px var(--mono);color:#cfe0ee;background:#0d1620;border:1px solid #223347;border-radius:6px;padding:6px 7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.copy-btn{white-space:nowrap}.sig-block{font:10px var(--mono);color:#bcd0e0;word-break:break-all;white-space:pre-wrap}.clip-fallback{position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;pointer-events:none}
 @keyframes brandBreath{0%,100%{box-shadow:0 0 15px rgba(90,219,235,.16),inset 0 1px 0 #ffffff88;filter:saturate(1)}50%{box-shadow:0 0 28px rgba(90,219,235,.28),0 0 35px rgba(130,168,255,.08),inset 0 1px 0 #ffffff99;filter:saturate(1.12)}}
 @keyframes donutBreath{0%,100%{filter:drop-shadow(0 0 5px #59f0b81a)}50%{filter:drop-shadow(0 0 12px #59f0b83d)}}
 @keyframes auroraDrift{0%{transform:translate3d(-1.5%,0,0) scale(1);background-position:0% 0%}50%{transform:translate3d(1.5%,1%,0) scale(1.04);background-position:100% 60%}100%{transform:translate3d(-.5%,-1%,0) scale(1.02);background-position:20% 100%}}
@@ -808,6 +835,17 @@ func codegraphDriverJs(en: Bool): String {
     // 快照过期：版本号 N/M 由引擎随数据下发（D.confStaleNote），本串只是兜底
     let tConfStale = if (en) { "confidence snapshot is stale (based on another index version) — run moongit confidence gen" }
         else { "置信度快照过期（依据的索引版本与当前不一致）——先 moongit confidence gen" }
+    // 详情面板的定位区（阶段二 D）：定位串 / 限定名 / 签名 / 复制符号 ID
+    let tLocation = if (en) { "LOCATOR" } else { "定位" }
+    let tLocator = if (en) { "Location" } else { "定位串" }
+    let tCopy = if (en) { "Copy" } else { "复制" }
+    let tQualName = if (en) { "Qualified name" } else { "限定名" }
+    let tSymbolId = if (en) { "Symbol ID" } else { "符号 ID" }
+    let tCopySymbolId = if (en) { "Copy symbol ID" } else { "复制符号 ID" }
+    let tSignature = if (en) { "Signature" } else { "签名" }
+    let tCopied = if (en) { "Copied:" } else { "已复制：" }
+    let tCopyFailed = if (en) { "Copy failed — select the text and copy it manually:" }
+        else { "复制失败——请手动选中后复制：" }
     let tNoteTrunc = if (en) { "file cap reached — graph is partial, not full" } else { "文件数达上限——图谱不是全量" }
     let tNoteOver = if (en) { " oversize files excluded" } else { " 个超大文件未纳入" }
     let tNoteDepth = if (en) { " files omitted by --depth (raise it for more)" } else { " 个文件因 --depth 未纳入（提高可看更多）" }
@@ -853,6 +891,10 @@ func codegraphDriverJs(en: Bool): String {
         + ", noMatch: " + jsStr(tNoMatch) + ", ready: " + jsStr(tReady) + ", tmp: " + jsStr(tTmp)
         + ", indexed: " + jsStr(tIndexed) + ", evalAt: " + jsStr(tEvalAt) + ", capNote: " + jsStr(tCapNote)
         + ", confMissingNote: " + jsStr(tConfMissing) + ", confStaleNote: " + jsStr(tConfStale)
+        + ", location: " + jsStr(tLocation) + ", locator: " + jsStr(tLocator) + ", copy: " + jsStr(tCopy)
+        + ", qualName: " + jsStr(tQualName) + ", symbolId: " + jsStr(tSymbolId)
+        + ", copySymbolId: " + jsStr(tCopySymbolId) + ", signature: " + jsStr(tSignature)
+        + ", copied: " + jsStr(tCopied) + ", copyFailed: " + jsStr(tCopyFailed)
         + ", noteTrunc: " + jsStr(tNoteTrunc)
         + ", noteOver: " + jsStr(tNoteOver) + ", noteDepth: " + jsStr(tNoteDepth) + ", noteUnread: " + jsStr(tNoteUnread)
         + ", nodes: " + jsStr(tNodes) + ", rels: " + jsStr(tRels) + ", typeCol: " + jsStr(tTypeCol)
@@ -922,8 +964,11 @@ FG.functions.forEach(function (f) {
   (f.findings || []).forEach(function (fd) { pen += (fd.weight || 0); });
   var kind = f.kind || 'func';
   var vt = (kind === 'class' || kind === 'struct' || kind === 'enum' || kind === 'interface' || kind === 'extension') ? 'type' : 'method';
+  // sid / qual / col / sig：引擎随节点下发（成员级三键），详情面板的定位串直接吃——
+  // 页面不按行号反推列，也不自己拼限定名
   NODES[f.id] = { id: f.id, name: f.name, type: vt, kind: kind, parent: 'p:' + f.file, file: f.file,
-    line: f.line, confidence: confScore(pen, 1), penalty: pen, findings: f.findings || [],
+    line: f.line, col: f.col || 0, qual: f.qual || '', sig: f.sig || '', sid: f.id,
+    confidence: confScore(pen, 1), penalty: pen, findings: f.findings || [],
     signature: kind + ' · L' + f.line, loc: f.file, children: [], cov: ((f.findings || []).length ? 40 : 100) };
   (SYM_OF_FILE[f.file] = SYM_OF_FILE[f.file] || []).push(f.id);
 });
@@ -935,7 +980,15 @@ FILES.forEach(function (fe) {
   var bySym = {};
   (BY_FILE[fe.path] || []).forEach(function (f) {
     var target = null;
-    kids.forEach(function (sid) { if (NODES[sid].line <= f.line) { target = sid; } });
+    // 疑点带符号键（finding.id = 挂靠符号的稳定 id）：优先按它绑到节点上——引擎是按
+    // 「疑点位置上的同名声明，否则所在的最内层符号」挂的，比按行号猜准（嵌套类型 /
+    // 同一行多个声明时行号会绑错）。id 在但节点不在本文件（--depth 截掉的）或快照里
+    // 没有这个键时，退回按行号：最后一个声明行不大于疑点行的符号。
+    if (f.id && NODES[f.id] && NODES[f.id].file === fe.path) {
+      target = f.id;
+    } else {
+      kids.forEach(function (sid) { if (NODES[sid].line <= f.line) { target = sid; } });
+    }
     if (target) { (bySym[target] = bySym[target] || []).push(f); } else { fileFindings.push(f); }
   });
   kids.forEach(function (sid) { NODES[sid].findings = bySym[sid] || []; });
@@ -2199,6 +2252,22 @@ function formulaSection(n) {
     + '<div class="stat-row"><span>density</span><strong>' + ((n.penalty || 0) / denom).toFixed(2) + '</strong></div>'
     + '<div class="stat-row"><span>C = floor(100·20/(20+density))</span><strong style="color:' + confidenceColor(n.confidence) + '">' + Math.round(n.confidence) + '</strong></div></div>';
 }
+// ── 定位区：定位串 / 限定名 / 签名 / 复制符号 ID ──
+// 定位串 = 相对路径:行:列（列未知时不拼列——不编一个 1 出来）
+function locatorOf(n) { return n.file + ':' + n.line + (n.col > 0 ? ':' + n.col : ''); }
+function copyRow(label, value, btnLabel) {
+  return '<div class="loc-row"><span class="loc-label">' + esc(label) + '</span><code class="loc-val" title="' + esc(value) + '">' + esc(value) + '</code>'
+    + '<button class="tiny-btn copy-btn" data-copy="' + esc(value) + '" data-copy-label="' + esc(label) + '">' + esc(btnLabel) + '</button></div>';
+}
+function locatorSection(n) {
+  var h = '<div class="panel-section">' + section(esc(T.location), esc(n.kind || ''));
+  h += copyRow(T.locator, locatorOf(n), T.copy);
+  if (n.qual) { h += copyRow(T.qualName, n.qual, T.copy); }
+  h += copyRow(T.symbolId, n.sid, T.copySymbolId);
+  h += '</div>';
+  if (n.sig) { h += '<div class="panel-section">' + section(esc(T.signature)) + '<div class="note sig-block">' + esc(n.sig) + '</div></div>'; }
+  return h;
+}
 function renderSidebar() {
   var n = NODES[selectedId] || NODES[scopeId] || NODES.project;
   $('#sideTitle').textContent = n.type === 'project' ? (en0() ? 'Confidence report' : '置信度分析报告') : n.name + ' · ' + (en0() ? 'confidence' : '置信度报告');
@@ -2208,6 +2277,8 @@ function renderSidebar() {
   var html = '';
   if (activeTab === 'overview') {
     html += '<div class="panel-section">' + section('SCORE', n.id) + scoreCard(n) + '</div>';
+    // 符号节点：定位串 / 限定名 / 签名 / 复制符号 ID（拿去 index refs / index query）
+    if (n.type === 'type' || n.type === 'method') { html += locatorSection(n); }
     html += '<div class="panel-section">' + section('SIGNALS', 'METRICS') + '<div class="metric-grid">'
       + metric(T.findings, cntOf(n), T.penalty + ' −' + (n.penalty || 0), cntOf(n) > 0 ? 'yellow' : 'green')
       + metric(T.degree, rs.length, T.impact + ' ' + (n.impact || 0))
@@ -2252,6 +2323,10 @@ function renderSidebar() {
   body.querySelectorAll('[data-switch-tab]').forEach(function (el3) {
     el3.addEventListener('click', function () { activeTab = el3.getAttribute('data-switch-tab'); updateTabs(); renderSidebar(); });
   });
+  // 复制按钮：data-copy = 要复制的原文，data-copy-label = 提示里的名字
+  body.querySelectorAll('[data-copy]').forEach(function (el4) {
+    el4.addEventListener('click', function () { copyText(el4.getAttribute('data-copy'), el4.getAttribute('data-copy-label') || ''); });
+  });
   var drill = $('#drillBtn');
   if (drill) { drill.onclick = function () { if ((n.children || []).length) { enterScope(n.id); } }; }
 }
@@ -2262,6 +2337,46 @@ function toast(msg) {
   el.classList.add('show');
   clearTimeout(toast.timer);
   toast.timer = setTimeout(function () { el.classList.remove('show'); }, 2100);
+}
+// ── 复制 ──
+// file:// 页面没有剪贴板权限：navigator.clipboard 可能不存在、也可能在 writeText 时
+// 被拒。两条路都走不通时用隐藏 textarea + execCommand('copy') 兜底（选中后执行复制
+// 命令，不依赖权限）；再失败就在提示里把原文显示出来，让人能手动选中复制。
+var clipTA = null;
+function clipFallback(text) {
+  try {
+    if (!clipTA) {
+      clipTA = document.createElement('textarea');
+      clipTA.className = 'clip-fallback';
+      clipTA.setAttribute('aria-hidden', 'true');
+      clipTA.setAttribute('tabindex', '-1');
+      clipTA.setAttribute('readonly', '');
+      document.body.appendChild(clipTA);
+    }
+    clipTA.value = text;
+    clipTA.focus();
+    clipTA.select();
+    clipTA.setSelectionRange(0, text.length);
+    var ok = document.execCommand('copy');
+    clipTA.blur();
+    return ok;
+  } catch (e) {
+    return false;
+  }
+}
+function copyText(text, label) {
+  function done(ok) { toast((ok ? T.copied : T.copyFailed) + ' ' + label + ' ' + text); }
+  function fallback() { done(clipFallback(text)); }
+  var async = false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, fallback);
+      async = true;
+    }
+  } catch (e) {
+    async = false;
+  }
+  if (!async) { fallback(); }
 }
 // ── 过滤器 / 控件 ──
 (function () {

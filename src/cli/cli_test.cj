@@ -3665,6 +3665,36 @@ func testConfidenceQueryCarriesSymbolKeys(): Unit {
     }
 }
 
+/// 阶段二 D：两份渲染产物里不得出现本机绝对路径（进度库目录 / 沙箱 home / 项目目录都不内嵌）；
+/// 回执里的 path 是给调用方的落盘位置，不在此列。
+@Test
+func testRenderProductsCarryNoMachinePaths(): Unit {
+    let base = "/tmp/deepgit-nomachine-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    try {
+        let p = dbCliFixtureProject(base, "no-path")
+        let ctx = CliContext(ArrayList<String>(["confidence"]))
+        @Assert(cmdConfidence(ArrayList<String>(["gen", "no-path"]), ctx) == 0)
+        let idx = renderIndexCore(p, true, false, "")
+        @Assert(Json.strAt(idx, "confidence", "") == "overlay")
+        let indexHtml = readFileTextOr(Json.strAt(idx, "path", ""), "")
+        @Assert(indexHtml.contains("copySymbolId: \"复制符号 ID\""))
+        @Assert(!indexHtml.contains(base))
+        let arch = renderArchCore(p, false, "")
+        let archHtml = readFileTextOr(Json.strAt(arch, "path", ""), "")
+        @Assert(archHtml.contains("COPYMODW = \"复制模块路径\""))
+        @Assert(!archHtml.contains(base))
+        @Assert(!archHtml.contains(testHome))
+    } finally {
+        exitTestHome()
+        removePathIfExists(base + "/repo")
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
 /// MCP 新工具面回执：arch_gen / arch_query / index_gen / index_query /
 /// confidence_gen / confidence_query / render 走与 CLI 相同的内部函数，
 /// 回执只带事实与路径（HTML 落盘，不内塞全文）；旧 codegraph_* 别名仍可用。

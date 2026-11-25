@@ -64,6 +64,11 @@ public struct ArchUi {
     public let noCycleWord: String    // 无环（绿字空态）
     public let legendText: String     // 图例一行
     public let otherLayerNote: String // 存在未分层模块时图例追加的一句
+    // ── 节点路径复制（阶段二 D）──
+    public let copyModuleWord: String // 架构级面板：「复制模块路径」
+    public let copyFileWord: String   // 文件级子视图面板：「复制文件路径」
+    public let copiedWord: String     // 复制成功提示的前缀
+    public let copyFailedWord: String // 复制失败提示的前缀（后接原文，供手动选中）
 
     public init(en: Bool) {
         if (en) {
@@ -96,6 +101,10 @@ public struct ArchUi {
             noCycleWord = "no cycles"
             legendText = "top = interface layers, bottom = foundation; arrow down = healthy dependency; red upward = violation; orange = cycle; instability = out/(in+out)"
             otherLayerNote = "unlayered modules sit on top (excluded from violation checks)"
+            copyModuleWord = "Copy module path"
+            copyFileWord = "Copy file path"
+            copiedWord = "Copied:"
+            copyFailedWord = "Copy failed — select the text and copy it manually:"
         } else {
             title = "技术架构"
             sub = "moonGit 引擎（仓颉）确定性计算 · 零依赖单文件"
@@ -126,6 +135,10 @@ public struct ArchUi {
             noCycleWord = "无环"
             legendText = "上=接口层，下=基础层；箭头向下=健康依赖；红色上行=违规；橙=环；不稳定度=出/(入+出)"
             otherLayerNote = "未分层模块在最上（不参与违规判定）"
+            copyModuleWord = "复制模块路径"
+            copyFileWord = "复制文件路径"
+            copiedWord = "已复制："
+            copyFailedWord = "复制失败——请手动选中后复制："
         }
     }
 }
@@ -261,6 +274,8 @@ body { background:var(--bg); color:var(--text); font:13px/1.5 -apple-system,'SF 
 #legend { position:fixed; bottom:12px; left:12px; color:var(--muted); font-size:11px;
   background:var(--panel); border:1px solid var(--border); border-radius:999px;
   padding:4px 12px; backdrop-filter:blur(8px); max-width:calc(100vw - 240px); }
+/* 节点路径 + 复制按钮（阶段二 D）；.clip-fallback = 复制兜底用的隐藏 textarea（不可用 display:none：选不中） */
+.modpath{display:flex;align-items:center;gap:8px;margin:6px 0 2px;flex-wrap:wrap}.modpath code{font:11px ui-monospace,Menlo,Consolas,monospace;color:var(--text);background:rgba(127,127,127,.08);border:1px solid var(--border);border-radius:6px;padding:4px 7px;word-break:break-all}.copybtn{font:inherit;font-size:11px;padding:4px 9px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text);cursor:pointer}.copybtn:hover{border-color:var(--accent)}.clip-fallback{position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;pointer-events:none}
 </style>
 </head>
 <body class="dark">
@@ -512,6 +527,27 @@ func renderJs(en: Bool): String {
     sb.append("  function escapeHtml(s) { var Q = String.fromCharCode(34); var A = String.fromCharCode(39);" +
         " return String(s).split('&').join('&amp;').split('<').join('&lt;')" +
         ".split('>').join('&gt;').split(Q).join('&quot;').split(A).join('&#39;'); }\n")
+    // ── 复制（阶段二 D）──
+    // file:// 页面没有剪贴板权限：navigator.clipboard 可能不存在，也可能在 writeText 时
+    // 被拒。两条路都走不通时用隐藏 textarea + execCommand('copy') 兜底（选中后执行复制
+    // 命令，不依赖权限）；再失败就在提示条里把原文显示出来，让人能手动选中复制。
+    sb.append("  var clipTA = null; var hintEl = document.getElementById('hint'); var hint0 = hintEl.textContent; var hintTimer = 0;\n")
+    sb.append("  function clipFallback(text) {\n")
+    sb.append("    try {\n")
+    sb.append("      if (!clipTA) { clipTA = document.createElement('textarea'); clipTA.className = 'clip-fallback'; clipTA.setAttribute('aria-hidden', 'true'); clipTA.setAttribute('tabindex', '-1'); clipTA.setAttribute('readonly', ''); document.body.appendChild(clipTA); }\n")
+    sb.append("      clipTA.value = text; clipTA.focus(); clipTA.select(); clipTA.setSelectionRange(0, text.length);\n")
+    sb.append("      var ok = document.execCommand('copy'); clipTA.blur(); return ok;\n")
+    sb.append("    } catch (e) { return false; }\n")
+    sb.append("  }\n")
+    sb.append("  function copyFeedback(ok, text) { hintEl.textContent = (ok ? COPIEDW : COPYFAILW) + ' ' + text; clearTimeout(hintTimer); hintTimer = setTimeout(function () { hintEl.textContent = hint0; }, 1800); }\n")
+    sb.append("  function copyText(text) {\n")
+    sb.append("    function fallback() { copyFeedback(clipFallback(text), text); }\n")
+    sb.append("    var async = false;\n")
+    sb.append("    try {\n")
+    sb.append("      if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(function () { copyFeedback(true, text); }, fallback); async = true; }\n")
+    sb.append("    } catch (e) { async = false; }\n")
+    sb.append("    if (!async) { fallback(); }\n")
+    sb.append("  }\n")
 
     sb.append("  function showPanel(m) {\n")
     sb.append("    if (!isArch() && m.external) return;\n")
@@ -526,6 +562,10 @@ func renderJs(en: Bool): String {
     sb.append("    else { h += '<div class=\"meta\">' + escapeHtml(m.lang) + '</div>'; }\n")
     sb.append("    var stats = isArch() ? (m.files + ' ' + FILES + ' · ' + m.symbols + ' ' + SYMS + ' · ' + m.lines + ' ' + LINES) : (m.symbols + ' ' + SYMS + ' · ' + m.lines + ' ' + LINES);\n")
     sb.append("    h += '<div>' + stats + '</div>';\n")
+    // 节点路径 + 复制按钮（阶段二 D）：架构级是模块路径，文件级子视图是文件路径；
+    // 外部节点的 id 带 @module: 前缀，复制时去掉——要的是路径，不是内部键
+    sb.append("    var pathWord = COPYFILEW; var copyVal = m.id; if (isArch()) { pathWord = COPYMODW; } if (copyVal.indexOf('@module:') === 0) { copyVal = copyVal.slice(8); }\n")
+    sb.append("    h += '<div class=\"modpath\"><code>' + escapeHtml(copyVal) + '</code><button class=\"copybtn\" data-copy=\"' + escapeHtml(copyVal) + '\">' + pathWord + '</button></div>';\n")
     // 治理信号一行（架构级）：入/出与不稳定度——数据在 archJson 里恒发，
     // 面板不显示就等于没说（不变量 17：披露必须有人渲染）
     sb.append("    if (isArch()) { h += '<div>' + INW + ' ' + (m.fanIn || 0) + ' / ' + OUTW + ' ' + (m.fanOut || 0) + ' · ' + INSTW + ' ' + (m.instability || 0) + '%</div>'; }\n")
@@ -538,6 +578,7 @@ func renderJs(en: Bool): String {
     sb.append("    ins.sort(function (a, b) { return b.weight - a.weight; }).forEach(function (e) { h += '<div class=\"dep\" data-id=\"' + escapeHtml(e.from) + '\"><span>' + escapeHtml(e.from) + '</span><span class=\"w\">' + e.weight + '</span></div>'; });\n")
     sb.append("    h += '<div class=\"meta\" style=\"margin-top:10px\">' + ESC + '</div>';\n")
     sb.append("    panel.innerHTML = h; panel.style.display = 'block';\n")
+    sb.append("    panel.querySelectorAll('[data-copy]').forEach(function (el) { el.addEventListener('click', function () { copyText(el.getAttribute('data-copy')); }); });\n")
     sb.append("    panel.querySelectorAll('.dep').forEach(function (el) { el.addEventListener('click', function () { var id = el.getAttribute('data-id'); var m2 = findNode(id); if (m2) { sel = m2.id; showPanel(m2); center(m2); } else if (id.indexOf('@module:') === 0) { setLevel('mod', id.slice(8)); } }); });\n")
     sb.append("  }\n")
     sb.append("  function hidePanel() { sel = null; panel.style.display = 'none'; }\n")
@@ -579,6 +620,8 @@ func renderJs(en: Bool): String {
     sb.append("  var HEALTHW = " + jsStr(t.healthWord) + ", FANINW = " + jsStr(t.fanInWord) + ", FANOUTW = " + jsStr(t.fanOutWord) + ";\n")
     sb.append("  var VIOLW = " + jsStr(t.violWord) + ", NOVIOLW = " + jsStr(t.noViolWord) + ", CYCW = " + jsStr(t.cycleWord) + ", NOCYCW = " + jsStr(t.noCycleWord) + ";\n")
     sb.append("  var LEGENDW = " + jsStr(t.legendText) + ", OTHERW = " + jsStr(t.otherLayerNote) + ";\n")
+    // 节点路径复制文案（ArchUi 单一来源）
+    sb.append("  var COPYMODW = " + jsStr(t.copyModuleWord) + ", COPYFILEW = " + jsStr(t.copyFileWord) + ", COPIEDW = " + jsStr(t.copiedWord) + ", COPYFAILW = " + jsStr(t.copyFailedWord) + ";\n")
     sb.append("  var en = " + (if (en) { "true" } else { "false" }) + ";\n")
     // ── 架构体检区（#bar 内整行）：总计 / 扇入 Top3 / 扇出 Top3 / 违规清单 / 环清单 ──
     // 全部从 DATA 现算——这份页面的数据就是 archJson，体检区不许另要第二份数据。

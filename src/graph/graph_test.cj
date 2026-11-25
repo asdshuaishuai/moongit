@@ -3991,3 +3991,112 @@ func __lintFindingJsonHasOneProducer(): Unit {
     @Assert(producers.size == 1)
     @Assert(producers[0] == "confidence.cj")
 }
+
+// MARK: - 热力图定位串与复制（阶段二 D）
+
+/// render/index.html（treehtml.cj 生成）的定位与复制钩子。
+///   ① 符号节点带成员级三键 qual / col / sig（id / line 原有）——恒发；
+///   ② 详情面板的定位区：定位串 相对路径:行:列（一键复制）、限定名、签名、「复制符号 ID」；
+///   ③ 复制带兜底：file:// 页面没有剪贴板权限——navigator.clipboard 不可用 / 被拒时走
+///      隐藏 textarea + execCommand('copy')；
+///   ④ 疑点按符号键绑到节点上（finding.id 优先，行号只作退路）；
+///   ⑤ 持久化产物里没有本机绝对路径：页面数据不内嵌 root（项目目录）。graph tree 的临时
+///      payload（兼容面）不变，root 仍是 graph tree --json / index gen --json 的契约键；
+///   ⑥ 复用判定的两个内嵌标记不受影响。
+/// 真实渲染与剪贴板行为由客户端 WebView 实拍验证（本机没有浏览器）；这里钉的是产物
+/// 含这些钩子，以及两种语言面各自的文案。
+@Test
+func testIndexHtmlSymbolLocatorAndCopyHooks(): Unit {
+    let root = testRoot()
+    try {
+        writeFileAtomic("${root}/a/util.kt", """
+package a
+
+class Util {
+    fun twice(x: Int): Int {
+        return x * 2
+    }
+}
+""")
+        let g = buildGraph(root)
+        let rep = analyzeConfidence(g, false)
+        let payload = indexPayloadForStore(g, 0, rep, sourceProbeNow(root), 0, "2026-11-25T00:00:00Z", false)
+        // ① 成员级三键
+        var sawTwice = false
+        for (fn in Json.arrAt(Json.getOr(payload, "functionGraph"), "functions")) {
+            @Assert(Json.has(fn, "qual") && Json.has(fn, "col") && Json.has(fn, "sig"))
+            if (Json.strAt(fn, "id", "") == "f:a/util.kt:4:twice") {
+                sawTwice = true
+                @Assert(Json.strAt(fn, "qual", "") == "Util.twice")
+                @Assert(Json.intAt(fn, "col", 0) == 9)
+                @Assert(Json.strAt(fn, "sig", "") == "fun twice(x: Int): Int")
+            }
+        }
+        @Assert(sawTwice)
+        // 契约键 root 在 payload 里（index gen --json 的出口照发）
+        @Assert(Json.strAt(payload, "root", "") == root)
+
+        // ② ③ ④ ⑤ ⑥
+        let html = renderIndexHtml(payload, None<JsonValue>, false)
+        @Assert(html.contains("function locatorSection"))
+        // 文案走 T 表（驱动里的注释是静态中文，两种语言面都有——断言锚在 T 表的键值上）
+        @Assert(html.contains("copySymbolId: \"复制符号 ID\""))
+        @Assert(html.contains("locator: \"定位串\""))
+        @Assert(html.contains("qualName: \"限定名\""))
+        @Assert(html.contains("data-copy="))
+        @Assert(html.contains("navigator.clipboard.writeText"))
+        @Assert(html.contains("document.execCommand('copy')"))
+        @Assert(html.contains("createElement('textarea')"))
+        @Assert(html.contains("clip-fallback"))
+        @Assert(html.contains("NODES[f.id].file === fe.path"))   // 按符号键绑疑点（行号只作退路）
+        @Assert(!html.contains(root))
+        @Assert(!html.contains("\"root\""))
+        match (renderIndexEmbeddedUpdateCount(html)) {
+            case Some(n) => @Assert(n == 0)
+            case None => @Assert(false)
+        }
+        @Assert(renderIndexEmbeddedGeneratedAt(html) == "2026-11-25T00:00:00Z")
+        // 确定性
+        @Assert(html == renderIndexHtml(payload, None<JsonValue>, false))
+
+        // ⑤ 兼容面：临时 payload 的形状不变（root 仍在）
+        let compat = treeCanvasHtml(g, 0, false, rep)
+        @Assert(compat.contains("\"root\""))
+        @Assert(compat.contains(root))
+
+        // 英文面
+        let en = renderIndexHtml(indexPayloadForStore(g, 0, rep, sourceProbeNow(root), 0, "2026-11-25T00:00:00Z", true),
+            None<JsonValue>, true)
+        @Assert(en.contains("copySymbolId: \"Copy symbol ID\""))
+        @Assert(en.contains("qualName: \"Qualified name\""))
+        @Assert(!en.contains("copySymbolId: \"复制符号 ID\""))
+    } finally {
+        removeTree(root)
+    }
+}
+
+/// 架构图（archhtml.cj 生成）：节点详情面板给模块路径 + 复制，复制带同样的兜底。
+@Test
+func testArchHtmlModulePathCopyHooks(): Unit {
+    let root = writeTree()
+    try {
+        let arch = buildArch(buildGraph(root))
+        layoutArch(arch)
+        let json = Json.pretty(archJson(arch, false))
+        let html = renderArchHtml(json, false)
+        @Assert(html.contains("复制模块路径"))
+        @Assert(html.contains("复制文件路径"))
+        @Assert(html.contains("data-copy="))
+        @Assert(html.contains("class=\"copybtn\""))
+        @Assert(html.contains("navigator.clipboard.writeText"))
+        @Assert(html.contains("document.execCommand('copy')"))
+        @Assert(html.contains("createElement('textarea')"))
+        @Assert(html.contains("clip-fallback"))
+        @Assert(html == renderArchHtml(json, false))
+        @Assert(renderArchHtml(json, true).contains("Copy module path"))
+        // 架构产物里没有本机绝对路径
+        @Assert(!html.contains(root))
+    } finally {
+        removeTree(root)
+    }
+}
