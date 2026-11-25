@@ -3418,6 +3418,158 @@ func testConfidenceGenQueryLifecycle(): Unit {
     }
 }
 
+/// JSON 对象的键集比对（升序逐项；expected 为空格分隔的键名）。
+func cliJsonKeysAre(o: JsonValue, expected: String): Bool {
+    func sortKeys(keys: ArrayList<String>): Unit {
+        var i: Int64 = 1
+        while (i < Int64(keys.size)) {
+            let v = keys[i]
+            var j: Int64 = i - 1
+            while (j >= 0 && keys[j] > v) {
+                keys[j + 1] = keys[j]
+                j -= 1
+            }
+            keys[j + 1] = v
+            i += 1
+        }
+    }
+    var got = ArrayList<String>()
+    match (o) {
+        case JObj(m) =>
+            for ((k, _) in m) { got.add(k) }
+        case _ => ()
+    }
+    let want = ArrayList<String>()
+    for (k in expected.split(" ")) { want.add(k) }
+    sortKeys(got)
+    sortKeys(want)
+    if (got.size != want.size) { return false }
+    var i: Int64 = 0
+    while (i < Int64(got.size)) {
+        if (got[i] != want[i]) { return false }
+        i += 1
+    }
+    return true
+}
+
+/// 阶段二 C：`render index --confidence` 的快照过期校验。
+///
+/// 快照依据的索引版本 != 当前索引版本 ⇒ **不叠加旧快照**（页面上找不到快照独有的键）、
+/// 回执 confidence=stale / staleConfidence=true / confidenceIndexUpdateCount=快照依据的版本；
+/// 同版 ⇒ overlay；不带 --confidence ⇒ embedded 且 staleConfidence=false（恒发）。
+/// 三种状态下回执键集相同（键集不随数据状态漂）。
+/// 复用判定含置信度状态指纹：同一索引版本下，快照由新变旧 / 重新生成 / 带不带
+/// --confidence 都必须重绘——否则回执里的 confidence/staleConfidence 描述的是
+/// **上一份请求**画出来的产物。
+@Test
+func testRenderIndexRejectsStaleConfidence(): Unit {
+    let base = "/tmp/deepgit-cfstale-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    func withConf(): JsonValue {
+        let a = Json.obj()
+        Json.set(a, "name", Json.of("cf-stale"))
+        Json.set(a, "confidence", Json.of(true))
+        return a
+    }
+    try {
+        let p = dbCliFixtureProject(base, "cf-stale")
+        let store = deepgitPath(["store", p.id])
+        let htmlPath = store + "/render/index.html"
+        let ctx = CliContext(ArrayList<String>(["render"]))
+        let receiptKeys = "confidence confidenceIndexUpdateCount generatedAt path project reused selfHealed staleConfidence updateCount"
+        // 快照独有的键：payload 内嵌的 confidence 块没有它，页面里出现 = 快照被叠上去了
+        let snapMark = "indexUpdateCount"
+
+        // ── ① 不带 --confidence：embedded；staleConfidence 恒发 false ──
+        let plain = renderIndexCore(p, false, false, "")
+        @Assert(cliJsonKeysAre(plain, receiptKeys))
+        @Assert(Json.strAt(plain, "confidence", "") == "embedded")
+        @Assert(!Json.boolAt(plain, "staleConfidence", true))
+        @Assert(Json.intAt(plain, "confidenceIndexUpdateCount", 0) == -1)
+        @Assert(!readFileTextOr(htmlPath, "").contains(snapMark))
+
+        // ── ② gen：快照与索引同版（都是首版）⇒ overlay ──
+        @Assert(cmdConfidence(ArrayList<String>(["gen", "cf-stale"]), ctx) == 0)
+        let fresh = renderIndexCore(p, true, false, "")
+        @Assert(cliJsonKeysAre(fresh, receiptKeys))
+        @Assert(Json.strAt(fresh, "confidence", "") == "overlay")
+        @Assert(!Json.boolAt(fresh, "staleConfidence", true))
+        @Assert(Json.intAt(fresh, "confidenceIndexUpdateCount", -1) == 0)
+        @Assert(readFileTextOr(htmlPath, "").contains(snapMark))
+
+        // ── ③ 源码变了：索引自愈成第 1 版，首版快照 ⇒ 过期，不叠加 ──
+        writeFileAtomic(p.path + "/src/a.cj", """
+package demo
+
+public func alpha(s: String): String {
+    return s
+}
+
+public func beta(): String {
+    return alpha("x")
+}
+
+public func gamma(): String {
+    return alpha("y")
+}
+""")
+        let stale = renderIndexCore(p, true, false, "")
+        @Assert(cliJsonKeysAre(stale, receiptKeys))
+        @Assert(Json.boolAt(stale, "selfHealed", false))
+        @Assert(Json.intAt(stale, "updateCount", -1) == 1)
+        @Assert(Json.strAt(stale, "confidence", "") == "stale")
+        @Assert(Json.boolAt(stale, "staleConfidence", false))
+        @Assert(Json.intAt(stale, "confidenceIndexUpdateCount", -1) == 0)
+        let staleHtml = readFileTextOr(htmlPath, "")
+        // 旧快照一个字节都没叠上去；页面如实说过期（与回执同一句）
+        @Assert(!staleHtml.contains(snapMark))
+        @Assert(staleHtml.contains("confidence=stale:0"))
+        @Assert(staleHtml.contains("confStaleNote"))
+        @Assert(staleHtml.contains(indexVersionLabel(0)))
+        @Assert(staleHtml.contains(indexVersionLabel(1)))
+
+        // ── ④ 过期状态下重跑：指纹相同 ⇒ 复用（产物里带着过期说明，复用是如实的）──
+        let staleAgain = renderIndexCore(p, true, false, "")
+        @Assert(Json.boolAt(staleAgain, "reused", false))
+        @Assert(Json.boolAt(staleAgain, "staleConfidence", false))
+
+        // ── ⑤ 重新 gen（快照依据第 1 版）：指纹变了 ⇒ 重绘并叠加 ──
+        @Assert(cmdConfidence(ArrayList<String>(["gen", "cf-stale"]), ctx) == 0)
+        let fresh2 = renderIndexCore(p, true, false, "")
+        @Assert(!Json.boolAt(fresh2, "reused", true))
+        @Assert(Json.strAt(fresh2, "confidence", "") == "overlay")
+        @Assert(Json.intAt(fresh2, "confidenceIndexUpdateCount", -1) == 1)
+        @Assert(readFileTextOr(htmlPath, "").contains(snapMark))
+
+        // ── ⑥ 同一索引、不带 --confidence：指纹不同 ⇒ 重绘（不复用叠了快照的那份）──
+        let plain2 = renderIndexCore(p, false, false, "")
+        @Assert(!Json.boolAt(plain2, "reused", true))
+        @Assert(Json.strAt(plain2, "confidence", "") == "embedded")
+        @Assert(!Json.boolAt(plain2, "staleConfidence", true))
+        @Assert(!readFileTextOr(htmlPath, "").contains(snapMark))
+
+        // ── ⑦ MCP render：同一份回执（staleConfidence / 快照依据的版本随 structured 文本带出）──
+        writeFileAtomic(p.path + "/src/a.cj", readFileTextOr(p.path + "/src/a.cj", "") + "\n// changed\n")
+        let mcpRes = mcpCallTool("render", withConf())
+        @Assert(!mcpIsError(mcpRes))
+        let mcpText = mcpTextOf(mcpRes)
+        @Assert(mcpText.contains("\"staleConfidence\": true"))
+        @Assert(mcpText.contains("\"confidence\": \"stale\""))
+        @Assert(mcpText.contains("\"confidenceIndexUpdateCount\": 1"))
+        @Assert(mcpText.contains("\"updateCount\": 2"))
+
+        // ── ⑧ 文本回执走同一条判定（过期说明打印一次，不抛异常）──
+        @Assert(cmdRender(ArrayList<String>(["index", "cf-stale", "--confidence"]), ctx) == 0)
+    } finally {
+        exitTestHome()
+        removePathIfExists(base + "/repo")
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
 /// MCP 新工具面回执：arch_gen / arch_query / index_gen / index_query /
 /// confidence_gen / confidence_query / render 走与 CLI 相同的内部函数，
 /// 回执只带事实与路径（HTML 落盘，不内塞全文）；旧 codegraph_* 别名仍可用。

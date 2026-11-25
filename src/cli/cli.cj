@@ -2477,7 +2477,9 @@ func cmdRender(rest: ArrayList<String>, ctx: CliContext): Int64 {
 ///    缺席则纯结构渲染 + 图例恒发「无置信度数据」）→ renderIndexHtml；
 /// ③ 复用判定：现有产物内嵌的 (updateCount, generatedAt) == index.json 的
 ///    同名两键且非 --force → 复用（不重写）；否则重绘。
-/// 返回回执 JSON（project/path/reused/updateCount/generatedAt/confidence/selfHealed）。
+/// 返回回执 JSON（project/path/reused/updateCount/generatedAt/confidence/
+/// staleConfidence/confidenceIndexUpdateCount/selfHealed）。
+/// confidence 四态：missing / stale / overlay / embedded；staleConfidence 恒发。
 func renderIndexCore(p: ProjectEntry, wantConf: Bool, force: Bool, outPath: String): JsonValue {
     let config = loadConfig()
     let en = isEnglish(config.language)
@@ -2515,6 +2517,17 @@ func renderIndexCore(p: ProjectEntry, wantConf: Bool, force: Bool, outPath: Stri
     // 置信度叠加（--confidence）：读到就换上；缺席不编数据，只打标记
     var confOpt: Option<JsonValue> = None<JsonValue>
     var confMissing = false
+    // 快照过期（阶段二 C）：快照依据的索引版本 != 当前索引版本 ⇒ 不叠加。
+    // 「当前索引版本」= index.json 自己的 updateCount（payloadCount）：它是本次
+    // 渲染的输入，快照必须与**这份输入**同版才算说同一件事；自愈刚重建过的话
+    // 它已经是新版本号，旧快照自然对不上。
+    // 读不出来（快照缺 indexUpdateCount / index.json 缺 updateCount）也算过期：
+    // 「读不出来」不许当「没变」——无法证明同版，就不许把一份来历不明的快照
+    // 叠到这一页上。
+    var confStale = false
+    var confSnapCount: Int64 = -1
+    // 本次渲染的置信度状态指纹：复用判定的一部分（见 renderIndexHtml 的 confTag）
+    var confTag = "embedded"
     if (wantConf) {
         var loaded = false
         match (readFileText(indexConfidencePathOf(p))) {
@@ -2529,12 +2542,28 @@ func renderIndexCore(p: ProjectEntry, wantConf: Bool, force: Bool, outPath: Stri
         }
         if (!loaded) {
             confMissing = true
+            confTag = "missing"
+        } else {
+            confSnapCount = Json.intAt(confOpt.getOrThrow(), "indexUpdateCount", -1)
+            if (payloadCount < 0 || confSnapCount < 0 || confSnapCount != payloadCount) {
+                confStale = true
+                // 不叠加：旧快照一个字节都不进这一页
+                confOpt = None<JsonValue>
+                confTag = "stale:" + confSnapCount.toString()
+            } else {
+                // 同一份索引上重新生成的快照是另一份数据（检测器升级 / --no-ast）：
+                // 指纹带快照自己的 generatedAt，快照换了旧产物就不复用
+                confTag = "overlay:" + Json.strAt(confOpt.getOrThrow(), "generatedAt", "")
+            }
         }
     }
 
     // ③ 复用判定：现有产物内嵌 (updateCount, generatedAt) == index.json 的
-    // 同名两键。版本号会在「db 与 index.json 双缺后重建」时从 0 重计，
+    // 同名两键，**且置信度状态指纹相同**。版本号会在「db 与 index.json 双缺后重建」时从 0 重计，
     // 单比版本号可能把旧 0 当新 0——时间戳参与比对，陈旧产物绝不复用。
+    // 指纹不同 = 旧产物不是「这一份请求」画出来的（没带 --confidence 画的、叠的是
+    // 上一个快照、或是快照还新鲜时画的）：复用它，回执里的 confidence /
+    // staleConfidence 就在描述一份不是这次请求的产物。
     var reuse = false
     let payloadGen = Json.strAt(payload, "generatedAt", "")
     if (!force && payloadCount >= 0 && !payloadGen.isEmpty() && fileExists(renderPath)) {
@@ -2543,17 +2572,23 @@ func renderIndexCore(p: ProjectEntry, wantConf: Bool, force: Bool, outPath: Stri
                 match (renderIndexEmbeddedUpdateCount(oldHtml)) {
                     case Some(oldCount) =>
                         reuse = oldCount == payloadCount &&
-                            renderIndexEmbeddedGeneratedAt(oldHtml) == payloadGen
+                            renderIndexEmbeddedGeneratedAt(oldHtml) == payloadGen &&
+                            renderIndexEmbeddedConfTag(oldHtml) == confTag
                     case None => reuse = false   // 无标记 = 旧产物/被改过，不可复用
                 }
             case None => reuse = false
         }
     }
     var html = ""
+    var staleNote = ""
+    if (confStale) {
+        staleNote = confidenceStaleNote(confSnapCount, payloadCount)
+    }
     if (reuse) {
         html = readFileTextOr(renderPath, "")
     } else {
-        html = renderIndexHtml(payload, confOpt, en, confMissing)
+        html = renderIndexHtml(payload, confOpt, en, confMissing, confStaleNote: staleNote,
+                               confTag: confTag)
         writeFileAtomic(renderPath, html)
     }
     // --out 导出副本（复用时也导——调用方要的是文件，不是「重新画一遍」）
@@ -2562,7 +2597,16 @@ func renderIndexCore(p: ProjectEntry, wantConf: Bool, force: Bool, outPath: Stri
     }
 
     let shownCount = if (payloadCount >= 0) { payloadCount } else { indexCurrentCount(p) }
-    let confState = if (confMissing) { "missing" } else if (confOpt.isSome()) { "overlay" } else { "embedded" }
+    // 四态：missing（缺席）/ stale（过期，未叠加）/ overlay（已叠加）/ embedded（没带 --confidence）
+    let confState = if (confMissing) {
+        "missing"
+    } else if (confStale) {
+        "stale"
+    } else if (confOpt.isSome()) {
+        "overlay"
+    } else {
+        "embedded"
+    }
     let o = Json.obj()
     Json.set(o, "project", Json.of(p.name))
     Json.set(o, "path", Json.of(renderPath))
@@ -2570,8 +2614,25 @@ func renderIndexCore(p: ProjectEntry, wantConf: Bool, force: Bool, outPath: Stri
     Json.set(o, "updateCount", Json.of(shownCount))
     Json.set(o, "generatedAt", Json.of(Json.strAt(payload, "generatedAt", "")))
     Json.set(o, "confidence", Json.of(confState))
+    // 恒发（不带 --confidence 时为 false）：缺键会被读成旧版本没有这个字段，
+    // 调用方只能把「没这个键」当成「没过期」。confState 是字符串枚举，这一对
+    // 布尔/数值让调用方不必解析中文说明就知道「该先跑 confidence gen」。
+    Json.set(o, "staleConfidence", Json.of(confStale))
+    // 快照依据的索引版本；没读到快照（没带 --confidence / 缺席）= -1。
+    // 与 updateCount（当前版本）成对：两者不等即 staleConfidence。
+    Json.set(o, "confidenceIndexUpdateCount", Json.of(confSnapCount))
     Json.set(o, "selfHealed", Json.of(healed))
     return o
+}
+
+/// 置信度快照过期的说明——CLI 文本回执与页面图例共用这一句（形状只有一份）。
+/// n = 快照依据的索引版本，m = 当前索引版本；< 0 = 读不出来（如实说未知，
+/// 不拿 0 冒充首版——「读不出来」与「第 0 版」是两件事）。
+func confidenceStaleNote(n: Int64, m: Int64): String {
+    let nLabel = if (n >= 0) { indexVersionLabel(n) } else { T("an unknown version", "未知版本") }
+    let mLabel = if (m >= 0) { indexVersionLabel(m) } else { T("an unknown version", "未知版本") }
+    return T("Confidence snapshot is stale (based on index ${nLabel}, current ${mLabel}) — run moongit confidence gen first",
+        "置信度快照过期（依据${nLabel}索引，当前${mLabel}）——先 moongit confidence gen")
 }
 
 /// `moongit render index <项目> [--confidence] [--force] [--out F]`。
@@ -2613,6 +2674,10 @@ func renderIndexCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
         if (confMissing) {
             printOut(T("  legend note: no confidence data (confidence.json absent) — structure only",
                 "  图例注明：无置信度数据（confidence.json 缺席）——本页只呈现结构"))
+        }
+        if (Json.boolAt(o, "staleConfidence", false)) {
+            // 与页面图例同一句（confidenceStaleNote 唯一构造点）
+            printOut("  ${confidenceStaleNote(Json.intAt(o, "confidenceIndexUpdateCount", -1), shownCount)}")
         }
     }
     return 0
@@ -3978,7 +4043,7 @@ func printHelp(): Unit {
     printOut("                           query <符号>（裸名 | Outer.method | id）| --file <路径> · search <模式> [--kind K] [--lang L] [--limit N] [--file F]")
     printOut("                           grep <文本> [--ignore-case] [--limit N] [--context K] [--glob G]（定字符串，不依赖索引）· refs <符号> · impact <符号> [--depth N] · file <路径>")
     printOut("  confidence <gen|query> <项目>   置信度：gen（confidence.json；索引过期先自动重建；--db 额外写 confidence.db）/ query（只读快照，过滤 --file/--symbol/--kind/--weight/--top）")
-    printOut("  render <arch|index> <项目>  用持久化 payload 渲染交付物（未变即复用；--force 重绘；render index --confidence 叠加 confidence.json）")
+        printOut("  render <arch|index> <项目>  用持久化 payload 渲染交付物（未变即复用；--force 重绘；render index --confidence 叠加 confidence.json）")
     printOut("  config <list|get|set> [k] [v]  配置（AI 预设等）")
     printOut("  verify [项目]            校验文档完整性（用户内容是否被改动）")
     printOut("  doctor                   环境自检")

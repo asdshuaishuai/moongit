@@ -521,8 +521,20 @@ public func renderIndexHtml(payload: JsonValue, confOpt: Option<JsonValue>, en: 
 /// payload 带 updateCount 时（index 持久化产物）在 HTML 注释里内嵌
 /// updateCount 与 generatedAt，供复用判定比对；graph tree 的临时 payload
 /// 没有这两个键，注释缺席（兼容面产物形状不变）。
+///
+/// 【置信度状态的三个入参（阶段二 C）】
+/// confStaleNote 非空 = --confidence 指定但快照依据的索引版本与当前不一致：
+/// 调用方**已经决定不叠加**（confOpt 传 None），这里只负责如实说——payload 打
+/// confStale 标记与这句说明（版本号 N/M 由调用方拼，页面不重算），图例的
+/// 图谱完整性一节恒发这一条。页面此时呈现的是 payload 里索引生成时的内嵌摘要。
+/// confTag = 本次渲染的置信度状态指纹（embedded / missing / stale:N /
+/// overlay:<快照 generatedAt>），非空且产物带 updateCount 时内嵌成第二行注释——
+/// 复用判定比它：置信度状态变了（快照重新生成 / 由新变旧 / 带不带 --confidence）
+/// 旧产物就不是「这一份请求」画出来的，不许复用。空串 = 兼容面（graph tree 的
+/// 临时 payload），不内嵌。
 public func renderIndexHtml(payload: JsonValue, confOpt: Option<JsonValue>, en: Bool,
-                            confMissing: Bool): String {
+                            confMissing: Bool, confStaleNote!: String = "",
+                            confTag!: String = ""): String {
     let root = payload
     match (confOpt) {
         case Some(c) => Json.set(root, "confidence", c)
@@ -530,6 +542,10 @@ public func renderIndexHtml(payload: JsonValue, confOpt: Option<JsonValue>, en: 
     }
     if (confMissing) {
         Json.set(root, "confMissing", Json.of(true))
+    }
+    if (!confStaleNote.isEmpty()) {
+        Json.set(root, "confStale", Json.of(true))
+        Json.set(root, "confStaleNote", Json.of(confStaleNote))
     }
     // 驱动双语：en 进 payload（applyTexts 用 T 表覆盖模板静态中文）
     Json.set(root, "en", Json.of(en))
@@ -544,6 +560,11 @@ public func renderIndexHtml(payload: JsonValue, confOpt: Option<JsonValue>, en: 
         metaComment = "<!-- moongit index render · updateCount=" +
             Int64(Json.intAt(root, "updateCount", 0)).toString() +
             " · generatedAt=" + Json.strAt(root, "generatedAt", "") + " -->\n"
+        // 置信度状态指纹另起一行：第一行注释的格式是 renderIndexEmbeddedGeneratedAt
+        // 的读取契约（读到 ` -->` 为止），往里追加字段会让它读回整段后缀
+        if (!confTag.isEmpty()) {
+            metaComment += "<!-- moongit index render · confidence=" + confTag + " -->\n"
+        }
     }
     let langTag = if (en) { "en" } else { "zh-CN" }
     let sb = StringBuilder()
@@ -678,6 +699,24 @@ public func renderIndexEmbeddedGeneratedAt(html: String): String {
     return html[from..end]
 }
 
+/// 从渲染产物读回内嵌的置信度状态指纹（第二行注释 `confidence=… -->`）。
+/// 与 renderIndexHtml 的写入是同一格式的一对。**只在首行注释之后找**：
+/// 页面数据里可能带有别的 `confidence=` 文本（疑点证据是外部字符串），
+/// 而首行注释恒在文档最前。找不到 = 旧版引擎的产物 / 兼容面产物，返回空串——
+/// 调用方按「置信度状态无法证明相同」处理，不复用。
+public func renderIndexEmbeddedConfTag(html: String): String {
+    let head = indexOfStrFrom(html, "<!-- moongit index render · updateCount=", 0)
+    if (head < 0) { return "" }
+    let marker = "<!-- moongit index render · confidence="
+    let a = indexOfStrFrom(html, marker, head)
+    if (a < 0) { return "" }
+    let from = a + marker.size
+    let end = indexOfStrFrom(html, " -->", from)
+    if (end < 0) { return "" }
+    // 指纹只含 ASCII（状态词 / 版本号 / ISO 时间戳），切片安全
+    return html[from..end]
+}
+
 /// 驱动：AI 置信度关系图（2026-10-12 按用户参考稿整体重做，完全替代
 /// 旧的「模块卡片/文件球/符号球」三视图）。信息架构 = 层级作用域钻取
 ///（project → module → file → symbol）+ 有序网格分层布局（关系聚类）+
@@ -779,6 +818,9 @@ func codegraphDriverJs(en: Bool): String {
         else { "同类每文件最多 6 条 / 全量最多 400 条，超出已汇总" }
     let tConfMissing = if (en) { "no confidence data in this render (confidence.json absent); structure only" }
         else { "无置信度数据（本次渲染未提供 confidence.json）——本页只呈现结构" }
+    // 快照过期：版本号 N/M 由引擎随数据下发（D.confStaleNote），本串只是兜底
+    let tConfStale = if (en) { "confidence snapshot is stale (based on another index version) — run moongit confidence gen" }
+        else { "置信度快照过期（依据的索引版本与当前不一致）——先 moongit confidence gen" }
     let tNoteTrunc = if (en) { "file cap reached — graph is partial, not full" } else { "文件数达上限——图谱不是全量" }
     let tNoteOver = if (en) { " oversize files excluded" } else { " 个超大文件未纳入" }
     let tNoteDepth = if (en) { " files omitted by --depth (raise it for more)" } else { " 个文件因 --depth 未纳入（提高可看更多）" }
@@ -823,7 +865,8 @@ func codegraphDriverJs(en: Bool): String {
         + ", toastBreathOn: " + jsStr(tToastBreathOn) + ", toastBreathOff: " + jsStr(tToastBreathOff)
         + ", noMatch: " + jsStr(tNoMatch) + ", ready: " + jsStr(tReady) + ", tmp: " + jsStr(tTmp)
         + ", indexed: " + jsStr(tIndexed) + ", evalAt: " + jsStr(tEvalAt) + ", capNote: " + jsStr(tCapNote)
-        + ", confMissingNote: " + jsStr(tConfMissing) + ", noteTrunc: " + jsStr(tNoteTrunc)
+        + ", confMissingNote: " + jsStr(tConfMissing) + ", confStaleNote: " + jsStr(tConfStale)
+        + ", noteTrunc: " + jsStr(tNoteTrunc)
         + ", noteOver: " + jsStr(tNoteOver) + ", noteDepth: " + jsStr(tNoteDepth) + ", noteUnread: " + jsStr(tNoteUnread)
         + ", nodes: " + jsStr(tNodes) + ", rels: " + jsStr(tRels) + ", typeCol: " + jsStr(tTypeCol)
         + ", boundaryOf: " + jsStr(tBoundaryOf)
@@ -2116,6 +2159,7 @@ function evidenceRows(n, limit) {
 function integrityNotes() {
   var notes = [];
   if (D.confMissing) { notes.push(T.confMissingNote || 'no confidence data'); }
+  if (D.confStale) { notes.push(D.confStaleNote || T.confStaleNote || 'stale confidence snapshot'); }
   if (!CONF.astUsed && CONF.astNote) { notes.push(CONF.astNote); }
   if (CONF.cappedTotal || CONF.cappedKind) { notes.push(T.capNote); }
   if (D.truncated) { notes.push(T.noteTrunc || 'file cap reached'); }
