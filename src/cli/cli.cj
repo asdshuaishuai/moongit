@@ -2604,9 +2604,11 @@ func renderIndexCore(p: ProjectEntry, wantConf: Bool, force: Bool, outPath: Stri
             case Some(oldHtml) =>
                 match (renderIndexEmbeddedUpdateCount(oldHtml)) {
                     case Some(oldCount) =>
+                        // 模板版本也参与：引擎升级后模板变了，输入没变的旧产物也要重画一次
                         reuse = oldCount == payloadCount &&
                             renderIndexEmbeddedGeneratedAt(oldHtml) == payloadGen &&
-                            renderIndexEmbeddedConfTag(oldHtml) == confTag
+                            renderIndexEmbeddedConfTag(oldHtml) == confTag &&
+                            renderEmbeddedTemplate(oldHtml) == RENDER_TEMPLATE
                     case None => reuse = false   // 无标记 = 旧产物/被改过，不可复用
                 }
             case None => reuse = false
@@ -2759,8 +2761,10 @@ func renderArchCore(p: ProjectEntry, force: Bool, outPath: String): JsonValue {
             case Some(oldHtml) =>
                 match (renderIndexEmbeddedUpdateCount(oldHtml)) {
                     case Some(oldCount) =>
+                        // 模板版本也参与（与热力图产物同一口径）
                         reuse = oldCount == payloadCount &&
-                            renderIndexEmbeddedGeneratedAt(oldHtml) == payloadGen
+                            renderIndexEmbeddedGeneratedAt(oldHtml) == payloadGen &&
+                            renderEmbeddedTemplate(oldHtml) == RENDER_TEMPLATE
                     case None => reuse = false
                 }
             case None => reuse = false

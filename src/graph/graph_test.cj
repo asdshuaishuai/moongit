@@ -3348,7 +3348,8 @@ func testTreeSymbolLayerDrillAndEdges(): Unit {
         @Assert(js.contains("confScore(pen, 1)"))
         // guessed 边独立类型且虚线动画（行军蚁 lineDashOffset）——不确定要看得出来
         @Assert(js.contains("'guessed' ? 'guessed' : 'call'"))
-        @Assert(js.contains("guessed: { label: T.relGuessed, color: '#ffc857', dash: [5, 4] }"))
+        // 颜色经 cv 取（嵌入模式下走宿主令牌），独立打开时回落到原来的黄
+        @Assert(js.contains("guessed: { label: T.relGuessed, color: cv('yellow', '#ffc857'), dash: [5, 4] }"))
         @Assert(js.contains("setLineDash(rel.dash)"))
         @Assert(js.contains("lineDashOffset"))
         // 作用域外的被调方 = boundary 节点聚合（不得静默丢边），带软上限

@@ -205,6 +205,8 @@ public func renderArchHtml(archJsonStr: String, en: Bool): String {
             Int64(Json.intAt(root, "updateCount", 0)).toString() +
             " · generatedAt=" + Json.strAt(root, "generatedAt", "") + " -->\n"
     }
+    // 模板版本另起一行（恒发，兼容面产物也带）：与热力图产物同一格式，复用判定比对它
+    metaComment += renderTemplateTag()
     let json = jsonSafeForEmbed(archJsonStr)
     let sb = StringBuilder()
 
@@ -277,11 +279,12 @@ body { background:var(--bg); color:var(--text); font:13px/1.5 -apple-system,'SF 
 /* 节点路径 + 复制按钮（阶段二 D）；.clip-fallback = 复制兜底用的隐藏 textarea（不可用 display:none：选不中） */
 .modpath{display:flex;align-items:center;gap:8px;margin:6px 0 2px;flex-wrap:wrap}.modpath code{font:11px ui-monospace,Menlo,Consolas,monospace;color:var(--text);background:rgba(127,127,127,.08);border:1px solid var(--border);border-radius:6px;padding:4px 7px;word-break:break-all}.copybtn{font:inherit;font-size:11px;padding:4px 9px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text);cursor:pointer}.copybtn:hover{border-color:var(--accent)}.clip-fallback{position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;pointer-events:none}
 </style>
+${archEmbedCss()}
 </head>
 <body class="dark">
-<canvas id="cv"></canvas>
+${embedBootstrapTag()}<canvas id="cv"></canvas>
 """)
-    sb.append("<div id=\"bar\"><span class=\"title\">${ui.title}</span><span class=\"sub\">${ui.sub} · ${totalFiles} ${ui.filesWord} / ${totalSymbols} ${ui.symWord} / ${totalLines} ${ui.lineWord}</span>")
+    sb.append("<div id=\"bar\"><span class=\"title\">${ui.title}</span><span class=\"sub\"><span class=\"sub-what\">${ui.sub} · </span><span class=\"sub-count\">${totalFiles} ${ui.filesWord} / ${totalSymbols} ${ui.symWord} / ${totalLines} ${ui.lineWord}</span></span>")
     // 层 chips：从 JSON 的 layers 数组现读（archJson 的 layers 与 lanes 同源——
     // 模板不再向 ArchData 要第二份计数）
     for (l in Json.arrAt(root, "layers")) {
@@ -317,7 +320,9 @@ func renderJs(en: Bool): String {
     sb.append("  var ctx = cv.getContext('2d');\n")
     sb.append("  var panel = document.getElementById('panel');\n")
     sb.append("  var crumbs = document.getElementById('crumbs');\n")
-    sb.append("  var dark = !window.matchMedia || !window.matchMedia('(prefers-color-scheme: light)').matches;\n")
+    sb.append("  var EMB = window.MOONGIT_EMBED, EMB_ON = !!(EMB && EMB.chrome === 'page'), CAN = (EMB_ON && EMB.canvas) || {};\n")
+    sb.append("  // 嵌入模式恒为暗色（宿主的外观由宿主决定）；独立打开时跟随系统\n")
+    sb.append("  var dark = EMB_ON ? true : (!window.matchMedia || !window.matchMedia('(prefers-color-scheme: light)').matches);\n")
     sb.append("  document.body.className = dark ? 'dark' : 'light';\n")
     sb.append("  var view = { x: 0, y: 0, k: 1 };\n")
     sb.append("  var level = { mode: 'arch', id: '' };\n")
@@ -329,14 +334,19 @@ func renderJs(en: Bool): String {
     sb.append("  DATA.modules.forEach(function (m, i) { byId[m.id] = m; layersOn[m.layer] = true; m._a = 0; m._s = 1; m._ord = i + 1; });\n")
     sb.append("  Object.keys(DATA.drilldown).forEach(function (k) { DATA.drilldown[k].nodes.forEach(function (n, i) { n._a = 0; n._s = 1; n._ord = i + 1; }); });\n")
     sb.append("  var PAL = {\n")
-    sb.append("    dark: { bg0:'#0d1526', bg1:'#080d1a', grid:'#1a2740', text:'#e8eef8', muted:'#8b9bb4', border:'#263650', arrow:'#64748b', accent:'#34d399',\n")
+    sb.append("    dark: { bg0:'#0d1526', bg1:'#080d1a', grid:'#1a2740', text:'#e8eef8', muted:'#8b9bb4', border:'#263650', arrow:'#64748b', accent:'#34d399', card:'rgba(13,21,38,0.92)', mini:'rgba(10,16,30,0.85)',\n")
     sb.append("      cols:['#38bdf8','#a78bfa','#34d399','#fbbf24','#8ea3bd'], fills:['rgba(56,189,248,0.10)','rgba(167,139,250,0.10)','rgba(52,211,153,0.10)','rgba(251,191,36,0.08)','rgba(142,163,189,0.08)'],\n")
     sb.append("      langs:{ " + langPaletteJs(true) + " } },\n")
-    sb.append("    light: { bg0:'#f7f9fd', bg1:'#eef2f8', grid:'#e2e8f2', text:'#0f172a', muted:'#64748b', border:'#d8e1ec', arrow:'#9aa8bd', accent:'#059669',\n")
+    sb.append("    light: { bg0:'#f7f9fd', bg1:'#eef2f8', grid:'#e2e8f2', text:'#0f172a', muted:'#64748b', border:'#d8e1ec', arrow:'#9aa8bd', accent:'#059669', card:'rgba(255,255,255,0.94)', mini:'rgba(255,255,255,0.9)',\n")
     sb.append("      cols:['#0284c7','#7c3aed','#059669','#d97706','#64748b'], fills:['rgba(2,132,199,0.07)','rgba(124,58,237,0.07)','rgba(5,150,105,0.07)','rgba(217,119,6,0.07)','rgba(100,116,139,0.07)'],\n")
     sb.append("      langs:{ " + langPaletteJs(false) + " } }\n")
     sb.append("  };\n")
-    sb.append("  function P() { return dark ? PAL.dark : PAL.light; }\n")
+    sb.append("  // 嵌入模式的调色板 = 暗色 + 宿主注入的覆盖项（canvas 键名同暗色调色板的键名）\n")
+    sb.append("  PAL.embed = PAL.dark;\n")
+    sb.append("  if (EMB_ON) { PAL.embed = {}; Object.keys(PAL.dark).forEach(function (k) { PAL.embed[k] = PAL.dark[k]; }); Object.keys(CAN).forEach(function (k) { PAL.embed[k] = CAN[k]; }); }\n")
+    sb.append("  function P() { return EMB_ON ? PAL.embed : (dark ? PAL.dark : PAL.light); }\n")
+    sb.append("  // 嵌入模式取景时避开顶部的命令条与四周留白（命令条换行时高度会变，取景时现量）\n")
+    sb.append("  function embTop() { if (!EMB_ON) { return 0; } var bar = document.getElementById('bar'); return bar ? bar.offsetHeight + 12 : 0; }\n")
     sb.append("  function langColor(l) { var L = P().langs; return L[l] || L.module; }\n")
     sb.append("  function ease(t) { if (t < 0) return 0; if (t > 1) return 1; return 1 - Math.pow(1 - t, 3); }\n")
     sb.append("  var START = performance.now(); var LEVEL_T = START;\n")
@@ -362,7 +372,7 @@ func renderJs(en: Bool): String {
     sb.append("  function w2sx(x) { return x * view.k + view.x; }\n")
     sb.append("  function w2sy(y) { return y * view.k + view.y; }\n")
     sb.append("  function bounds() { var d = cur(); var b = { x0: 1e9, y0: 1e9, x1: -1e9, y1: -1e9 }; d.nodes.forEach(function (m) { if (m.x < b.x0) b.x0 = m.x; if (m.y < b.y0) b.y0 = m.y; if (m.x + m.w > b.x1) b.x1 = m.x + m.w; if (m.y + m.h > b.y1) b.y1 = m.y + m.h; }); if (isArch() && DATA.lanes) { DATA.lanes.forEach(function (L) { if (L.x < b.x0) b.x0 = L.x; if (L.y < b.y0) b.y0 = L.y; if (L.x + L.w > b.x1) b.x1 = L.x + L.w; if (L.y + L.h > b.y1) b.y1 = L.y + L.h; }); } b.x0 -= 60; b.y0 -= 90; b.x1 += 60; b.y1 += 60; return b; }\n")
-    sb.append("  function fit() { var b = bounds(); var kx = innerWidth / (b.x1 - b.x0); var ky = innerHeight / (b.y1 - b.y0); var target = Math.min(kx, ky, 1.35); if (target < 0.18) target = 0.18; view.k = target; view.x = (innerWidth - (b.x0 + b.x1) * view.k) / 2; view.y = (innerHeight - (b.y0 + b.y1) * view.k) / 2; }\n")
+    sb.append("  function fit() { var b = bounds(); var pl = EMB_ON ? 24 : 0, pt = embTop(), pr = EMB_ON ? 24 : 0, pb = EMB_ON ? 44 : 0; var aw = innerWidth - pl - pr, ah = innerHeight - pt - pb; var kx = aw / (b.x1 - b.x0); var ky = ah / (b.y1 - b.y0); var target = Math.min(kx, ky, 1.35); if (target < 0.18) target = 0.18; view.k = target; view.x = pl + (aw - (b.x0 + b.x1) * view.k) / 2; view.y = pt + (ah - (b.y0 + b.y1) * view.k) / 2; }\n")
     sb.append("  function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }\n")
     sb.append("  function nodeColor(m) { return isArch() ? P().cols[m.layer] : (m.external ? P().langs.module : langColor(m.lang)); }\n")
     // 面包屑
@@ -460,7 +470,7 @@ func renderJs(en: Bool): String {
     sb.append("      ctx.globalAlpha = m._a * (dim ? 0.28 : 1);\n")
     sb.append("      if (isSel || isHot) { ctx.shadowColor = c; ctx.shadowBlur = isSel ? 22 : 14; }\n")
     sb.append("      roundRect(x, y, w, h, 11);\n")
-    sb.append("      ctx.fillStyle = dark ? 'rgba(13,21,38,0.92)' : 'rgba(255,255,255,0.94)'; ctx.fill();\n")
+    sb.append("      ctx.fillStyle = P().card; ctx.fill();\n")
     sb.append("      if (m.external) { ctx.setLineDash([5, 4]); }\n")
     sb.append("      ctx.lineWidth = isSel ? 2.4 : 1.2; ctx.strokeStyle = c; ctx.stroke(); ctx.setLineDash([]); ctx.shadowBlur = 0;\n")
     sb.append("      ctx.fillStyle = c; ctx.globalAlpha = m._a * (dim ? 0.28 : 0.95); ctx.fillRect(x, y + 9, 3.2, h - 18);\n")
@@ -501,7 +511,7 @@ func renderJs(en: Bool): String {
     sb.append("    var showMini = DATA.modules.length > 8;\n")
     sb.append("    var mx0 = innerWidth - MW - 14, my0 = innerHeight - MH - 14;\n")
     sb.append("    if (showMini) {\n")
-    sb.append("    ctx.globalAlpha = 0.85; ctx.fillStyle = dark ? 'rgba(10,16,30,0.85)' : 'rgba(255,255,255,0.9)';\n")
+    sb.append("    ctx.globalAlpha = 0.85; ctx.fillStyle = P().mini;\n")
     sb.append("    roundRect(mx0, my0, MW, MH, 10); ctx.fill(); ctx.strokeStyle = p.border; ctx.lineWidth = 1; ctx.stroke(); ctx.globalAlpha = 1;\n")
     sb.append("    var b = bounds(); var pad = 8;\n")
     sb.append("    var sc = Math.min((MW - pad * 2) / (b.x1 - b.x0), (MH - pad * 2) / (b.y1 - b.y0));\n")
@@ -604,6 +614,13 @@ func renderJs(en: Bool): String {
     sb.append("  cv.addEventListener('wheel', function (e) { e.preventDefault(); var f = e.deltaY < 0 ? 1.12 : 1 / 1.12; var nk = Math.max(0.12, Math.min(3.5, view.k * f)); var r = nk / view.k; view.x = e.clientX - (e.clientX - view.x) * r; view.y = e.clientY - (e.clientY - view.y) * r; view.k = nk; }, { passive: false });\n")
     sb.append("  window.addEventListener('keydown', function (e) { if (e.key === 'Escape') { if (!isArch()) setLevel('arch', ''); else hidePanel(); } });\n")
     sb.append("  window.addEventListener('resize', resize);\n")
+    // 嵌入模式：命令条的高度写进 --e-bar-h（换行时高度会变），面包屑 / 截断警示 / 详情面板按它定位
+    sb.append("  if (EMB_ON) {\n")
+    sb.append("    var embBar = document.getElementById('bar');\n")
+    sb.append("    var embSyncBar = function () { if (embBar) { document.documentElement.style.setProperty('--e-bar-h', embBar.offsetHeight + 'px'); } };\n")
+    sb.append("    embSyncBar();\n")
+    sb.append("    if (window.ResizeObserver) { new ResizeObserver(embSyncBar).observe(embBar); }\n")
+    sb.append("  }\n")
     sb.append("  document.querySelectorAll('.chip').forEach(function (el) {\n")
     sb.append("    var L = parseInt(el.getAttribute('data-layer'), 10); el.style.borderColor = P().cols[L];\n")
     sb.append("    el.addEventListener('click', function () { layersOn[L] = !layersOn[L]; el.className = layersOn[L] ? 'chip' : 'chip off'; }); });\n")
@@ -705,4 +722,49 @@ func jsStr(s: String): String {
     }
     out.add(34)
     return fromUtf8Lossy(out.toArray())
+}
+
+/// 架构图产物（render/arch.html）的嵌入样式：只对 html[data-embed="page"] 生效（契约见 treehtml.cj 的 embedBootstrapJs）。
+/// 悬浮的玻璃条改成贴顶的命令条：标题与说明文字不显示（宿主页头已有），只留分层筛选、搜索、复位与体检摘要；
+/// 主题切换不显示（嵌入时恒为暗色）；面包屑、图例、详情面板换成宿主的卡片与描边。
+func archEmbedCss(): String {
+    return """
+<style id="embed-style">
+html[data-embed="page"] body{background:var(--bg);font-family:var(--sans);font-size:12px}
+html[data-embed="page"] ::selection{background:var(--accent);color:#111}
+html[data-embed="page"] button:focus-visible,html[data-embed="page"] input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+html[data-embed="page"] #bar{position:absolute;top:0;left:0;right:0;max-width:none;min-height:44px;padding:0 20px;gap:8px;background:transparent;border:0;border-bottom:1px solid var(--border);border-radius:0;backdrop-filter:none;flex-wrap:wrap}
+html[data-embed="page"] #bar .title{display:none}
+html[data-embed="page"] #bar .sub-what{display:none}
+html[data-embed="page"] #bar .sub{font-size:12px;color:var(--muted);white-space:nowrap}
+html[data-embed="page"] #bar input{width:200px;height:28px;padding:0 10px;font-size:12px;background:transparent;border:1px solid var(--border);border-radius:4px;color:var(--text)}
+html[data-embed="page"] #bar input::placeholder{color:var(--muted)}
+html[data-embed="page"] .chip{font-size:12px;padding:4px 10px;border-radius:4px;background:transparent;border:1px solid var(--border);color:var(--text)}
+html[data-embed="page"] .chip:hover,html[data-embed="page"] .btn:hover{border-color:var(--text);background:var(--e-hover,rgba(255,255,255,.06))}
+html[data-embed="page"] .btn{font-size:12px;height:28px;padding:0 10px;border-radius:4px;background:transparent;border:1px solid var(--border);color:var(--text)}
+html[data-embed="page"] #th{display:none}
+/* 体检摘要单独一行、左对齐，上面一条 hairline（与命令条分层）；
+   第一组是总量（模块 / 文件 / 符号 / 行数），与命令条第一行重复，不显示 */
+html[data-embed="page"] #health .hgroup:first-child{display:none}
+
+html[data-embed="page"] #health{width:100%;flex:0 0 100%;justify-content:flex-start;gap:4px 16px;border-top:1px solid var(--border);margin-top:6px;padding-top:5px}
+html[data-embed="page"] #bar .hlabel,html[data-embed="page"] #bar .hval,html[data-embed="page"] #bar .hbad,html[data-embed="page"] #bar .hok{font-size:12px}
+/* 面包屑贴在命令条下方（命令条的高度由驱动写进 --e-bar-h），不与左下角的图例抢位置 */
+html[data-embed="page"] #crumbs{top:calc(var(--e-bar-h,44px) + 8px);bottom:auto;left:20px;border-radius:6px;background:var(--e-card,#292929);backdrop-filter:none;font-size:12px;padding:5px 10px}
+html[data-embed="page"] #crumbs a{color:var(--accent)}
+html[data-embed="page"] #hint{right:20px;bottom:12px;left:auto;transform:none;font-size:12px;color:var(--muted);background:var(--e-card,#292929);border-radius:6px;border:1px solid var(--border);backdrop-filter:none;padding:4px 12px;white-space:nowrap}
+html[data-embed="page"] #legend{bottom:12px;left:20px;max-width:calc(100vw - 300px);font-size:12px;line-height:1.5;color:var(--muted);background:var(--e-card,#292929);border-radius:6px;border:1px solid var(--border);backdrop-filter:none;padding:5px 12px}
+html[data-embed="page"] #truncbar{top:calc(var(--e-bar-h,44px) + 8px);right:20px}
+html[data-embed="page"] #panel{top:calc(var(--e-bar-h,44px) + 12px);right:20px;width:300px;max-height:calc(100vh - 72px);background:var(--e-card,#292929);border:1px solid var(--border);border-radius:8px;backdrop-filter:none;padding:14px 16px;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+html[data-embed="page"] #panel h2{font-size:14px}
+html[data-embed="page"] #panel .meta{font-size:12px}
+html[data-embed="page"] #panel h3{font-size:11px;letter-spacing:.02em;text-transform:none;color:var(--muted)}
+html[data-embed="page"] .dep{border-radius:4px;padding:4px 8px;font-size:12px}
+html[data-embed="page"] .dep:hover{background:var(--e-hover,rgba(255,255,255,.06))}
+html[data-embed="page"] .langtag{font-size:11px;border-radius:4px;padding:1px 6px;color:var(--muted)}
+html[data-embed="page"] .modpath code{font-size:11px;border-radius:4px;padding:4px 8px}
+html[data-embed="page"] .copybtn{font-size:12px;height:26px;padding:0 10px;border-radius:4px}
+html[data-embed="page"] .copybtn:hover{border-color:var(--text);background:var(--e-hover,rgba(255,255,255,.06))}
+</style>
+"""
 }

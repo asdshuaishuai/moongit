@@ -323,6 +323,29 @@ moongit version                   引擎版本号
 引擎不叠加旧快照，这一页就没有热力图。CMP 客户端在 `renderGraph` 里做了这一步自愈。
 `graph confidence --json` 的每条 finding 有 10 个键（`id` / `qual` 可为空串）：镜像要么接住，要么显式豁免。
 
+图谱产物可以**内嵌**进宿主页面（CMP 客户端的两张图谱页就是这么做的）。原样塞进去时，产物自带的
+页头、工具条、面包屑、技术状态条会和宿主的外壳叠在一起，配色也不是一套；所以由产物自己适配宿主——
+宿主在产物**任何脚本之前**（`<head>` 最前面）声明：
+
+```js
+window.MOONGIT_EMBED = {
+  chrome: "page",            // 收拢外壳：一条命令条 + 画布 + 一条面包屑条；不声明 = 独立完整版
+  vars:   { "--bg": "#1f1f1f", "--text": "#ffffff", "--cyan": "#60cdff", /* … */ },
+  canvas: { bg: "#1f1f1f", atmosphere: false, radius: 8, red: "#ff99a4", /* … */ }
+};
+```
+
+- `vars` 是 CSS 自定义属性，产物把它们写进 `<html>` 与 `<body>` 的内联样式。变量名见两份产物各自的
+  `:root`（热力图：`--bg / --panel / --line / --line2 / --text / --muted / --muted2 / --green / --yellow /
+  --red / --cyan / --radius / --sans / --mono`；架构图：`--bg / --grid / --text / --muted / --panel /
+  --border / --accent / --arrow / --chip`），多余的无害。
+- `canvas` 是画在 canvas 上的颜色与圆角（CSS 管不到像素）：键名见驱动里 `cv(key, 原值)` 的调用处；
+  架构图是它的暗色调色板的键名（`bg0 / bg1 / grid / text / muted / border / arrow / accent / cols / fills / card / mini`）。
+- 宿主**不要**覆写产物内部的类名与结构（`AGENTS.md` 不变量 155）：适配由产物负责，老引擎的产物
+  不认识这份声明，按独立版渲染，不会坏。
+- 产物的复用判定比对**模板版本**（注释行 `<!-- moongit render · template=N -->`）：引擎升级后模板变了，
+  输入没变的旧产物也会重画一次，不会一直复用旧外壳。
+
 ## 它怎么判断「进度」
 
 | 状态 | 判定 |
@@ -371,7 +394,7 @@ scripts/      install.sh / moongit.sh / build-minimal-sdk.sh / package-release.s
 ## 构建细节与已知边界
 
 见 [AGENTS.md](AGENTS.md)（仓颉编码约定、macOS SDK 兼容；测试基线以 `cjpm test` 实跑为准，
-v0.3.0 为 723 项——Linux 上有 3 条环境性红用例，见下）。
+v0.3.0 为 725 项——Linux 上有 3 条环境性红用例，见下）。
 
 - SHA-256 自研（通过官方测试向量），不用于密码学安全场景。
 - AI 摘要质量取决于提交信息质量。
@@ -426,7 +449,7 @@ v0.3.0 为 723 项——Linux 上有 3 条环境性红用例，见下）。
   `testExecCaptureTerminatesTimedOutProcess`、`testExecCaptureTimeoutIsATotalBoundNotPerPhase`
   ——`/bin/sh` 是 dash，不认 `exec -a`；`testDocWriteFailureStillPersistsProgressToStore`
   ——没有 `chflags uchg`，「把文件锁成只读再写」这个前提造不出来（文档照常写成，
-  拿不到 `DOC_WRITE_FAILED`）。本轮在 Linux 上实跑 720/723；macOS 上未实跑。
+  拿不到 `DOC_WRITE_FAILED`）。本轮在 Linux 上实跑 722/725；macOS 上未实跑。
 - **`graph arch` 系列的内存**：`--format json | html | scene` 会把整个图谱**加上每个模块的
   文件级下钻**都序列化出来，内存需求随仓库规模上涨。**仓颉运行时的默认堆上限偏小**，
   大仓库会 `OutOfMemoryError` —— 这不是算法问题：用 `cjHeapSize` 提高堆即可
