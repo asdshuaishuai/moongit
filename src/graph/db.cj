@@ -43,7 +43,7 @@ public let CONFIDENCE_DB_GENERATOR: String = "moongit confidence db v2"
 // ─────────────────────────────────────────────────────────────────
 // A0. store_meta —— index 的持久化元数据（codegraph.db 内）
 //
-//   store_meta(key, value)   source_probe / update_count / generated_at / depth
+//   store_meta(key, value)   source_probe / update_count / generated_at / depth / payload_shape
 //
 // 与 graph db 自己的 meta（generator/project/root/files/symbols）分开：
 // meta 回答「这个库是谁写的、装了什么」，store_meta 回答「这份索引是
@@ -60,12 +60,18 @@ public struct IndexMeta {
     public let updateCount: Int64     // 无记录 = -1
     public let generatedAt: String    // 无记录 = ""
     public let depth: Int64           // 生成时的 --depth（重建时复用同一口径）；无记录 = -1
+    /// 写这份索引的引擎认不认「函数节点的成员级三键」（0.3.0 起 = 1；无记录 = 0）。
+    /// 库与 index.json 是同一次写出来的，所以这一行同时是 payload 形状的见证：
+    /// 更早的构建留下的索引即使探针一致、库也是 v2，画出的页面也没有定位列与签名。
+    public let payloadShape: Int64
 
-    public init(probeText: String, updateCount: Int64, generatedAt: String, depth: Int64) {
+    public init(probeText: String, updateCount: Int64, generatedAt: String, depth: Int64,
+                payloadShape!: Int64 = 0) {
         this.probeText = probeText
         this.updateCount = updateCount
         this.generatedAt = generatedAt
         this.depth = depth
+        this.payloadShape = payloadShape
     }
 
     /// 探针是否可解析。False = 库里没有可用的探针记录——
@@ -99,6 +105,7 @@ public func indexMetaRead(dbPath: String): Option<IndexMeta> {
     var updateCount: Int64 = -1
     var generatedAt = ""
     var depth: Int64 = -1
+    var payloadShape: Int64 = 0
     try {
         let stOpt = db.prepare("SELECT value FROM store_meta WHERE key = ?")
         if (stOpt.isNone()) { return None }
@@ -121,11 +128,15 @@ public func indexMetaRead(dbPath: String): Option<IndexMeta> {
             case Some(n) => depth = n
             case None => depth = -1
         }
+        match (metaInt(readOne("payload_shape"))) {
+            case Some(n) => payloadShape = n
+            case None => payloadShape = 0
+        }
         st.finalize()
     } finally {
         db.close()
     }
-    return Some(IndexMeta(probeText, updateCount, generatedAt, depth))
+    return Some(IndexMeta(probeText, updateCount, generatedAt, depth, payloadShape: payloadShape))
 }
 
 // ─────────────────────────────────────────────────────────────────

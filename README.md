@@ -371,7 +371,7 @@ scripts/      install.sh / moongit.sh / build-minimal-sdk.sh / package-release.s
 ## 构建细节与已知边界
 
 见 [AGENTS.md](AGENTS.md)（仓颉编码约定、macOS SDK 兼容；测试基线以 `cjpm test` 实跑为准，
-v0.3.0 为 722 项——Linux 上有 3 条环境性红用例，见下）。
+v0.3.0 为 723 项——Linux 上有 3 条环境性红用例，见下）。
 
 - SHA-256 自研（通过官方测试向量），不用于密码学安全场景。
 - AI 摘要质量取决于提交信息质量。
@@ -407,6 +407,9 @@ v0.3.0 为 722 项——Linux 上有 3 条环境性红用例，见下）。
   · 嵌套函数与 lambda 不入符号表（里面的调用挂在最外层函数上）；构造函数不入表——构造函数体内的
     疑点没有符号键（探针上 400 条里 9 条）；Qt 的 `emit sig(` 被当成声明；全大写加下划线的名字
     按形状当作宏丢弃（探针上碰巧都对，但依据是长相不是事实）。
+  · **「新鲜」也看数据形状**：更早的构建留下的索引（函数节点没有成员级三键）即使源码没变也会被
+    自动重建一次——见证是 `codegraph.db` 里 `store_meta` 的 `payload_shape` 行，不去读 index.json
+    （5MB 的 payload 光解码 UTF-8 就要约 0.35 秒，而 `index query` 每次都要过新鲜度判定）。
   · **卷可达性预检靠起 `stat` 进程、预算 1.2 秒**：机器高负载时会把可达的卷判成超时并缓存 60 秒
     （两套全量测试并行时实测复现过一次，单独重跑即绿）。
   · MCP 工具尚未声明 `outputSchema`（形状靠 `structuredContent` 与描述文字约定）；
@@ -423,7 +426,7 @@ v0.3.0 为 722 项——Linux 上有 3 条环境性红用例，见下）。
   `testExecCaptureTerminatesTimedOutProcess`、`testExecCaptureTimeoutIsATotalBoundNotPerPhase`
   ——`/bin/sh` 是 dash，不认 `exec -a`；`testDocWriteFailureStillPersistsProgressToStore`
   ——没有 `chflags uchg`，「把文件锁成只读再写」这个前提造不出来（文档照常写成，
-  拿不到 `DOC_WRITE_FAILED`）。本轮在 Linux 上实跑 719/722；macOS 上未实跑。
+  拿不到 `DOC_WRITE_FAILED`）。本轮在 Linux 上实跑 720/723；macOS 上未实跑。
 - **`graph arch` 系列的内存**：`--format json | html | scene` 会把整个图谱**加上每个模块的
   文件级下钻**都序列化出来，内存需求随仓库规模上涨。**仓颉运行时的默认堆上限偏小**，
   大仓库会 `OutOfMemoryError` —— 这不是算法问题：用 `cjHeapSize` 提高堆即可

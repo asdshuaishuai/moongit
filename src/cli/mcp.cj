@@ -120,7 +120,7 @@ public func mcpToolList(): JsonValue {
     arr.add(mcpTool("arch_query", "架构查询：不带 module 出总览（模块 fanIn/fanOut/instability + 违规/环计数）；给 module 出单模块详情（入/出依赖逐条 + 权重）；violations=true 出违规对全清单 + 环上模块（0 条明说）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("module", "string", "模块名（目录名）"), ("violations", "boolean", "只看违规与环"), ("json", "boolean", "返回 JSON（默认 true）")], ["name"])))
     arr.add(mcpTool("index_gen", "符号级索引生成：写 codegraph.db（store_meta 含探针/版本/时间）+ index.json，返回统计（文件/符号/边/版本明话）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("depth", "integer", "目录深度，默认 6"), ("format", "string", "json|tree（回执视图），默认 json"), ("db", "boolean", "写库（默认 true）")], ["name"])))
     arr.add(mcpTool("index_update", "索引增量更新：源探针一致则跳过（已最新），过期/缺失则重建（版本 +1）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("force", "boolean", "源未变也强制重建")], ["name"])))
-    arr.add(mcpTool("index_overview", "索引总览：db 的 SQL 聚合统计（符号/调用边/文件/按种类分桶）+ 版本与探针；探针过期先自动重建", mcpSchemaObject([("name", "string", "项目名或 ID")], ["name"])))
+    arr.add(mcpTool("index_overview", "索引总览：db 的 SQL 聚合统计（符号/调用边/文件/按种类分桶）+ 版本与探针；索引过期（源码变了 / 旧结构 / 旧数据形状）先自动重建", mcpSchemaObject([("name", "string", "项目名或 ID")], ["name"])))
     arr.add(mcpTool("index_query", "索引查询：symbol 模式 = 定义处（id/qual/file:line:col/签名/可见性/声明处）+ 调用方 + 被调（每条带确信度 tier 与调用点 file:line:col）；裸名命中多个定义时 ambiguous=true 且 perDef 逐定义给出调用关系。file 模式 = 该文件符号大纲 + 调入/调出文件与权重。查不到报错，不编结果", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号：裸名、限定名（Outer.method）或 index_search 给出的 id（与 file 二选一）"), ("file", "string", "文件相对路径（与 symbol 二选一）")], ["name"])))
     // ── 成员级索引的查询工具面（只读）──
     // 典型链路：index_search 拿到 qual/id → index_query 看定义与调用关系 →

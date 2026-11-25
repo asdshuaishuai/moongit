@@ -1517,6 +1517,10 @@ func indexVersionLabel(n: Int64): String {
 }
 
 /// index 重建的唯一路径：gen / update 过期 / overview·query·render 自愈共用。
+/// 写进 store_meta 的 payload 形状号：这份索引的 index.json 里函数节点带成员级三键
+/// （qual / col / sig，热力图的定位列与签名靠它）。形状再变就 +1——旧号一律视为过期重建。
+let PAYLOAD_SHAPE: Int64 = 1
+
 /// 计算（含探针，一次扫描）→ 写 codegraph.db（store_meta 全套）+ index.json。
 /// 返回 (新版本号, 探针)。prevCount < 0（库里无记录）→ 从 0 起版；
 /// 否则旧值 +1——版本号单调递增，render 的复用判定靠它区分「index 变了没有」。
@@ -1533,6 +1537,7 @@ func indexRebuild(p: ProjectEntry, depth: Int64, prevCount: Int64): (Int64, Sour
     metaRows.add(("update_count", Json.of(count)))
     metaRows.add(("generated_at", Json.of(generatedAt)))
     metaRows.add(("depth", Json.of(depth)))
+    metaRows.add(("payload_shape", Json.of(PAYLOAD_SHAPE)))
     let dbPath = indexDbPathOf(p)
     if (!graphDbWriteWithMeta(dbPath, graph, Json.getOr(payload, "functionGraph"), metaRows)) {
         throw DgError("INDEX_DB_FAILED", T(
@@ -1604,7 +1609,11 @@ func indexProbeFresh(p: ProjectEntry): (Bool, Option<SourceProbe>, Option<Source
         case Some(m) =>
             match (m.probe()) {
                 case Some(old) =>
-                    if (probeMatches(old, now) && schemaCurrent) {
+                    // payload 的形状也是新鲜度的一部分（见 IndexMeta.payloadShape）：
+                    // 更早的构建留下的索引即使探针一致、库也是 v2，画出的页面也没有定位列与签名。
+                    // 不去读 index.json 来判——5MB 的 payload 光解码 UTF-8 就要 0.35 秒，
+                    // 而 index query 每次都要过这里；库与 payload 是同一次写出来的，meta 行就是见证。
+                    if (probeMatches(old, now) && schemaCurrent && m.payloadShape >= PAYLOAD_SHAPE) {
                         return (true, Some(old), Some(now))
                     }
                     return (false, Some(old), Some(now))
@@ -3090,7 +3099,7 @@ func indexOverviewCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
         return 0
     }
     let healedNote = if (healed) {
-        T(" (probe stale — index rebuilt automatically)", "（探针过期——已自动重建索引）")
+        T(" (index stale — rebuilt automatically)", "（索引过期——已自动重建索引）")
     } else {
         ""
     }

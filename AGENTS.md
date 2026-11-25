@@ -39,8 +39,8 @@ export SDKROOT="$HOME/.local/share/sdks/MacOSX.minimal/latest"  # macOS 26/27+ �
 
 cd engine
 cjpm build          # 构建 → target/release/bin/main
-cjpm test           # 722 项测试（graph 154 / kernel 258 / flow 95 / util 101 / cli 114）
-                    # Linux 上恰好 3 条环境性红（719/722），见不变量 148
+cjpm test           # 723 项测试（graph 154 / kernel 258 / flow 95 / util 101 / cli 115）
+                    # Linux 上恰好 3 条环境性红（720/723），见不变量 148
                       # ⚠️ 必须带 DEEPGIT_HOME，见下方红线
 cjpm build -i       # 增量构建（改单文件时更快）
 ```
@@ -3130,7 +3130,7 @@ version 字段没法引用代码常量 ⇒ 由**测试**钉死两处同值（改
   会干扰判断。要根治：给测试基类加 `defer` 清理，或统一走一个 `withSandbox` 辅助函数。
   临时清法：`mavis-trash -- /tmp/dg_<前缀>_<某次时间戳前缀>`（逐个传，批量会报假失败）。
 - **Linux 上恰好 3 条环境性红用例**（夹具依赖 macOS / bash 的行为，不是功能坏了）：
-  全量 `cjpm test --parallel 1` 的验收口径是 719/722。明细与处置见不变量 148。
+  全量 `cjpm test --parallel 1` 的验收口径是 720/723。明细与处置见不变量 148。
 - **高负载下会多一条假红**：两套全量测试并行时 `testVolumeCacheIsSafeUnderConcurrentAccess` 会红——
   卷可达性预检靠起 `stat` 进程、预算 1.2 秒，机器被占满时超时被当成「不可达」。
   验收前不要并行跑两套；单独重跑即绿。预检本身的这个薄弱点记在 `docs/ROADMAP.md`。
@@ -3395,7 +3395,7 @@ FFI 标记）来封杀 foreign 导入。阶段一的成员级夹具用了注解 
 三条红的都是**夹具造不出前提**，不是功能坏了——引擎的超时路径另有用例且是绿的
 （`testExecCaptureTimeoutActuallyTimesOut` 等）。
 ⇒ 判据：
-1. 本机全量 `cjpm test --parallel 1` 的验收口径是 **719/722、红的恰好是这 3 条**——多一条、少一条都要查；
+1. 本机全量 `cjpm test --parallel 1` 的验收口径是 **720/723、红的恰好是这 3 条**——多一条、少一条都要查；
 2. 要在 Linux 上变绿，正规修法是改**夹具**（`/bin/sh` 换成 `bash`、不可写手段换成 `chattr +i` 或目录权限），
    不是改断言；动夹具前先在 macOS 上确认它还绿；
 3. 新写的用例不要依赖某平台才有的 shell 特性 / 命令；实在要依赖，在本表登记。
@@ -3478,3 +3478,22 @@ struct / enum / class / interface）：类型被当类型用（声明 / 泛型 /
    实拍验证（本机没有浏览器——桩 DOM 跑通不等于真浏览器跑通）。
 ⇒ 推广：凡是「写出去就离开本机」的东西（HTML、Markdown 报告、导出的 JSON），交付前 grep 一遍
 home 目录与临时目录。
+
+### 不变量 154 · 「新鲜」要覆盖**数据形状**，不只是输入探针；热路径上不许靠读大文件来判新鲜度
+
+真机实拍抓到：装上新引擎后，热力图的定位串没有列号、也不显示签名。查出来是持久化的索引 payload
+（index.json）是更早的构建写的——函数节点还没有成员级三键；新鲜度判定只看「源码探针没变、库是 v2」，
+于是照样复用。探针一致 ≠ 数据形状一致。
+⇒ 判据：
+1. 新鲜度 = 输入探针一致 ∧ 存储结构是当前版本 ∧ **数据形状是当前版本**（`IndexMeta.payloadShape`）；
+   三者任一不满足或读不出来都判过期重建；
+2. 形状号写进 `store_meta`（`payload_shape`），与库、payload 同一次落盘——它就是 payload 形状的见证；
+   形状再变就 +1，旧号一律过期；
+3. **不要在热路径上读 payload 来判形状**。实测：5MB 的 payload 光 `fromUtf8Lossy` 就要约 0.35 秒，
+   `index query` 每次都要过新鲜度判定；第一版写成「读出文本再找特征」后查询从约 40ms 涨到约 1.1 秒；
+4. 在循环里反复调 `String.indexOf(needle, from)` 会退化成 O(n²)——每次调用都重新扫整串。
+   单遍扫描先 `toArray()` 一次；但本条的正确解法是根本不读那 5MB；
+5. 判据：`testIndexStalePayloadShapeIsRebuilt`（抹掉 `payload_shape` 行 ⇒ 探针一致也判过期、重建一次、
+   形状号回写；再查不再重建）。负控：去掉形状条件即红在 `!fresh`。
+⇒ 推广：派生数据（payload、缓存、快照）加字段时，问一句「旧实例怎么被识别出来」——
+答不出就是升级后静默降级；并且「识别」的代价要和读取频率相称。

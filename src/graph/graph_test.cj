@@ -3634,6 +3634,7 @@ func testStoreMetaRoundTrip(): Unit {
             case Some(m) =>
                 @Assert(m.updateCount == -1)
                 @Assert(m.probeText.isEmpty())
+                @Assert(m.payloadShape == 0)      // 没有这一行 = 0（更早的构建写的）
             case None => @Assert(false)
         }
         // 库不存在

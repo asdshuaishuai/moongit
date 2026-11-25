@@ -2891,13 +2891,13 @@ func testIndexGenUpdateLifecycle(): Unit {
                 @Assert(Json.intAt(pl, "updateCount", -1) == 0)
             case None => @Assert(false)
         }
-        // db 行数与写入同源（nodes ≥ 2 / edges ≥ 1 / store_meta 4 键）
+        // db 行数与写入同源（nodes ≥ 2 / edges ≥ 1 / store_meta 5 键）
         let ro = SqliteDb.openReadonly(dbPath)
         @Assert(ro.isSome())
         let db = ro.getOrThrow()
         @Assert(dbCountCli(db, "SELECT COUNT(*) FROM nodes") >= 2)
         @Assert(dbCountCli(db, "SELECT COUNT(*) FROM edges") >= 1)
-        @Assert(dbCountCli(db, "SELECT COUNT(*) FROM store_meta") == 4)
+        @Assert(dbCountCli(db, "SELECT COUNT(*) FROM store_meta") == 5)
         db.close()
 
         // ── update：新鲜 → 跳过，不动任何文件 ──
@@ -4058,6 +4058,58 @@ func testIndexQueryCommandsArityAndExitCodes(): Unit {
         // 项目工作区必须干净（不变量 1：产物不进项目工作区）
         @Assert(!fileExists(p.path + "/codegraph.db"))
         @Assert(!fileExists(p.path + "/index.json"))
+    } finally {
+        exitTestHome()
+        removePathIfExists(base + "/repo")
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
+/// 旧**数据形状**的索引即使源探针一致、库也是 v2，也算过期：更早的构建写下的索引，
+/// index.json 里的函数节点没有成员级三键（qual / col / sig），画出的热力图没有定位列与签名。
+/// 真机实拍抓到：探针一致 ≠ 数据形状一致。见证是 store_meta 的 payload_shape 行，不去读 payload。
+@Test
+func testIndexStalePayloadShapeIsRebuilt(): Unit {
+    let base = "/tmp/deepgit-idxshape-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    try {
+        let p = idxMemberFixtureProject(base, "idx-shape")
+        @Assert(idxExitOf(ArrayList<String>(["gen", "idx-shape"])) == 0)
+        let dbPath = indexDbPathOf(p)
+        @Assert(indexDbIsCurrent(dbPath))
+        match (indexMetaRead(dbPath)) {
+            case Some(m) =>
+                @Assert(m.payloadShape == PAYLOAD_SHAPE)
+                @Assert(m.payloadShape >= 1)
+            case None => @Assert(false)
+        }
+        let (fresh0, _, _) = indexProbeFresh(p)
+        @Assert(fresh0)
+        // 抹掉 payload_shape 行 = 模拟更早的构建写的库：探针与源一致、schema 也是 v2
+        let w = SqliteDb.open(dbPath).getOrThrow()
+        @Assert(w.exec("DELETE FROM store_meta WHERE key = 'payload_shape'"))
+        w.close()
+        @Assert(indexDbIsCurrent(dbPath))            // 库本身仍是 v2
+        match (indexMetaRead(dbPath)) {
+            case Some(m) => @Assert(m.payloadShape == 0)   // 没有这一行 = 0
+            case None => @Assert(false)
+        }
+        let (fresh, _, _) = indexProbeFresh(p)
+        @Assert(!fresh)                              // 探针一致也不新鲜：形状是新鲜度的一部分
+        let (count, healed) = indexEnsureFresh(p)
+        @Assert(healed)
+        @Assert(count == 1)                          // 版本号延续 +1
+        match (indexMetaRead(dbPath)) {
+            case Some(m) => @Assert(m.payloadShape == PAYLOAD_SHAPE)   // 重建后形状是新的
+            case None => @Assert(false)
+        }
+        let (fresh2, _, _) = indexProbeFresh(p)
+        @Assert(fresh2)                              // 再查不再重建
+        let (_, healed2) = indexEnsureFresh(p)
+        @Assert(!healed2)
     } finally {
         exitTestHome()
         removePathIfExists(base + "/repo")
