@@ -77,6 +77,61 @@ func macroLikeName(name: String): Bool {
     return upper > 0 && under > 0
 }
 
+/// 各语言**标准库**的自由函数 / 字面量构造。全工程没有同名定义时，这些调用按
+/// 「已知的外部内建」丢弃，不计入未解析——未解析是想回答「有没有拼错的名字、
+/// 幻觉 API、缺失的依赖」，`QStringLiteral(…)` 回答不了这个问题。
+///
+/// 【只在没有任何同名项目符号时才丢弃】判定落在解析阶段而不是扫描阶段（见
+/// ResolveIndex.resolve 的第一步）：项目真定义了 `strip` / `error` / `swap`
+/// 这样的名字，调用点照常解析到它，一个都不会丢。
+///
+/// 【只收标准库，不收框架】Compose / SwiftUI / Qt 的类与方法（Text、Row、padding、
+/// isEmpty、addWidget…）**不在列**：这些名字项目自己完全可能定义，而且它们在
+/// 探针工程里正是未解析的大头——那是「调用了外部框架」的如实记录，不是噪音。
+/// 唯一的例外是 Qt 的四个字面量宏（QStringLiteral 等）：它们是字符串字面量的
+/// 构造形态，Q 前缀 + 全大写的词干，项目不会自定义。
+func buildLangBuiltins(): HashMap<String, HashSet<String>> {
+    let tables = HashMap<String, Array<String>>()
+    tables["c"] = ["QStringLiteral", "QLatin1String", "QByteArrayLiteral", "QLatin1Char",
+        "swap", "to_string", "getline", "fprintf", "sprintf", "snprintf", "vsnprintf",
+        "calloc", "realloc", "strcmp", "strncmp", "strcpy", "strncpy", "strcat", "strncat",
+        "strstr", "strchr", "strrchr", "atoi", "atol", "atoll", "strtol", "strtoll", "strtod",
+        "abort", "fabs", "floor", "ceil", "sqrt", "pow", "fmod"]
+    tables["kotlin"] = ["listOf", "mutableListOf", "mapOf", "mutableMapOf", "setOf",
+        "mutableSetOf", "arrayOf", "arrayOfNulls", "intArrayOf", "longArrayOf", "doubleArrayOf",
+        "floatArrayOf", "booleanArrayOf", "stringArrayOf", "shortArrayOf", "byteArrayOf",
+        "charArrayOf", "arrayListOf", "hashMapOf", "hashSetOf", "linkedMapOf", "linkedSetOf",
+        "sortedMapOf", "sortedSetOf", "buildList", "buildMap", "buildSet", "buildString",
+        "sequenceOf", "withTimeout", "repeat", "lazy", "enumValues", "enumValueOf", "TODO",
+        "error", "check", "require", "println", "print", "stackTraceToString"]
+    tables["swift"] = ["print", "debugPrint", "dump", "precondition", "preconditionFailure",
+        "assertionFailure", "fatalError", "repeatElement", "stride", "withExtendedLifetime"]
+    tables["python"] = ["strip", "lstrip", "rstrip", "startswith", "endswith", "splitlines",
+        "read_text", "write_text", "read_bytes", "write_bytes", "setdefault", "popitem",
+        "add_argument", "parse_args", "check_output", "check_call", "check_returncode",
+        "splitext", "dirname", "basename", "isabs", "joinpath", "is_file", "is_dir", "iterdir",
+        "lower", "upper", "title", "capitalize", "casefold", "encode", "decode", "zfill",
+        "rjust", "ljust", "center", "partition", "rpartition", "rsplit", "removeprefix",
+        "removesuffix", "isalnum", "isalpha", "isdigit", "isnumeric", "isidentifier",
+        "isspace", "islower", "isupper", "istitle", "format_map", "maketrans", "translate"]
+    let m = HashMap<String, HashSet<String>>()
+    for ((lang, words) in tables) {
+        let s = HashSet<String>()
+        for (w in words) { s.add(w) }
+        m[lang] = s
+    }
+    return m
+}
+
+let LANG_BUILTINS: HashMap<String, HashSet<String>> = buildLangBuiltins()
+
+func isLangBuiltin(lang: String, name: String): Bool {
+    match (LANG_BUILTINS.get(lang)) {
+        case Some(s) => return s.contains(name)
+        case None => return false
+    }
+}
+
 /// 解析索引：全工程符号表的两个视图。
 class ResolveIndex {
     let files: ArrayList<FileEntry>
@@ -161,8 +216,10 @@ class ResolveIndex {
             case None => ()
         }
         if (cands.size == 0) {
-            // 全工程没有这个名字：内建 / 宏样 ⇒ 丢弃；否则照常记为未解析
-            let drop = isBuiltinName(name) || macroLikeName(name)
+            // 全工程没有这个名字：内建 / 宏样 ⇒ 丢弃；否则照常记为未解析。
+            // 走到这里意味着项目里没有任何同名符号——所以「按内建丢弃」不可能吞掉
+            // 一个真实的项目符号。
+            let drop = isBuiltinName(name) || macroLikeName(name) || isLangBuiltin(files[fi].lang, name)
             return (out, drop)
         }
         let lang = files[fi].lang

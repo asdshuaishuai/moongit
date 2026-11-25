@@ -801,6 +801,89 @@ public class J {
     }
 }
 
+/// 标准库内建按语言丢弃，但**只在项目没有同名符号时**：项目自己定义的 strip / error
+/// 照常解析到项目符号；框架名字（Text / padding）不算内建，仍是未解析。
+@Test
+func testLangBuiltinsDropOnlyWithoutProjectSymbol(): Unit {
+    let root = testRoot()
+    try {
+        writeFileAtomic("${root}/a.cpp", """
+#include <QStringList>
+
+void f() {
+    const QStringList k = { QStringLiteral("--json"), QLatin1String("x") };
+    swap(k, k);
+    QLabel box;
+    box.addWidget(&box);
+}
+""")
+        writeFileAtomic("${root}/b.py", """
+class Store:
+    def strip(self, v):
+        return v
+
+def use(st):
+    return st.strip(1)
+""")
+        // d.py：只调内建 str 方法，项目里……注意 b.py / c.kt 定义了同名符号，
+        // 所以内建判定**不会**生效——这正是「按内建丢弃只在无同名符号时成立」的另一面。
+        writeFileAtomic("${root}/d.py", """
+def run():
+    s = " x ".rstrip()
+    return s.splitlines()
+
+def other():
+    return add_argument()
+""")
+        writeFileAtomic("${root}/c.kt", """
+package c
+
+fun strip(x: Int): Int { return x }
+
+fun useIt(): Int {
+    return strip(1) + listOf(1, 2).size
+}
+
+@Composable
+fun Screen() {
+    Text("hi")
+    Spacer()
+}
+""")
+        let g = buildGraph(root)
+        var cppBox: Int64 = 0
+        var qtLiterals: Int64 = 0
+        var pyBuiltinDrop: Int64 = 0
+        var pyProjectStrip: Int64 = 0
+        var ktProjectStrip: Int64 = 0
+        var framework: Int64 = 0
+        for (s in g.callSites) {
+            if (s.name == "QStringLiteral" || s.name == "QLatin1String" || s.name == "swap") { qtLiterals += 1 }
+            if (s.name == "addWidget") { cppBox += 1 }
+            if (s.file == "b.py" && s.name == "strip") { pyProjectStrip += 1 }
+            if (s.file == "d.py" && (s.name == "rstrip" || s.name == "splitlines"
+                || s.name == "add_argument")) { pyBuiltinDrop += 1 }
+            if (s.file == "c.kt" && s.name == "strip") { ktProjectStrip += 1 }
+            if (s.file == "c.kt" && (s.name == "Text" || s.name == "Spacer")) { framework += 1 }
+        }
+        @Assert(qtLiterals == 0)            // 标准库 / 字面量宏：项目无同名符号 ⇒ 不入库
+        @Assert(pyBuiltinDrop == 0)         // str / argparse 的内建方法：同上
+        @Assert(cppBox == 1)                // 框架方法：未解析，如实保留
+        @Assert(framework == 2)             // Compose：未解析，如实保留
+        // 项目自己定义的 strip：两个语言的调用点都解析到各自语言的定义
+        @Assert(pyProjectStrip == 1)
+        @Assert(ktProjectStrip == 1)
+        let edges = callEdgesFrom(g.callSites, { p => true })
+        @Assert(edgeTierOf(edges, "f:c.kt:5:useIt", "f:c.kt:3:strip") == "resolved")
+        @Assert(edgeTierOf(edges, "f:b.py:5:use", "f:b.py:2:strip") == "resolved")    // 同文件唯一
+        // 如实的边界：项目里存在同名方法时，内建 str.strip(…) 的接收者调用分不出来，
+        // 会按裸名连到项目方法（st.strip 那一条是 resolved；词法级没有类型信息）。
+        @Assert(hasEdge(edges, "f:b.py:5:use", "f:b.py:2:strip"))
+    } finally {
+        removeTree(root)
+    }
+}
+
 /// `self.name(` 等同限定：接收者是 self 时按外层类型的成员解析（direct）。
 @Test
 func testSelfReceiverResolvesToEnclosingTypeMember(): Unit {
