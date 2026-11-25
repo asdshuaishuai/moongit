@@ -2095,7 +2095,11 @@ class Scanner {
                 let c = t[q]
                 if (c == 46) {
                     recv = 1
-                } else if (c == 62 && q > 0 && t[q - 1] == 45) {
+                } else if (c == 62 && q > 0 && t[q - 1] == 45 && lang == "c") {
+                    // `->` 只在 C / C++ 里是成员访问。Kotlin / Java 的 lambda 箭头（`x -> real()`）、
+                    // Rust / Python / Swift 的返回类型箭头都不是接收者——此前不分语言一律当接收者，
+                    // 箭头后的调用被安上 lambda 参数当接收者：调用点归属是错的，箭头后的幻觉调用
+                    // 也因为「带接收者」而不进 unresolved-call。
                     recv = 1
                     q -= 1
                 } else if (c == 58 && q > 0 && t[q - 1] == 58) {
