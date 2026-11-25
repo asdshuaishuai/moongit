@@ -40,6 +40,9 @@ func testValueFlagsValueIsNeverTreatedAsProject(): Unit {
         "--name", "--depth", "--docs", "--scope", "--branch",
         "--source", "--tag", "--date", "--desc", "--out", "--message",
         "--budget", "--dir", "--limit", "--note", "--format", "--patch", "--file",
+        // 成员级索引（index search / grep / impact）：值的形状恰好像项目名
+        // （--lang kotlin、--glob *.kt、--context 2），漏登记就会去查叫 kotlin 的项目
+        "--lang", "--context", "--glob",
     ]
     for (f in cases) {
         let args = ArrayList<String>(["someproject", f, "VALUE_THAT_IS_A_PROJECT_NAME"])
@@ -3621,3 +3624,375 @@ func testAliasToolsCarryMachineReadableDeprecation(): Unit {
         }
     }
 }
+
+// MARK: - 成员级索引：index 查询类命令（search / grep / refs / impact / file）
+
+/// 成员级索引夹具：Kotlin（类 + 方法 + 顶层函数）、C++（原型 + 定义）、一行文本标记。
+func idxMemberFixtureProject(base: String, name: String): ProjectEntry {
+    let repo = base + "/repo"
+    ensureDir("${repo}/k")
+    writeFileAtomic("${repo}/k/app.kt", """
+package k
+
+// data class marker line
+
+class App {
+    fun run(): Int {
+        return helper()
+    }
+}
+
+fun helper(): Int {
+    return 1
+}
+""")
+    writeFileAtomic("${repo}/app.h", """
+class App {
+public:
+    void start();
+};
+""")
+    writeFileAtomic("${repo}/app.cpp", """
+#include "app.h"
+
+void App::start() {
+    go();
+}
+""")
+    let (p, ok) = addProject(repo, name, ArrayList<String>(), "")
+    @Assert(ok)
+    return p
+}
+
+/// 跑一条 index 命令并取退出码；不抛 = 它的返回值。
+func idxExitOf(args: ArrayList<String>): Int64 {
+    var code: Int64 = -1
+    try {
+        code = cmdIndex(args, CliContext(ArrayList<String>(["index"])))
+    } catch (e: DgError) {
+        code = e.exitCode
+    }
+    return code
+}
+
+/// 字符串升序（小表用插入排序：cli 包不引 std.sort，也不必为一处排序引包）。
+func idxSortKeys(list: ArrayList<String>): Unit {
+    let n = Int64(list.size)
+    var i: Int64 = 1
+    while (i < n) {
+        var j = i
+        while (j > 0 && list[j - 1] > list[j]) {
+            let t = list[j - 1]
+            list[j - 1] = list[j]
+            list[j] = t
+            j -= 1
+        }
+        i += 1
+    }
+}
+
+func idxSortedKeys(o: JsonValue): ArrayList<String> {
+    let out = ArrayList<String>()
+    match (o) {
+        case JObj(m) =>
+            for ((k, _) in m) { out.add(k) }
+        case _ => ()
+    }
+    idxSortKeys(out)
+    return out
+}
+
+func idxKeysEqual(o: JsonValue, expected: Array<String>): Bool {
+    let want = ArrayList<String>()
+    for (k in expected) { want.add(k) }
+    idxSortKeys(want)
+    let got = idxSortedKeys(o)
+    if (got.size != want.size) { return false }
+    var i: Int64 = 0
+    while (i < Int64(got.size)) {
+        if (got[i] != want[i]) { return false }
+        i += 1
+    }
+    return true
+}
+
+/// 六个 index 查询命令走真实 cmdIndex：参数错了报 usage（2），查不到报 1，
+/// 查到报 0 —— 不吞参数、不编结果。
+@Test
+func testIndexQueryCommandsArityAndExitCodes(): Unit {
+    let base = "/tmp/deepgit-idxq-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    try {
+        let p = idxMemberFixtureProject(base, "idx-q")
+        @Assert(idxExitOf(ArrayList<String>(["gen", "idx-q"])) == 0)
+        // query（既有命令，形态不变）
+        @Assert(idxExitOf(ArrayList<String>(["query", "helper", "idx-q"])) == 0)
+        // 限定名 = 类型名.方法名（包名不是 owner 的一部分）
+        @Assert(idxExitOf(ArrayList<String>(["query", "App.run", "idx-q"])) == 0)
+        @Assert(idxExitOf(ArrayList<String>(["query", "__nope__", "idx-q"])) == 1)
+        @Assert(idxExitOf(ArrayList<String>(["query", "--file", "k/app.kt", "idx-q"])) == 0)
+        @Assert(idxExitOf(ArrayList<String>(["query", "--file", "nope.kt", "idx-q"])) == 1)
+        @Assert(idxExitOf(ArrayList<String>(["query", "helper", "idx-q", "extra"])) == 2)
+        // search：带值 flag 全部生效；拼错的 kind / 非正 limit = usage
+        @Assert(idxExitOf(ArrayList<String>(["search", "help", "idx-q"])) == 0)
+        @Assert(idxExitOf(ArrayList<String>(["search", "help", "idx-q", "--kind", "func",
+            "--lang", "kotlin", "--limit", "5", "--file", "k/app.kt"])) == 0)
+        @Assert(idxExitOf(ArrayList<String>(["search", "zzz-no-match", "idx-q"])) == 0)
+        @Assert(idxExitOf(ArrayList<String>(["search", "help", "idx-q", "--kind", "fn"])) == 2)
+        @Assert(idxExitOf(ArrayList<String>(["search", "help", "idx-q", "--limit", "0"])) == 2)
+        @Assert(idxExitOf(ArrayList<String>(["search", "help", "idx-q", "--limit", "abc"])) == 2)
+        @Assert(idxExitOf(ArrayList<String>(["search"])) == 2)
+        @Assert(idxExitOf(ArrayList<String>(["search", "a", "idx-q", "c"])) == 2)
+        // grep：不依赖索引，-i / --context / --glob / --limit
+        @Assert(idxExitOf(ArrayList<String>(["grep", "data class", "idx-q"])) == 0)
+        @Assert(idxExitOf(ArrayList<String>(["grep", "DATA CLASS", "idx-q", "-i",
+            "--context", "1", "--glob", "*.kt", "--limit", "1"])) == 0)
+        @Assert(idxExitOf(ArrayList<String>(["grep", "x", "idx-q", "--ignore-case"])) == 0)
+        @Assert(idxExitOf(ArrayList<String>(["grep", "x", "idx-q", "--context", "-1"])) == 2)
+        @Assert(idxExitOf(ArrayList<String>(["grep"])) == 2)
+        // refs / impact / file
+        @Assert(idxExitOf(ArrayList<String>(["refs", "helper", "idx-q"])) == 0)
+        @Assert(idxExitOf(ArrayList<String>(["refs", "__nope__", "idx-q"])) == 1)
+        @Assert(idxExitOf(ArrayList<String>(["impact", "helper", "idx-q"])) == 0)
+        @Assert(idxExitOf(ArrayList<String>(["impact", "helper", "idx-q", "--depth", "2"])) == 0)
+        @Assert(idxExitOf(ArrayList<String>(["impact", "helper", "idx-q", "--depth", "0"])) == 2)
+        @Assert(idxExitOf(ArrayList<String>(["impact", "__nope__", "idx-q"])) == 1)
+        @Assert(idxExitOf(ArrayList<String>(["file", "k/app.kt", "idx-q"])) == 0)
+        @Assert(idxExitOf(ArrayList<String>(["file", "nope.kt", "idx-q"])) == 1)
+        @Assert(idxExitOf(ArrayList<String>(["file"])) == 2)
+        // 未知子命令仍是 usage
+        @Assert(idxExitOf(ArrayList<String>(["bogus"])) == 2)
+
+        // ⚠️ 带值 flag 必须登记在 VALUE_FLAGS：否则它的值会被当成项目名
+        //   （`--lang kotlin` ⇒ 去找叫 kotlin 的项目）。
+        let refs = positionalsOnly(ArrayList<String>(["search", "help", "idx-q", "--kind", "func",
+            "--lang", "kotlin", "--limit", "5", "--file", "k/app.kt", "--context", "2",
+            "--glob", "*.kt", "--depth", "3"]), VALUE_FLAGS)
+        @Assert(refs.size == 3)
+        @Assert(refs[0] == "search")
+        @Assert(refs[1] == "help")
+        @Assert(refs[2] == "idx-q")
+        // 新 flag 必须在白名单里（否则用户一用就报「未知 flag」）
+        for (f in ["--lang", "--context", "--glob", "--ignore-case", "-i"]) {
+            @Assert(KNOWN_FLAGS.contains(f))
+        }
+        // 项目工作区必须干净（不变量 1：产物不进项目工作区）
+        @Assert(!fileExists(p.path + "/codegraph.db"))
+        @Assert(!fileExists(p.path + "/index.json"))
+    } finally {
+        exitTestHome()
+        removePathIfExists(base + "/repo")
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
+/// 旧 schema（v1）的库即使源探针一致也算过期：overview / query 先重建再用；
+/// overview 与 grep 两个出口的键集恒定。
+@Test
+func testIndexStaleSchemaIsRebuiltAndOutputKeySetsStable(): Unit {
+    let base = "/tmp/deepgit-idxv1-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    try {
+        let p = idxMemberFixtureProject(base, "idx-v1")
+        @Assert(idxExitOf(ArrayList<String>(["gen", "idx-v1"])) == 0)
+        let dbPath = indexDbPathOf(p)
+        @Assert(indexDbIsCurrent(dbPath))
+        // 覆盖成 v1 库：generator 是旧版本，但 store_meta 里的源探针与当前源**一致**
+        let probe = sourceProbeNow(p.path)
+        removePathIfExists(dbPath)
+        let w = SqliteDb.open(dbPath).getOrThrow()
+        @Assert(w.exec("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)"))
+        @Assert(w.exec("CREATE TABLE store_meta(key TEXT PRIMARY KEY, value)"))
+        @Assert(w.exec("INSERT INTO meta(key, value) VALUES('generator', 'moongit graph db v1')"))
+        @Assert(w.exec("INSERT INTO store_meta(key, value) VALUES('source_probe', '"
+            + Json.compact(probe.toJson()) + "')"))
+        w.close()
+        @Assert(!indexDbIsCurrent(dbPath))
+        let (fresh, _, _) = indexProbeFresh(p)
+        @Assert(!fresh)                       // 探针一致也不新鲜：schema 是新鲜度的一部分
+        let (count, healed) = indexEnsureFresh(p)
+        @Assert(healed)
+        @Assert(count == 1)                   // 版本号延续 +1，不清零
+        @Assert(indexDbIsCurrent(dbPath))
+        // overview：两种状态（自愈过 / 没自愈过）键集相同
+        match (indexOverviewRead(dbPath)) {
+            case Some(ov) =>
+                @Assert(ov.nodes >= 3)
+                @Assert(ov.sites > 0)
+                let overviewKeys: Array<String> = ["project", "updateCount", "generatedAt", "selfHealed",
+                    "nodes", "edges", "files", "byKind", "sites", "unresolved", "tiers", "probe"]
+                let a = indexOverviewJson(p, count, "T1", true, ov)
+                let b = indexOverviewJson(p, 0, "T0", false, ov)
+                @Assert(idxKeysEqual(a, overviewKeys))
+                @Assert(idxKeysEqual(b, overviewKeys))
+                let tierKeys: Array<String> = ["direct", "resolved", "guessed"]
+                @Assert(idxKeysEqual(Json.getOr(a, "tiers"), tierKeys))
+                @Assert(Json.intAt(Json.getOr(a, "tiers"), "guessed", -1) == ov.tierGuessed)
+            case None => @Assert(false)
+        }
+        // grep：有命中 / 无命中 / 截断，三种数据状态键集相同
+        let hitKeys: Array<String> = ["file", "line", "col", "text", "before", "after"]
+        let grepKeys: Array<String> = ["query", "ignoreCase", "matches", "truncated", "filesScanned", "hits"]
+        let hit = indexGrepJson(grepSources(p.path, "data class", false, 200, 1, ""), "data class", false)
+        let miss = indexGrepJson(grepSources(p.path, "zzz", false, 200, 0, ""), "zzz", false)
+        let cut = indexGrepJson(grepSources(p.path, "class", false, 1, 0, ""), "class", false)
+        @Assert(idxKeysEqual(hit, grepKeys))
+        @Assert(idxKeysEqual(miss, grepKeys))
+        @Assert(idxKeysEqual(cut, grepKeys))
+        @Assert(Json.intAt(hit, "matches", 0) == 1)
+        @Assert(Json.intAt(miss, "matches", 0) == 0)
+        @Assert(!Json.boolAt(miss, "truncated", true))
+        @Assert(Json.boolAt(cut, "truncated", false))
+        @Assert(Json.intAt(cut, "matches", 0) == 1)
+        @Assert(Int64(Json.arrAt(miss, "hits").size) == 0)
+        for (h in Json.arrAt(hit, "hits")) { @Assert(idxKeysEqual(h, hitKeys)) }
+        @Assert(Int64(Json.arrAt(Json.arrAt(hit, "hits")[0], "before").size) == 1)
+        // 两个出口的同一件事必须说一致：CLI 文本与 MCP 文本共用一个构造点
+        @Assert(indexGrepText(hit).contains("data class"))
+        @Assert(indexSearchText(indexSearch(dbPath, "help", "", "", "", 30), false).contains("helper"))
+        @Assert(indexRefsText(indexRefs(dbPath, "helper").getOrThrow(), false).contains("k/app.kt"))
+        @Assert(indexImpactText(indexImpact(dbPath, "helper", 4).getOrThrow(), false).contains("helper"))
+        @Assert(indexFileQueryText(indexQueryFile(dbPath, "k/app.kt").getOrThrow(), false).contains("App.run"))
+    } finally {
+        exitTestHome()
+        removePathIfExists(base + "/repo")
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
+/// MCP 的 index 查询工具面：五个新工具 + index_query 扩展；只读注解；结构化结果；
+/// 数值参数严格；与 `moongit tools --json` 同步；旧别名原样。
+@Test
+func testMcpIndexToolsAreStructuredAndSyncedWithManifest(): Unit {
+    let base = "/tmp/deepgit-idxmcp-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    func withName(n: String): JsonValue {
+        let a = Json.obj()
+        Json.set(a, "name", Json.of(n))
+        return a
+    }
+    let added: Array<String> = ["index_search", "index_grep", "index_refs", "index_impact", "index_outline"]
+    try {
+        let p = idxMemberFixtureProject(base, "idx-mcp")
+        // ── 工具清单 ──
+        let tools = Json.arrAt(mcpToolList(), "tools")
+        @Assert(Int64(tools.size) == 38)     // 33 + 5（成员级索引的查询工具）
+        let names = HashSet<String>()
+        var deprecated: Int64 = 0
+        var readonly: Int64 = 0
+        for (t in tools) {
+            let n = Json.strAt(t, "name", "")
+            names.add(n)
+            if (Json.has(t, "deprecated")) { deprecated += 1 }
+            if (Json.has(t, "annotations")) {
+                // 只有只读工具带注解，且注解只说 readOnlyHint = true
+                @Assert(MCP_READONLY_TOOLS.contains(n))
+                @Assert(Json.boolAt(Json.getOr(t, "annotations"), "readOnlyHint", false))
+                readonly += 1
+            }
+        }
+        @Assert(deprecated == 6)             // 六个 codegraph_* 别名原样
+        @Assert(readonly == 6)               // index_query + 五个新工具
+        for (n in added) { @Assert(names.contains(n)) }
+        // ── `moongit tools --json` 同步 ──
+        let manifest = Json.arrAt(agentToolsManifest(), "tools")
+        @Assert(Int64(manifest.size) == 33)  // 28 + 5
+        let mNames = HashSet<String>()
+        var iqParams = ""
+        for (t in manifest) {
+            let n = Json.strAt(t, "name", "")
+            mNames.add(n)
+            if (n == "index_query") { iqParams = Json.strAt(t, "params", "") }
+        }
+        for (n in added) { @Assert(mNames.contains(n)) }
+        @Assert(iqParams.contains("symbol"))
+        @Assert(iqParams.contains("file"))
+        // ── 结构化结果：文本摘要 + structuredContent（同一个对象），索引缺席时自愈 ──
+        let a = withName("idx-mcp")
+        Json.set(a, "pattern", Json.of("help"))
+        let r = mcpCallTool("index_search", a)
+        @Assert(!mcpIsError(r))
+        @Assert(Json.has(r, "structuredContent"))
+        let sc = Json.getOr(r, "structuredContent")
+        @Assert(idxKeysEqual(sc, ["query", "mode", "total", "truncated", "results"]))
+        @Assert(Json.intAt(sc, "total", 0) >= 1)
+        @Assert(mcpTextOf(r).contains("helper"))
+        // index_query：文本保持 JSON 全文（既有契约），结构化内容是同一个对象
+        let qa = withName("idx-mcp")
+        Json.set(qa, "symbol", Json.of("helper"))
+        let qr = mcpCallTool("index_query", qa)
+        @Assert(!mcpIsError(qr))
+        @Assert(mcpTextOf(qr).contains("\"callers\""))
+        match (Json.parse(mcpTextOf(qr))) {
+            case Some(parsed) => @Assert(Json.compact(parsed) == Json.compact(Json.getOr(qr, "structuredContent")))
+            case None => @Assert(false)
+        }
+        @Assert(idxKeysEqual(Json.getOr(qr, "structuredContent"),
+            ["symbol", "ambiguous", "defs", "callers", "callees", "perDef"]))
+        // refs / impact / outline / grep
+        let ra = withName("idx-mcp")
+        Json.set(ra, "symbol", Json.of("helper"))
+        let rr = mcpCallTool("index_refs", ra)
+        @Assert(!mcpIsError(rr))
+        @Assert(Int64(Json.arrAt(Json.getOr(rr, "structuredContent"), "sites").size) >= 1)
+        let ia = withName("idx-mcp")
+        Json.set(ia, "symbol", Json.of("helper"))
+        Json.set(ia, "depth", Json.of(2))
+        let ir = mcpCallTool("index_impact", ia)
+        @Assert(!mcpIsError(ir))
+        @Assert(Int64(Json.arrAt(Json.getOr(ir, "structuredContent"), "impacted").size) >= 1)
+        let oa = withName("idx-mcp")
+        Json.set(oa, "file", Json.of("k/app.kt"))
+        let or = mcpCallTool("index_outline", oa)
+        @Assert(!mcpIsError(or))
+        @Assert(idxKeysEqual(Json.getOr(or, "structuredContent"), ["file", "lang", "lines", "symbols", "calledBy", "calls"]))
+        let ga = withName("idx-mcp")
+        Json.set(ga, "pattern", Json.of("data class"))
+        let gr = mcpCallTool("index_grep", ga)
+        @Assert(!mcpIsError(gr))
+        @Assert(Json.intAt(Json.getOr(gr, "structuredContent"), "matches", 0) == 1)
+        // overview：与 CLI 同一个构造点（含 probe / sites / tiers）
+        let ov = mcpCallTool("index_overview", withName("idx-mcp"))
+        @Assert(!mcpIsError(ov))
+        match (Json.parse(mcpTextOf(ov))) {
+            case Some(o) =>
+                @Assert(idxKeysEqual(o, ["project", "updateCount", "generatedAt", "selfHealed", "nodes",
+                    "edges", "files", "byKind", "sites", "unresolved", "tiers", "probe"]))
+            case None => @Assert(false)
+        }
+        // ── 严格契约：非整数 / 缺必填 / 查不到 ⇒ isError，不悄悄改参数 ──
+        let bad1 = withName("idx-mcp")
+        Json.set(bad1, "pattern", Json.of("help"))
+        Json.set(bad1, "limit", Json.of(1.5))
+        @Assert(mcpIsError(mcpCallTool("index_search", bad1)))
+        let bad2 = withName("idx-mcp")
+        Json.set(bad2, "pattern", Json.of("x"))
+        Json.set(bad2, "context", Json.of(-1))
+        @Assert(mcpIsError(mcpCallTool("index_grep", bad2)))
+        let bad3 = withName("idx-mcp")
+        Json.set(bad3, "symbol", Json.of("helper"))
+        Json.set(bad3, "depth", Json.of("abc"))
+        @Assert(mcpIsError(mcpCallTool("index_impact", bad3)))
+        @Assert(mcpIsError(mcpCallTool("index_refs", withName("idx-mcp"))))       // 缺 symbol
+        @Assert(mcpIsError(mcpCallTool("index_outline", withName("idx-mcp"))))    // 缺 file
+        @Assert(mcpIsError(mcpCallTool("index_search", withName("idx-mcp"))))     // 缺 pattern
+        let miss = withName("idx-mcp")
+        Json.set(miss, "symbol", Json.of("__nope__"))
+        @Assert(mcpIsError(mcpCallTool("index_refs", miss)))
+        @Assert(mcpIsError(mcpCallTool("index_refs", withName("__no_such_project__"))))
+    } finally {
+        exitTestHome()
+        removePathIfExists(base + "/repo")
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
