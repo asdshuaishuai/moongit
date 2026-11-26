@@ -1,15 +1,16 @@
 // CLI 层测试：位置参数解析与展示行格式。
-package moongit.cli
+package cambium.cli
 
 import std.collection.*
 import std.convert.*
 import std.env.*
 import std.unittest.*
 import std.unittest.testmacro.*
-import moongit.flow.*
-import moongit.graph.*
-import moongit.kernel.*
-import moongit.util.*
+import cambium.flow.*
+import cambium.graph.*
+import cambium.kernel.*
+import cambium.util.*
+import cambium.dendro.*
 
 // ------------------------------ 测试 ------------------------------
 
@@ -27,8 +28,8 @@ func testPositionalsOnlySkipsValueFlagPairs(): Unit {
 func testValueFlagsValueIsNeverTreatedAsProject(): Unit {
     // 行为级回归：带值 flag 的「值」绝不能被当成位置参数（项目名）。
     // 曾经的缺陷：--note / --limit / --dir 不在 VALUE_FLAGS 里，于是
-    //   moongit update p --note "shipped v2"  → 未找到项目：shipped v2
-    //   moongit journal p --limit 5            → 未找到项目：5
+    //   cambium update p --note "shipped v2"  → 未找到项目：shipped v2
+    //   cambium journal p --limit 5            → 未找到项目：5
     // 且 findProjectIn 走子串兜底，值若是某项目名的子串还会静默命中错误项目。
     //
     // 这个测试按行为断言，而不是抄 VALUE_FLAGS 自身 —— 抄写式断言发现不了清单缺项。
@@ -467,7 +468,7 @@ func testDocsPayloadDisclosesUnreadableInsteadOfShorteningArray(): Unit {
 @Test
 func testDoubleDashEndsFlagParsing(): Unit {
     // `--` 以前只是个「无值 flag」被跳过，后面仍然在 flag 空间里：
-    //   moongit report -- --out /tmp/x.md   → --out 被正常解析，报告写进了 /tmp/x.md
+    //   cambium report -- --out /tmp/x.md   → --out 被正常解析，报告写进了 /tmp/x.md
     // 调用方以为自己传的是字面量，实际被引擎改了行为。现在 `--` 之后一律字面量。
     let args = ArrayList<String>(["update", "--", "--note", "v2 release"])
 
@@ -497,8 +498,8 @@ func testDoubleDashEndsFlagParsing(): Unit {
 @Test
 func testValueFlagMissingValueFailsLoudly(): Unit {
     // 原实现 flagValue() 只看下一个 token，于是
-    //   moongit add <path> --name --note  → 项目被真的注册成 "--note"（数据污染）
-    //   moongit report --out              → 静默回落到默认路径，exit 0
+    //   cambium add <path> --name --note  → 项目被真的注册成 "--note"（数据污染）
+    //   cambium report --out              → 静默回落到默认路径，exit 0
     // 两种都必须在分发前就被拦下，且以 usage 错误（exit 2）退出。
 
     // 1) 带值 flag 后面紧跟另一个 flag
@@ -594,7 +595,7 @@ func testCmdReportRejectsMultipleProjects(): Unit {
 /// `buildDashboard(reg.projects, ...)` —— 它只证明了「渲染函数给什么数就写什么数」，
 /// 根本没经过 `cmdReport` 那个决定「传什么进去」的地方。
 /// 于是把 `let dashProjects = targets` 改回错误版本，测试**照样全绿**（负控验证时实测），
-/// 而真实 `moongit report` 输出的「已注册」当场从 2 掉回 1。
+/// 而真实 `cambium report` 输出的「已注册」当场从 2 掉回 1。
 /// 教训：抽成纯函数只是第一步，还得有一条真的走调用方的断言。
 ///
 /// 负控（曾真实发红）：整群报告退回报 `targets`（已滤掉 disabled），
@@ -654,7 +655,7 @@ func testCmdReportGroupReportCountsDisabledAsRegistered(): Unit {
 @Test
 func testUnknownFlagsAreRejected(): Unit {
     // 旧实现里未知 flag 落进 positionals 后被无声丢弃：
-    // `moongit status --bogus` 照常 exit 0，`--limti 5` 照常用默认 20 条。
+    // `cambium status --bogus` 照常 exit 0，`--limti 5` 照常用默认 20 条。
     // 打错一个字母 = 「命令成功执行，但用的是默认值」，自动化里最难查的一类。
     // --host / --port / --open（本轮审查）：HTTP 层遗留死 flag，原先在白名单里
     // 被静默吞值 —— 现在删出名单，必须与真·未知 flag 同判据（exit 2 + 「未知 flag」）。
@@ -765,7 +766,7 @@ private func goneEntryForDashboard(name: String): ProjectEntry {
     return ProjectEntry(projectIdFor(gone), name, gone, "git", "", nowIso(), ArrayList<String>(), false)
 }
 
-// 行为级回归：`moongit milestone reopen <项目> <名称> -q` 在「写入没生效」时
+// 行为级回归：`cambium milestone reopen <项目> <名称> -q` 在「写入没生效」时
 // 必须仍然告警。
 //
 // 原来的代码是：
@@ -883,13 +884,13 @@ func testVerifyJsonMustNotSubtractMissingTwice(): Unit {
     @Assert(verified)
     @Assert(note.isEmpty())
     // 且绝不能出现「先跑 update」那句 —— 它是诱导覆盖用户文档的元凶
-    @Assert(!note.contains("moongit update"))
+    @Assert(!note.contains("cambium update"))
 
     // 真的什么都不可校验时，措辞必须把「先跑 update」说出来
     let (p0, v0, n0) = verifyOutcome(0, 0, 0, 0)
     @Assert(p0 == 0)
     @Assert(!v0)
-    @Assert(n0.contains("moongit update"))
+    @Assert(n0.contains("cambium update"))
 
     // 「可校验的都缺失」与「什么都没有」必须分开 ——
     // 前者该去恢复文档，后者该先 update，处置完全不同
@@ -898,7 +899,7 @@ func testVerifyJsonMustNotSubtractMissingTwice(): Unit {
     @Assert(!v1)
     @Assert(n1.contains("文档缺失"))
     @Assert(n1.contains("可从备份恢复"))
-    @Assert(!n1.contains("需要先执行 moongit update"))
+    @Assert(!n1.contains("需要先执行 cambium update"))
 
     // 无法判定不算通过
     let (p2, v2, n2) = verifyOutcome(2, 2, 0, 0)
@@ -1025,18 +1026,18 @@ func testUndeterminedMustNotBeAdvisedToRerunUpdate(): Unit {
     // 处置方向必须说对：去弄快照，不是重跑 update
     @Assert(n.contains("无法判定"))
     @Assert(n.contains("写入前快照"))
-    @Assert(!n.contains("需要先执行 moongit update"))
+    @Assert(!n.contains("需要先执行 cambium update"))
 
     // 真的什么都没有时，「先跑 update」才是对的处置 —— 不得被上一条带跑
     let (_, v0, n0) = verifyOutcome(0, 0, 0, 0)
     @Assert(!v0)
-    @Assert(n0.contains("需要先执行 moongit update"))
+    @Assert(n0.contains("需要先执行 cambium update"))
 
     // 缺失的处置方向是「从备份恢复」，与上面两个都不同
     let (_, v2, n2) = verifyOutcome(0, 0, 2, 0)
     @Assert(!v2)
     @Assert(n2.contains("可从备份恢复"))
-    @Assert(!n2.contains("需要先执行 moongit update"))
+    @Assert(!n2.contains("需要先执行 cambium update"))
     @Assert(!n2.contains("写入前快照"))
 }
 
@@ -1045,9 +1046,9 @@ func testWorkableTargetsNeverReportsSilenceAsSuccess(): Unit {
     // 「没有活可干」必须与「活干完了」在退出码上可区分。
     //
     // 旧实现在空注册表下静默 exit 0、stdout 全空：
-    //   moongit update        → 无输出，exit 0
-    //   moongit update --json → `[]`，exit 0
-    //   moongit deep          → 无输出，exit 0
+    //   cambium update        → 无输出，exit 0
+    //   cambium update --json → `[]`，exit 0
+    //   cambium deep          → 无输出，exit 0
     // agent / CI 读到 exit 0 就认定「全部项目已是最新」，于是永远不去跑
     // scan / add，注册表就一直空着 —— 静默降级成事实性谎言。
     //
@@ -1086,8 +1087,8 @@ func testWorkableTargetsNeverReportsSilenceAsSuccess(): Unit {
         // ⚠️ 负控：不能建议一个不存在的子命令。
         // `disabled` 全代码只读不写，没有 enable/disable 子命令，
         // 说「运行 moongit enable」是「说错了」而非「没说」。
-        @Assert(!disabledMsg.contains("moongit enable"))
-        @Assert(!disabledMsg.contains("moongit disable"))
+        @Assert(!disabledMsg.contains("cambium enable"))
+        @Assert(!disabledMsg.contains("cambium disable"))
 
         // 有目标时必须完全放行 —— 显式点名被 disabled 的项目也要能跑
         let okList = ArrayList<ProjectEntry>()
@@ -1328,7 +1329,7 @@ func testMilestoneEmptyStateDistinguishesOrphansFromNothing(): Unit {
     @Assert(rc5 == 1)
 }
 
-// #158 回归（一）：`moongit list` 不得采集停用项目。
+// #158 回归（一）：`cambium list` 不得采集停用项目。
 //
 // 真实故障：2 个项目，on2 手工置 disabled:true。
 // 修之前 `list` 的输出是：
@@ -1363,7 +1364,7 @@ func testListSkipsCollectionForDisabledProjects(): Unit {
 @Test
 func testListSummaryLineDisclosesDisabledCount(): Unit {
     // 无停用时不能凭空多出括号
-    @Assert(listSummaryLine(2, 0, "zh") == "共 2 个项目。用 `moongit status <项目>` 看详情。")
+    @Assert(listSummaryLine(2, 0, "zh") == "共 2 个项目。用 `cambium status <项目>` 看详情。")
     // 有停用时必须写明，并且写清是「不参与统计」——否则用户以为坏掉了
     let line = listSummaryLine(2, 1, "zh")
     @Assert(line.contains("共 2 个项目"))
@@ -1864,7 +1865,7 @@ func testDocsWithTwoNamesMustReturnBothProjects(): Unit {
 
 /// #196：元数固定的命令（add / milestone）多出来的位置参数必须报错。
 /// 吞掉它等于把拼写错误变成一次「成功」——
-/// `moongit add <路径> <名称>` 这种写法**一直**不生效（名字只认 `--name`），
+/// `cambium add <路径> <名称>` 这种写法**一直**不生效（名字只认 `--name`），
 /// 却打印「✓ 已注册」。本次审计里我自己就踩了两次。
 @Test
 func testFixedArityCommandsRejectExtraPositionals(): Unit {
@@ -2258,8 +2259,8 @@ func testEveryKnownConfigKeyHasAValidSample(): Unit {
 /// ⚠️ 这是 #194 那个测试的加强版。原测试只保证「已知键读写都通」，
 /// 但保证不了**反向**：某人在 `configSetValue` 里加了一个 case 却忘了加进
 /// `configKnownKeys()`，于是
-///     moongit config set update.newKey 5   →  ✓ 已设置
-///     moongit config get update.newKey     →  ✗ 未知配置键
+///     cambium config set update.newKey 5   →  ✓ 已设置
+///     cambium config get update.newKey     →  ✗ 未知配置键
 /// 写入口报成功、读入口说这个键不存在 —— 正是 #193 / #202 / #203 那一族。
 /// 函数末尾的 `case _ => throw 未知配置键` 让这件事编译期无感，只能靠源码比对。
 @Test
@@ -2385,16 +2386,17 @@ func testEnvLanguageOverrideRejectsUnsupported(): Unit {
 func testSkillMarkdownCoversFullCapabilitySurface(): Unit {
     let md = skillMarkdown()
     // 三层工作流的三件套全点名
-    @Assert(md.contains("codegraph_patch_confidence"))
-    @Assert(md.contains("codegraph_patch_merge"))
+    @Assert(md.contains("dendro_patch_confidence"))
+    @Assert(md.contains("dendro_patch_merge"))
     @Assert(md.contains("Layer 2"))
     // 画布契约：scene 格式 + schema 文档指针
     @Assert(md.contains("moongit-graph-scene"))
     @Assert(md.contains("graph-scene-schema.md"))
     // 置信度 llm 出口
     @Assert(md.contains("format=llm"))
-    // CLI 图谱七件套（patchconf --patch 是三层的入口）
-    @Assert(md.contains("patchconf --patch"))
+    // 三层的 CLI 入口是 dendro patch（品牌升级后的正名；graph patchconf --patch 是旧名别名）
+    @Assert(md.contains("dendro patch"))
+    @Assert(md.contains("--patch <diff>"))
     // 词法级红线进红线节
     @Assert(md.contains("词法级候选"))
 }
@@ -3095,7 +3097,7 @@ func testTopLevelSkeletonsReportNextPhase(): Unit {
     @Assert(exitOf({ => confidenceQueryCmd(ArrayList<String>(["proj", "--weight", "xyz"]), ctx) }) == 2)
 }
 
-/// 旧 `graph *` 的迁移提示：行为不变，stderr 一行指路 moongit index。
+/// 旧 `graph *` 的迁移提示：行为不变，stderr 一行指路 cambium index。
 /// stderr 出口是可注入的（Log.setErrOut）——这正是它存在的理由。
 @Test
 func testGraphCommandPrintsMigrationNoteOnStderr(): Unit {
@@ -3118,7 +3120,7 @@ func testGraphCommandPrintsMigrationNoteOnStderr(): Unit {
         let errText = sb.toString()
         // 前提守卫：出口真的捕到了东西（捕不到 = 注入坏了，下面全空转绿）
         @Assert(errText.size > 0)
-        @Assert(errText.contains("moongit index"))
+        @Assert(errText.contains("cambium index"))
         Log.resetErrOut()
     } finally {
         Log.resetErrOut()
@@ -3574,7 +3576,7 @@ public func gamma(): String {
 /// confidence.json 的每条 finding 键集 = FINDING_JSON_KEYS（唯一构造点 findingJson）；
 /// beta（孤儿）的 id 与 codegraph.db 的 nodes.sid 同一个键；confidence.db 的 findings 表
 /// 同步带出；旧快照（加 id / qual 之前写的）经 query 出去键集不变（缺的键补空串）；
-/// MCP confidence_query 的文本与 structuredContent 是同一份 JSON。
+/// MCP dendro_query 的文本与 structuredContent 是同一份 JSON。
 @Test
 func testConfidenceQueryCarriesSymbolKeys(): Unit {
     let base = "/tmp/deepgit-cfkeys-${nowMillis()}"
@@ -3648,12 +3650,12 @@ func testConfidenceQueryCarriesSymbolKeys(): Unit {
             @Assert(Json.strAt(f, "qual", "x") == "")
         }
         // ⑥ MCP：文本投影带符号 ID；structuredContent 与文本是同一份 JSON
-        let t = mcpCallTool("confidence_query", withKind(false))
+        let t = mcpCallTool("dendro_query", withKind(false))
         @Assert(!mcpIsError(t))
         @Assert(mcpTextOf(t).contains("符号 ID：" + betaId))
         let sc = Json.getOr(t, "structuredContent")
         @Assert(Json.strAt(Json.arrAt(sc, "findings")[0], "id", "") == betaId)
-        let j = mcpCallTool("confidence_query", withKind(true))
+        let j = mcpCallTool("dendro_query", withKind(true))
         @Assert(mcpTextOf(j).contains("\"id\": \"" + betaId + "\""))
         @Assert(Json.has(j, "structuredContent"))
         @Assert(Json.strAt(Json.arrAt(Json.getOr(j, "structuredContent"), "findings")[0], "id", "") == betaId)
@@ -3696,7 +3698,7 @@ func testRenderProductsCarryNoMachinePaths(): Unit {
 }
 
 /// MCP 新工具面回执：arch_gen / arch_query / index_gen / index_query /
-/// confidence_gen / confidence_query / render 走与 CLI 相同的内部函数，
+/// dendro_gen / dendro_query / render 走与 CLI 相同的内部函数，
 /// 回执只带事实与路径（HTML 落盘，不内塞全文）；旧 codegraph_* 别名仍可用。
 @Test
 func testMcpGraphToolFaceReceipts(): Unit {
@@ -3720,7 +3722,7 @@ func testMcpGraphToolFaceReceipts(): Unit {
             names.add(Json.strAt(t, "name", ""))
         }
         for (n in ["arch_gen", "arch_update", "arch_query", "index_gen", "index_update",
-                   "index_overview", "index_query", "confidence_gen", "confidence_query", "render"]) {
+                   "index_overview", "index_query", "dendro_gen", "dendro_query", "render"]) {
             @Assert(names.contains(n))
         }
         for (t in tools) {
@@ -3763,25 +3765,25 @@ func testMcpGraphToolFaceReceipts(): Unit {
         @Assert(!mcpIsError(iqRes))
         @Assert(mcpTextOf(iqRes).contains("\"callers\""))
 
-        // confidence_gen：回执带快照路径与依据的索引版本
-        let cgRes = mcpCallTool("confidence_gen", withName("mcp-face"))
+        // dendro_gen：回执带快照路径与依据的索引版本
+        let cgRes = mcpCallTool("dendro_gen", withName("mcp-face"))
         @Assert(!mcpIsError(cgRes))
         @Assert(mcpTextOf(cgRes).contains("\"indexUpdateCount\""))
         @Assert(fileExists(store + "/confidence.json"))
-        // confidence_query：总览（findingCount）与过滤（kind）
-        let cqRes = mcpCallTool("confidence_query", withName("mcp-face"))
+        // dendro_query：总览（findingCount）与过滤（kind）
+        let cqRes = mcpCallTool("dendro_query", withName("mcp-face"))
         @Assert(!mcpIsError(cqRes))
         @Assert(mcpTextOf(cqRes).contains("\"findingCount\""))
         let cqKindArgs = withName("mcp-face")
         Json.set(cqKindArgs, "kind", Json.of("orphan"))
-        let cqKindRes = mcpCallTool("confidence_query", cqKindArgs)
+        let cqKindRes = mcpCallTool("dendro_query", cqKindArgs)
         @Assert(!mcpIsError(cqKindRes))
         @Assert(mcpTextOf(cqKindRes).contains("orphan"))
-        // 快照缺席 → isError 且教回先 confidence_gen（不自动触发）
+        // 快照缺席 → isError 且教回先 dendro_gen（不自动触发）
         removePathIfExists(store + "/confidence.json")
-        let cqMissRes = mcpCallTool("confidence_query", withName("mcp-face"))
+        let cqMissRes = mcpCallTool("dendro_query", withName("mcp-face"))
         @Assert(mcpIsError(cqMissRes))
-        @Assert(mcpTextOf(cqMissRes).contains("confidence_gen"))
+        @Assert(mcpTextOf(cqMissRes).contains("dendro_gen"))
 
         // render：回执只带路径与复用判定，HTML 落盘
         let rArgs = withName("mcp-face")
@@ -3858,7 +3860,38 @@ func testMcpInitializeReportsEngineVersion(): Unit {
 
 // MARK: - 旧名别名的**机器可读**废弃标记
 
-/// 旧名别名（`codegraph_*` 中 patch 两工具除外）必须带**机器可读**的废弃标记：
+/// 品牌升级（置信度模块 → Dendro）：MCP 工具正名 dendro_*，旧名是别名——
+/// 清单里新旧并存、schema 逐字节相同、旧名带 replacedBy；分发入口把旧名归一化到正名（行为不变）。
+@Test
+func testDendroToolRenamesKeepOldNamesAsAliases(): Unit {
+    let pairs = [("confidence_gen", "dendro_gen"), ("confidence_query", "dendro_query"),
+                 ("codegraph_patch_confidence", "dendro_patch_confidence"), ("codegraph_patch_merge", "dendro_patch_merge")]
+    for (list in [mcpToolList(), agentToolsManifest()]) {
+        let tools = Json.arrAt(list, "tools")
+        for ((old, cur) in pairs) {
+            @Assert(mcpCanonicalTool(old) == cur)
+            @Assert(mcpCanonicalTool(cur) == cur)
+            var oldTool = Option<JsonValue>.None
+            var curTool = Option<JsonValue>.None
+            for (t in tools) {
+                let n = Json.strAt(t, "name", "")
+                if (n == old) { oldTool = Some(t) }
+                if (n == cur) { curTool = Some(t) }
+            }
+            @Assert(oldTool.isSome())
+            @Assert(curTool.isSome())
+            @Assert(Json.strAt(oldTool.getOrThrow(), "replacedBy", "") == cur)
+            @Assert(Json.has(oldTool.getOrThrow(), "deprecated"))
+            @Assert(!Json.has(curTool.getOrThrow(), "deprecated"))
+            // 别名与正名的 schema 必须同一份
+            @Assert(Json.pretty(Json.getOr(oldTool.getOrThrow(), "inputSchema")) ==
+                Json.pretty(Json.getOr(curTool.getOrThrow(), "inputSchema")))
+        }
+    }
+}
+
+/// 旧名别名（`codegraph_*` 全部，加上品牌升级后置信度工具的旧名 `confidence_*` / `codegraph_patch_*`）
+/// 必须带**机器可读**的废弃标记：
 /// `deprecated: true` + `replacedBy: "<继任工具名>"`。
 ///
 /// ⚠️ 为什么：描述里那句「（旧名别名，将移除）」只有**人**看得见；
@@ -3868,9 +3901,10 @@ func testMcpInitializeReportsEngineVersion(): Unit {
 @Test
 func testAliasToolsCarryMachineReadableDeprecation(): Unit {
     let aliases = ["codegraph_overview", "codegraph_tree", "codegraph_symbol",
-                   "codegraph_impact", "codegraph_arch", "codegraph_confidence"]
-    // patch 两工具**不是**别名：它们没有新面对位物，不该被标废弃
-    let notAliases = ["codegraph_patch_confidence", "codegraph_patch_merge"]
+                   "codegraph_impact", "codegraph_arch", "codegraph_confidence",
+                   "confidence_gen", "confidence_query", "codegraph_patch_confidence", "codegraph_patch_merge"]
+    // 置信度工具的正名（Dendro）**不是**别名：不该被标废弃
+    let notAliases = ["dendro_gen", "dendro_query", "dendro_patch_confidence", "dendro_patch_merge"]
 
     for (list in [mcpToolList(), agentToolsManifest()]) {
         let tools = Json.arrAt(list, "tools")
@@ -4196,7 +4230,7 @@ func testIndexStaleSchemaIsRebuiltAndOutputKeySetsStable(): Unit {
 }
 
 /// MCP 的 index 查询工具面：五个新工具 + index_query 扩展；只读注解；结构化结果；
-/// 数值参数严格；与 `moongit tools --json` 同步；旧别名原样。
+/// 数值参数严格；与 `cambium tools --json` 同步；旧别名原样。
 @Test
 func testMcpIndexToolsAreStructuredAndSyncedWithManifest(): Unit {
     let base = "/tmp/deepgit-idxmcp-${nowMillis()}"
@@ -4214,7 +4248,7 @@ func testMcpIndexToolsAreStructuredAndSyncedWithManifest(): Unit {
         let probe = sourceProbeNow(p.path)
         // ── 工具清单 ──
         let tools = Json.arrAt(mcpToolList(), "tools")
-        @Assert(Int64(tools.size) == 38)     // 33 + 5（成员级索引的查询工具）
+        @Assert(Int64(tools.size) == 42)     // 38 + 4（置信度工具正名 dendro_* 后，旧名四个保留为别名）
         let names = HashSet<String>()
         var deprecated: Int64 = 0
         var readonly: Int64 = 0
@@ -4229,12 +4263,12 @@ func testMcpIndexToolsAreStructuredAndSyncedWithManifest(): Unit {
                 readonly += 1
             }
         }
-        @Assert(deprecated == 6)             // 六个 codegraph_* 别名原样
+        @Assert(deprecated == 10)            // 六个 codegraph_* 别名 + 置信度工具的四个旧名（confidence_* / codegraph_patch_*）
         @Assert(readonly == 6)               // index_query + 五个新工具
         for (n in added) { @Assert(names.contains(n)) }
-        // ── `moongit tools --json` 同步 ──
+        // ── `cambium tools --json` 同步 ──
         let manifest = Json.arrAt(agentToolsManifest(), "tools")
-        @Assert(Int64(manifest.size) == 33)  // 28 + 5
+        @Assert(Int64(manifest.size) == 37)  // 33 + 4（与 MCP 清单同一批旧名别名）
         let mNames = HashSet<String>()
         var iqParams = ""
         for (t in manifest) {
@@ -4342,7 +4376,7 @@ func testMcpIndexToolsAreStructuredAndSyncedWithManifest(): Unit {
 @Test
 func testSkillFrontmatterCarriesEngineVersion(): Unit {
     let md = skillMarkdown()
-    @Assert(md.startsWith("---\nname: moongit\n"))
+    @Assert(md.startsWith("---\nname: cambium\n"))
     let want = "\nversion: " + ENGINE_VERSION + "\n---\n"
     @Assert(md.contains(want))
 }
@@ -4370,10 +4404,51 @@ func testSkillRecipesDoNotTeachDeprecatedAliases(): Unit {
 func testSkillRecipesCoverCodeLocationPath(): Unit {
     let md = skillMarkdown()
     for (needle in ["index_search", "index_outline", "index_query", "index_grep",
-                    "index_refs", "index_impact", "confidence_gen", "confidence_query",
+                    "index_refs", "index_impact", "dendro_gen", "dendro_query",
                     "render index", "ambiguous: true", "guessed", "f:<相对路径>:<行>:<名字>",
                     "原型的 id 回的也是定义", "声明处列在 decls",
                     "框架回调", "再说「编造了 API」"]) {
         @Assert(md.contains(needle))
+    }
+}
+
+/// 品牌升级后的 `cambium dendro …` 命令组：与旧写法是同一套实现（别名转发），stdout 契约不变；
+/// 缺参、未知子命令如实报用法错误，不静默成功。
+/// check（现算、不落盘）与 query（只读快照）是两件事——上一版把它们并成一个名字是错的，
+/// `query --llm` 并不存在；这条测试钉住三个出口都通。
+@Test
+func testDendroCommandGroupForwardsToLegacyHandlers(): Unit {
+    let base = "/tmp/deepgit-dendro-cmd-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    try {
+        let p = dbCliFixtureProject(base, "dendro-cmd")
+        let store = deepgitPath(["store", p.id])
+        let ctx = CliContext(ArrayList<String>(["dendro"]))
+        // gen：现算并落盘快照（= confidence gen）
+        @Assert(cmdDendro(ArrayList<String>(["gen", "dendro-cmd"]), ctx) == 0)
+        @Assert(fileExists(store + "/confidence.json"))
+        // query：只读快照（= confidence query）——新旧两个入口都通
+        @Assert(cmdDendro(ArrayList<String>(["query", "dendro-cmd"]), ctx) == 0)
+        @Assert(cmdConfidence(ArrayList<String>(["query", "dendro-cmd"]), ctx) == 0)
+        // check：现算报告、不落盘（= graph confidence）
+        @Assert(cmdDendro(ArrayList<String>(["check", "dendro-cmd", "--no-ast"]), ctx) == 0)
+        // 缺参 / 未知子命令 → 用法错误
+        let bad = [ArrayList<String>([]), ArrayList<String>(["nope"]), ArrayList<String>(["patch"]),
+                   ArrayList<String>(["check"]), ArrayList<String>(["merge", "only-one.json"])]
+        for (args in bad) {
+            var threw = false
+            try {
+                cmdDendro(args, ctx)
+            } catch (e: DgError) {
+                threw = true
+            }
+            @Assert(threw)
+        }
+    } finally {
+        removePathIfExists(base)
+        exitTestHome()
+        removePathIfExists(testHome)
     }
 }

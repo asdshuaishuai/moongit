@@ -11,10 +11,10 @@
 // 【为什么是代码】写在文档里的清单会漂（清单少一项，照文档移植的驱动
 // 就跑不完这渲染器）；写成引擎常量后被测试钉住，文档 `引用` 它，
 // 谁改清单谁就得同时改测试——规范才有约束力。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
-import moongit.util.*
+import cambium.util.*
 
 // MARK: - 规范一：Canvas2D 方法子集（移植验收清单，唯一来源）
 

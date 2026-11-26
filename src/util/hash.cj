@@ -1,5 +1,5 @@
 // 随机/稳定 ID 生成。
-package moongit.util
+package cambium.util
 
 import std.collection.*
 import std.sync.*

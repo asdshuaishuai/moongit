@@ -9,15 +9,15 @@
 //
 // 【嵌入纪律】本文件的 JS 一律字符串拼接 —— 不用模板字面量（`${` 会撞仓颉插值）、
 // 不用反斜杠转义；数据经 jsonSafeForEmbed 处理后内嵌。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
 import std.convert.*
-import moongit.util.*
+import cambium.util.*
 
 /// JSON 内嵌安全：把 `<` 转成 \u003c —— 防御 "</script>" 提前闭合标签。
 /// （结构字符里本来就没有 '<'，命中的只会是字符串值里的泛型尖括号。）
-func jsonSafeForEmbed(s: String): String {
+public func jsonSafeForEmbed(s: String): String {
     let bytes = s.toArray()
     let out = ArrayList<UInt8>()
     for (b in bytes) {
@@ -73,7 +73,7 @@ public struct ArchUi {
     public init(en: Bool) {
         if (en) {
             title = "Architecture"
-            sub = "computed by moonGit engine (Cangjie) — deterministic layout, zero dependencies"
+            sub = "computed by Cambium engine (Cangjie) — deterministic layout, zero dependencies"
             search = "Search module…"
             fit = "Fit"
             theme = "Theme"
@@ -107,7 +107,7 @@ public struct ArchUi {
             copyFailedWord = "Copy failed — select the text and copy it manually:"
         } else {
             title = "技术架构"
-            sub = "moonGit 引擎（仓颉）确定性计算 · 零依赖单文件"
+            sub = "Cambium 引擎（仓颉）确定性计算 · 零依赖单文件"
             search = "搜索模块…"
             fit = "复位"
             theme = "主题"
@@ -201,7 +201,7 @@ public func renderArchHtml(archJsonStr: String, en: Bool): String {
     // 持久化产物的自报家门（复用判定比对的就是这一行）
     var metaComment = ""
     if (Json.has(root, "updateCount")) {
-        metaComment = "<!-- moongit arch render · updateCount=" +
+        metaComment = "<!-- cambium arch render · updateCount=" +
             Int64(Json.intAt(root, "updateCount", 0)).toString() +
             " · generatedAt=" + Json.strAt(root, "generatedAt", "") + " -->\n"
     }
@@ -212,7 +212,7 @@ public func renderArchHtml(archJsonStr: String, en: Bool): String {
 
     sb.append("<!DOCTYPE html>\n${metaComment}<html lang=\"${if (en) { "en" } else { "zh-CN" }}\" data-theme=\"dark\">\n<head>\n<meta charset=\"UTF-8\">\n")
     sb.append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n")
-    sb.append("<meta name=\"generator\" content=\"moonGit graph arch (Cangjie engine, deterministic layout)\">\n")
+    sb.append("<meta name=\"generator\" content=\"Cambium graph arch (Cangjie engine, deterministic layout)\">\n")
     sb.append("<title>${ui.title} · ${totalFiles}f / ${totalSymbols}s</title>\n")
     sb.append("""
 <style>
@@ -320,7 +320,8 @@ func renderJs(en: Bool): String {
     sb.append("  var ctx = cv.getContext('2d');\n")
     sb.append("  var panel = document.getElementById('panel');\n")
     sb.append("  var crumbs = document.getElementById('crumbs');\n")
-    sb.append("  var EMB = window.MOONGIT_EMBED, EMB_ON = !!(EMB && EMB.chrome === 'page'), CAN = (EMB_ON && EMB.canvas) || {};\n")
+    // 嵌入声明读新名，旧名兜底（与热力图产物同一式）
+    sb.append("  var EMB = window.CAMBIUM_EMBED || window.MOONGIT_EMBED, EMB_ON = !!(EMB && EMB.chrome === 'page'), CAN = (EMB_ON && EMB.canvas) || {};\n")
     sb.append("  // 嵌入模式恒为暗色（宿主的外观由宿主决定）；独立打开时跟随系统\n")
     sb.append("  var dark = EMB_ON ? true : (!window.matchMedia || !window.matchMedia('(prefers-color-scheme: light)').matches);\n")
     sb.append("  document.body.className = dark ? 'dark' : 'light';\n")
@@ -730,7 +731,8 @@ func renderJs(en: Bool): String {
     // 任何提供标准 Canvas2D API 的实现（OffscreenCanvas / node-canvas /
     // Skia 绑定 / CoreGraphics 包装）都可以把自己的 ctx 传给 renderTo，
     // draw() 只调用上文审计过的那组标准方法，绘制路径不碰 DOM。
-    sb.append("  window.MoongitArch = {\n")
+    // 旧名别名 MoongitArch：改名前的宿主照常可用
+    sb.append("  window.MoongitArch = window.CambiumArch = {\n")
     sb.append("    scene: DATA,\n")
     sb.append("    canvas: cv,\n")
     sb.append("    setTheme: function (d) { dark = d; document.body.className = dark ? 'dark' : 'light'; },\n")
@@ -758,7 +760,7 @@ func renderJs(en: Bool): String {
 /// ⚠️ 上一版的乱码根源：逐字节 `fromUtf8Lossy([b])` —— 中文一个字 3 字节，
 /// 拆开每字节单独解码全变成 U+FFFD（�）。正确做法：把「需要转义的两个 ASCII」
 /// 之外的字节**原样收集**，最后一次性 fromUtf8Lossy —— 多字节序列完整解码。
-func jsStr(s: String): String {
+public func jsStr(s: String): String {
     let bytes = s.toArray()
     let out = ArrayList<UInt8>()
     out.add(34)   // '"'

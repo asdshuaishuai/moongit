@@ -21,7 +21,7 @@
 //     函数指针 cast）：sqlite 立即拷贝字符串内容，绑定调用返回后
 //     仓颉侧临时 CString 即可释放——不依赖「缓冲区必须活到 step」
 //     的 STATIC 语义，也就没有 use-after-free 的时序约束。
-package moongit.util
+package cambium.util
 
 // ---- sqlite3 C ABI 最小函数面（全部为非变参函数，可直接声明）----
 // 签名对照 https://www.sqlite.org/c3ref/。比能力清单多声明三个，均为

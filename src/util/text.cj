@@ -1,5 +1,5 @@
 // 文本处理工具：宽度计算、截断、Markdown 规整、JSON 提取。
-package moongit.util
+package cambium.util
 
 import std.collection.*
 import std.unittest.*
@@ -52,7 +52,7 @@ public func truncate(s: String, maxWidth: Int64, ellipsis: String): String {
     return sb.toString() + ellipsis
 }
 
-/// 中和 moonGit 托管区标记。
+/// 中和 Cambium 托管区标记。
 ///
 /// 引擎会把 commit subject、AI 生成的摘要、文件名等**完全不可信的文本**
 /// 原样写进用户 README/AGENTS 的托管区。实测可远程触发的后果：
@@ -589,6 +589,27 @@ public func lastIndexBefore(s: String, idx: Int64): Int64 {
         i -= 1
     }
     return 0
+}
+
+
+/// 带起点偏移的子串搜索（纯字节扫描，不做切片，UTF-8 安全）；找不到 = -1。
+/// 与 indexOfFrom 的区别：那个找不到返回 s.size（调用方自己判越界），这个要区分「没找到」。
+/// 两份图谱产物（热力图 / 架构图）读模板版本标记、Dendro 的检测器都从某处之后接着找——放工具包，不分层。
+public func indexOfStrFrom(s: String, target: String, from: Int64): Int64 {
+    let sB = s.toArray(); let tB = target.toArray()
+    if (tB.size == 0) { return -1 }
+    let n = Int64(sB.size); let m = Int64(tB.size)
+    var i = from
+    if (i < 0) { i = 0 }
+    while (i + m <= n) {
+        var found = true
+        for (j in 0..m) {
+            if (sB[i + j] != tB[j]) { found = false; break }
+        }
+        if (found) { return i }
+        i += 1
+    }
+    return -1
 }
 
 /// 从 idx 起往后找 needle，返回下标；找不到返回 s.size（调用方自己判越界）。

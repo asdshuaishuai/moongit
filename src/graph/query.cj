@@ -7,10 +7,10 @@
 //
 // 【确定性】所有查询带 ORDER BY；需要内存聚合的地方物化后按全序排定
 //（file ↑ → line ↑ → id ↑）。同一份索引两次查询逐字节一致。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
-import moongit.util.*
+import cambium.util.*
 
 // MARK: - 符号解析与 JSON 形状
 

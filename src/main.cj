@@ -1,9 +1,9 @@
-package moongit
+package cambium
 
 import std.collection.*
 import std.env.*
-import moongit.cli.*
-import moongit.util.*
+import cambium.cli.*
+import cambium.util.*
 
 main(): Int64 {
     let argv = ArrayList<String>()
@@ -12,14 +12,14 @@ main(): Int64 {
     }
     // 首个参数是可执行文件路径，剔除
     //
-    // ⚠️ 命令名 2026-10-03 由 `deepgit` 改为 `moongit`，但**两个名字都要认**：
-    //    install.sh 会额外留一个 `deepgit` → `moongit` 的软链给老脚本用。
-    //    只认新名的话，老脚本经软链调进来时 argv[0] 是 `deepgit`，
+    // ⚠️ 命令名改过两次（2026-10-03 `deepgit` → `moongit`；2026-11-26 `moongit` → `cambium`），**三个名字都要认**：
+    //    install.sh 会额外留 `deepgit`、`moongit` → `cambium` 的软链给老脚本用。
+    //    只认新名的话，老脚本经软链调进来时 argv[0] 是旧名，
     //    这个分支不成立 ⇒ argv[0] 不会被剔除 ⇒ 第一个真子命令被当成可执行文件名，
     //    于是每条命令都报「未知命令」—— 而错误信息里看不出是改名引起的。
     if (argv.size > 0) {
         let first = argv[0]
-        if (first.contains("/") || first.endsWith("moongit") || first.endsWith("deepgit")) {
+        if (first.contains("/") || first.endsWith("cambium") || first.endsWith("moongit") || first.endsWith("deepgit")) {
             let trimmed = ArrayList<String>()
             var i: Int64 = 0
             for (a in argv) {

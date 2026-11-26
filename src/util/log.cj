@@ -1,5 +1,5 @@
 // 日志与终端输出：人类可读信息进 stderr，数据进 stdout。
-package moongit.util
+package cambium.util
 
 import std.collection.*
 import std.env.*
@@ -79,7 +79,7 @@ public class Log {
     //   1) 引擎自己的 post-commit 钩子跑的是 `track --quiet`
     //      （kernel/hooks.cj），用户从没要求过静默 —— 是引擎替他决定的。
     //      于是钩子每次提交报出的数据丢失告警，条条被吞。
-    //   2) 用户在脚本里 `moongit update -q` 时，脚本能拿到非 0 退出码，
+    //   2) 用户在脚本里 `cambium update -q` 时，脚本能拿到非 0 退出码，
     //      却永远看不到「有 N 行进度日志无法解析，已跳过」。
     // 方向也反了：--quiet 的语义是「少给我念叨」，不是「别告诉我数据坏了」。
     public static func warn(msg: String): Unit {

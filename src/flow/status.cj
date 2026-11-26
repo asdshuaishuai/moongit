@@ -1,5 +1,5 @@
 // 状态聚合：CLI / Web / macOS 菜单栏三端共用的单一事实源。
-package moongit.flow
+package cambium.flow
 
 import std.collection.*
 import std.env.*
@@ -7,8 +7,8 @@ import std.sync.*
 import std.time.*
 import std.unittest.*
 import std.unittest.testmacro.*
-import moongit.kernel.*
-import moongit.util.*
+import cambium.kernel.*
+import cambium.util.*
 
 public func projectStatus(project: ProjectEntry, config: Config, journalLimit: Int64): JsonValue {
     let facts = collectFacts(project.path, project.kind, config, 15, false)
@@ -560,7 +560,7 @@ func testProjectStatusOnRealRepo(): Unit {
     @Assert(Json.strAt(status, "kind", "") == "git")
     @Assert(Json.intAt(status, "commitCount", 0) == 1)
     @Assert(Json.strAt(status, "headline", "").size > 0)
-    // README 是托管文档，即使被 moonGit 改过也不算用户脏
+    // README 是托管文档，即使被 Cambium 改过也不算用户脏
     @Assert(Json.intAt(status, "userDirtyCount", -1) == 0)
     removePathIfExists(base)
     removePathIfExists(deepgitPath(["store", pid]))

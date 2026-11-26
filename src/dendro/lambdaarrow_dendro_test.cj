@@ -1,15 +1,15 @@
-// graph/lambdaarrow_test.cj — `->` 只在 C / Rust 里是成员访问；Kotlin / Java 的 lambda 箭头不是接收者。
-//
-// 扫描器此前不分语言，把 `x -> real()` 里的箭头当成 C 的 `obj->m(`，给箭头后的调用安了一个
-// 接收者（lambda 参数 x）。后果两处：箭头后的幻觉调用被当成「接收者调用」而不报 unresolved-call
-// （阶段二 B 逐条核对 13 个「旧报新不报」的名字时暴露：withLink / withStyle 就是这么漏掉的）；
-// 调用点的接收者归属也是错的。
-package moongit.graph
+// lambdaarrow_dendro_test.cj —— 从图谱包的 lambdaarrow_test.cj 搬来的用例：它们断言的是 Dendro（置信度）的契约，
+// 而图谱包的测试不能再引入 Dendro（cjpm：循环依赖）。用例原文未改，只换了所在的包。
+// 建图、扫描这类被测能力仍是图谱包的公开接口（import cambium.graph）。
 
+package cambium.dendro
+
+import cambium.util.*
 import std.collection.*
 import std.unittest.*
 import std.unittest.testmacro.*
-import moongit.util.*
+import cambium.graph.*
+
 
 @Test
 func testLambdaArrowIsNotAReceiver(): Unit {

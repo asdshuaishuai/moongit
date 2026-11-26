@@ -13,11 +13,11 @@
 // （审查时逐条找过：没有任何断言钉住场景导出的字节序）。一句失实的守护声明
 // 比没有声明更糟：读者会以为改动被兜住，于是放心重构。
 // 现在补上真守护（graph_test 的 testSceneExportIsDeterministic）。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
 import std.convert.*
-import moongit.util.*
+import cambium.util.*
 
 // MARK: - 主题 token
 
@@ -58,7 +58,7 @@ public func langThemeColors(dark: Bool): ArrayList<(String, String)> {
 
 /// langs 主题 token（scene 契约形态）：从 langThemeColors 派生，
 /// 键序 = 构造点顺序（JObj 按插入序序列化）。
-func langsTokenJson(dark: Bool): JsonValue {
+public func langsTokenJson(dark: Bool): JsonValue {
     let o = Json.obj()
     for ((lang, color) in langThemeColors(dark)) {
         Json.set(o, lang, Json.of(color))

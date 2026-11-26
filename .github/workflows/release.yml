@@ -69,16 +69,16 @@ jobs:
         run: |
           # ⚠ 用引擎**自己的**打包脚本（不是 tar 一下裸二进制）：
           #   · 裸二进制离开构建机就 Library not loaded（runtime 没跟过去）；
-          #   · 根部必须有 `moongit` 启动器（注入 cjHeapSize=1gb）——
-          #     客户端的安装器按这个布局找可执行文件（tarball 根部的 `moongit`）。
+          #   · 根部必须有 `cambium` 启动器（注入 cjHeapSize=1gb）——
+          #     客户端的安装器按这个布局找可执行文件（tarball 根部的 `cambium`）。
           # ⚠ 还要 source envsetup.sh：打包脚本靠 CANGJIE_HOME 定位仓颉 runtime
           #   目录（每个 step 是**独立 shell**，不 source 就没有这个变量）。
           source "$CANGJIE_HOME/envsetup.sh"
           sh scripts/package-release.sh "${TAG_NAME#v}" darwin-arm64
       - uses: actions/upload-artifact@v4
         with:
-          name: moongit-darwin-arm64
-          path: moongit-*-darwin-arm64.tar.gz
+          name: cambium-darwin-arm64
+          path: cambium-*-darwin-arm64.tar.gz
 
   build-linux:
     runs-on: ubuntu-22.04
@@ -121,8 +121,8 @@ jobs:
           sh scripts/package-release.sh "${TAG_NAME#v}" linux-x64
       - uses: actions/upload-artifact@v4
         with:
-          name: moongit-linux-x64
-          path: moongit-*-linux-x64.tar.gz
+          name: cambium-linux-x64
+          path: cambium-*-linux-x64.tar.gz
 
   release:
     needs: [build-macos, build-linux]
@@ -132,7 +132,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: moongit-*/moongit-*.tar.gz
+          files: cambium-*/cambium-*.tar.gz
           generate_release_notes: true
           # ⚠ 必须显式给 tag_name：手动触发时默认 ref 是**分支**，
           #   不给就会把 release 建在分支上（tag 指向空、latest 取不到）。

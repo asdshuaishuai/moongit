@@ -10,10 +10,10 @@
 //
 // 【边界】本包只依赖 util（词法工具 + JSON + 路径），不碰 kernel/git ——
 // 图谱是对**工作区文件**的确定性扫描，与进度库、注册表完全解耦。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
-import moongit.util.*
+import cambium.util.*
 
 // MARK: - 符号种类（ADT）
 
@@ -216,7 +216,7 @@ public struct FileEntry {
     /// 总行数（架构图的规模注记用）
     public let lines: Int64
     public let symbols: ArrayList<SymDecl>
-    /// import 的模块名（首段）：`import moongit.util` → `moongit`；
+    /// import 的模块名（首段）：`import cambium.util` → `cambium`；
     /// `from x import y` → `x`；`use a::b` → `a`；go `import "a/b/c"` → `c`
     public let imports: ArrayList<String>
     /// 与 imports 平行的行号（未使用 import 的证据定位）

@@ -1,5 +1,5 @@
 // 锁：防止并发更新同一项目。
-package moongit.kernel
+package cambium.kernel
 
 import std.collection.*
 import std.fs.*
@@ -8,7 +8,7 @@ import std.sync.*
 import std.time.*
 import std.unittest.*
 import std.unittest.testmacro.*
-import moongit.util.*
+import cambium.util.*
 
 /// 简单 pid+时间戳文件锁；超过 staleMs 的陈旧锁会被接管。
 ///
@@ -30,14 +30,14 @@ public func withLock<T>(lockFile: String, staleMs: Int64, body: () -> T): T {
     }
     let lockDir = "${lockFile}.d"
     if (!tryAcquire(lockDir, staleMs)) {
-        throw DgError("LOCKED", "该项目正在更新中（另一个 moonGit 进程持锁），请稍后重试", 1, Some(lockFile))
+        throw DgError("LOCKED", "该项目正在更新中（另一个 Cambium 进程持锁），请稍后重试", 1, Some(lockFile))
     }
     // ⚠️ 释放必须绑在 finally 上，不能绑在 catch (e: Exception) 上。
     //
     // 仓颉的 Error 不是 Exception 的子类，Out of memory / StackOverflow 这类
     // Error 会直接穿透 catch (e: Exception) —— 锁目录就留在盘上了。
     // 实测：51MB 注册表（30 万项目）触发 OOM 后，registry.lock.d 留在原地，
-    // 而此时**没有任何 moonGit 进程在运行**，后续命令却要白等一个 60 秒的
+    // 而此时**没有任何 Cambium 进程在运行**，后续命令却要白等一个 60 秒的
     // 陈旧锁窗口，并报出与事实不符的「另一个 moonGit 进程持锁」。
     // finally 块无论是否有异常都会执行（异常未被捕获时也会执行，然后重新抛出），
     // 所以 Error 路径同样能释放。
@@ -63,7 +63,7 @@ public func withLock<T>(lockFile: String, staleMs: Int64, body: () -> T): T {
 /// README 托管区，而两个进程都 exit 0。
 ///
 /// 实测（本轮）：持锁 pid 活着、锁目录 mtime 回拨 20 分钟 →
-///   `moongit update repo` 直接进入临界区、exit 0、原 holder.json 被覆盖删除；
+///   `cambium update repo` 直接进入临界区、exit 0、原 holder.json 被覆盖删除；
 /// 同一实验把 mtime 保持新鲜 → 正确报「该项目正在更新中」、exit 1、锁完好。
 ///
 /// 契约：**持锁者活着 = 绝不动它，年龄一概不看。**
@@ -154,8 +154,8 @@ private func tryAcquire(lockDir: String, staleMs: Int64): Bool {
 ///
 /// 实测（本轮真踩到）：一个被 kill 掉的 update 留下 project.lock.d，
 /// 之后 10 分钟内每一次 update 都报
-///     ✗ 该项目正在更新中（另一个 moonGit 进程持锁），请稍后重试
-/// 而系统里**一个 moonGit 进程都没有**。用户看到的是「有别的进程在忙」，
+///     ✗ 该项目正在更新中（另一个 Cambium 进程持锁），请稍后重试
+/// 而系统里**一个 Cambium 进程都没有**。用户看到的是「有别的进程在忙」，
 /// 真相是「上次崩了」，这两件事的处置方式完全不同。
 ///
 /// 注意这与 `finally` 那次修复不冲突：finally 解决的是仓颉 Error 穿透，
@@ -425,7 +425,7 @@ func testLockIsReleasedWhenErrorEscapes(): Unit {
     // ⚠️ 仓颉的 Error 不是 Exception 的子类，Out of memory / StackOverflow
     // 会直接穿透 catch (e: Exception) —— 旧实现在 catch 里清锁，
     // 于是锁目录留在盘上。
-    // 后果实测：51MB 注册表触发 OOM 后，没有任何 moonGit 进程在运行，
+    // 后果实测：51MB 注册表触发 OOM 后，没有任何 Cambium 进程在运行，
     // 后续命令却要白等 60 秒的陈旧锁窗口，并报出与事实不符的
     // 「另一个 moonGit 进程持锁」。
     let lock = "/tmp/dg_locktest_${nowMillis()}.lock"
@@ -486,7 +486,7 @@ func testLockHolderPidLivenessTakesOverDeadLockImmediately(): Unit {
     // 于是「持锁进程早就没了」只能靠干等 staleMs 才知道。
     // update 的 staleMs 是 600000ms —— 一个被 kill 掉的 update 会让项目
     // 锁死 10 分钟，每次都报「另一个 moonGit 进程持锁」，
-    // 而系统里一个 moonGit 进程都没有。
+    // 而系统里一个 Cambium 进程都没有。
     // 实测（本轮真踩到）：被 kill 的 update 留下 project.lock.d，
     // 之后所有命令都报「另一个进程持锁」直到陈旧窗口结束。
     //

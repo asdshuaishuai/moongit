@@ -11,7 +11,7 @@
 // ⇒ cjpm.toml 的 version 字段**没法**引用本常量。
 // ⇒ 两处的「必须同值」由**测试**钉死（cli_test.cj 的 testEngineVersionIsSingleSourced）：
 // 谁改了其中一处而忘了另一处，测试立刻红。
-package moongit.util
+package cambium.util
 
 /// 引擎版本号（语义化版本）。
 ///

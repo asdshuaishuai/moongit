@@ -2,11 +2,12 @@
 //
 // 【纪律】每个检测器只做一件事，阈值全部引用 confidence.cj 里的常量；
 // 证据字符串必须自足（file:line + 为什么可疑的可核验描述）。
-package moongit.graph
+package cambium.dendro
 
 import std.collection.*
 import std.convert.*
-import moongit.util.*
+import cambium.util.*
+import cambium.graph.*
 
 // MARK: - ① 孤儿符号
 
@@ -783,75 +784,6 @@ func braceLang(lang: String): Bool {
         || lang == "go" || lang == "swift" || lang == "cangjie" || lang == "ts"
 }
 
-
-// MARK: - 内建名表（未解析调用的豁免集）
-
-/// 各语言常见内建函数/类型/命名空间名的**并集**。
-/// 判据保守：宁可漏报（它本来就只是启发式信号），不可把合法调用报成幻觉。
-func buildBuiltinNames(): HashSet<String> {
-    let s = HashSet<String>()
-    let words = [
-        "print", "println", "printf", "puts", "echo", "log", "error", "warn",
-        "info", "debug", "trace", "assert", "throw", "panic",
-        "len", "cap", "make", "new", "append", "copy", "delete", "close",
-        "recover", "Println", "Printf", "Sprintf",
-        "range", "str", "int", "float", "list", "dict", "set", "tuple", "open",
-        "type", "super", "isinstance", "enumerate", "zip", "map", "filter",
-        "sorted", "sum", "min", "max", "abs", "round", "any", "all", "repr",
-        "format", "ord", "chr", "hex", "bin", "bool", "bytes", "setattr",
-        "getattr", "hasattr",
-        "fatalError", "precondition", "String", "Int", "Double",
-        "Bool", "Array", "Dictionary", "Set",
-        "console", "fetch", "parseInt", "parseFloat", "Number", "Boolean",
-        "Object", "JSON", "Math", "isFinite", "isNaN", "require", "Promise",
-        "Symbol", "Error", "TypeError", "Date", "Map",
-        "vec", "Some", "None", "Ok", "Err",
-        "System", "out", "valueOf",
-        // sizeof 是 C/C++ 的编译期运算符不是函数，但形态与调用一致
-        //（`malloc(sizeof(int))` 曾被指控为幻觉 API —— G2）
-        "sizeof",
-        "malloc", "free", "memcpy", "strlen", "memset", "exit",
-        "ArrayList", "HashMap", "HashSet", "StringBuilder", "Path", "FileInfo",
-        "Directory", "Char", "UInt8", "Int64", "Float64", "Float32", "Rune",
-        "Unit", "Comparable", "Runnable", "Iterator", "Optional",
-        "describe", "it", "expect", "beforeEach", "afterEach", "main",
-        // node/Browser API（AI 高频使用、非项目内定义）
-        "hypot", "alloc", "writeUInt32BE", "readUInt32BE", "writeInt32BE",
-        "concat", "Buffer", "from", "toString", "slice", "splice", "indexOf",
-        "includes", "replace", "match", "test", "split", "trim", "padStart",
-        "padEnd", "entries", "keys", "values", "forEach", "reduce", "push",
-        "pop", "shift", "unshift", "find", "findIndex", "some", "every",
-        "flat", "fill", "join", "reverse", "sort", "at", "includes",
-        "keys", "assign", "freeze", "create", "defineProperty", "getPrototypeOf",
-        "preventExtensions", "isFrozen", "seal",
-        "writeFileSync", "readFileSync", "existsSync", "mkdirSync", "readdirSync",
-        "statSync", "unlinkSync", "appendFileSync", "copyFileSync", "rmSync",
-        "writeFile", "readFile", "mkdir", "readdir", "stat", "unlink",
-        "resolve", "join", "dirname", "basename", "extname", "relative",
-        "createServer", "listen", "request", "get", "post", "put", "delete",
-        "setTimeout", "setInterval", "clearTimeout", "clearInterval",
-        "queueMicrotask", "structuredClone", "fetch",
-        // Swift 协议必需方法（框架回调，永不显式调用）
-        "makeNSView", "updateNSView", "makeCoordinator", "effectValue",
-        "body", "onAppear", "onDisappear", "task", "onChange", "deref",
-        "hash", "isEqual", "compareTo", "description"
-    ]
-    for (w in words) {
-        let t = w.trimAscii()
-        if (!t.isEmpty()) { s.add(t) }
-    }
-    return s
-}
-
-let BUILTIN_NAMES: HashSet<String> = buildBuiltinNames()
-
-func isBuiltinName(name: String): Bool {
-    if (BUILTIN_NAMES.contains(name)) { return true }
-    let lower = lowerAscii(name)
-    return BUILTIN_NAMES.contains(lower)
-}
-
-
 // MARK: - 幻觉调用 / 未使用 import / 注释掉的代码
 
 /// 幻觉调用：自由函数调用 `name(`，名字全仓没有同语言的定义、非内建。
@@ -1347,24 +1279,6 @@ func cyclomaticComplexity(bodyLines: ArrayList<String>): Int64 {
 /// 辅助：子串搜索（返回起始偏移，-1 = 未找到）。
 func indexOfStr(s: String, target: String): Int64 {
     return indexOfStrFrom(s, target, 0)
-}
-
-/// 辅助：带起点偏移的子串搜索（纯字节扫描，不做切片，UTF-8 安全）。
-func indexOfStrFrom(s: String, target: String, from: Int64): Int64 {
-    let sB = s.toArray(); let tB = target.toArray()
-    if (tB.size == 0) { return -1 }
-    let n = Int64(sB.size); let m = Int64(tB.size)
-    var i = from
-    if (i < 0) { i = 0 }
-    while (i + m <= n) {
-        var found = true
-        for (j in 0..m) {
-            if (sB[i + j] != tB[j]) { found = false; break }
-        }
-        if (found) { return i }
-        i += 1
-    }
-    return -1
 }
 
 /// 参数滥用检测：签名参数数 > 5 或存在 Bool 标志参数。

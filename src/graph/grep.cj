@@ -9,11 +9,11 @@
 // 【定字符串，不是正则】仓颉标准库没有正则，仓库里也没有自己的正则工具——
 // 不为一条命令引入一台正则机。模式按字面量逐字节匹配；`--ignore-case` 做
 // ASCII 大小写折叠（标识符只有 ASCII 字母有大小写）。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
 import std.fs.*
-import moongit.util.*
+import cambium.util.*
 
 /// 一行命中（含上下文）。col 是匹配起点的 1 起字符列；text / before / after
 /// 是原始行（长行截断，不切 UTF-8）。

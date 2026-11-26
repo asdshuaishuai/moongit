@@ -1,11 +1,11 @@
 // 项目扫描器：在给定根目录下发现项目（git 仓库 或 带清单+README 的目录）。
-package moongit.kernel
+package cambium.kernel
 
 import std.collection.*
 import std.fs.*
 import std.unittest.*
 import std.unittest.testmacro.*
-import moongit.util.*
+import cambium.util.*
 
 let SCAN_SKIP_DIRS = ["node_modules", ".git", ".svn", ".hg", ".build", ".swiftpm", "DerivedData", "dist", "build", "target", "__pycache__", ".venv", "venv", ".next", ".cache", ".gradle", ".idea", "_build", "coverage", "Library", ".Trash", "renders", "snapshots", ".playwright-mcp", ".zcode", "tmp"]
 
@@ -54,7 +54,7 @@ public class ScanResult {
     /// ⚠️ 这是缺陷 #197：`truncated` 只表达「撞到 20000 目录上限」，
     /// 覆盖不全还有**第二种**成因 —— 用户给的 `--depth` 太浅。
     /// 实测在一棵只有 4 层深的仓库树上：
-    ///     moongit scan <树> --depth 2
+    ///     cambium scan <树> --depth 2
     ///     → 「未发现项目（已访问 3 个目录）」exit 0
     /// 仓库明明就在第 4 层。而同一个函数对「目录过多」早就有正确措辞
     /// （cli.cj 里那句「扫描被截断…本次**未**覆盖全部范围」），
@@ -280,7 +280,7 @@ public func registerCandidates(candidates: ArrayList<ScanCandidate>): (Int64, In
             //
             // addProject（registry.cj）在 #198 修掉了「basename("/") 为空串仍注册」，
             // 而这里没跟上 —— scan 的根目录本身成为 candidate 时
-            // （`moongit scan /`），basename("/") 算出的就是空串，
+            // （`cambium scan /`），basename("/") 算出的就是空串，
             // 于是静默写进一条 `name=""` 的项目。后果与 add 侧一模一样：
             //   ① 那条项目**永远引用不到** —— findProjectIn 对空 ref 返回 None，
             //      连 `remove` 都删不掉它（用户连补救手段都没有）；
@@ -291,7 +291,7 @@ public func registerCandidates(candidates: ArrayList<ScanCandidate>): (Int64, In
             // 其余候选照常注册。
             if (c.name.trimAscii().isEmpty()) {
                 Log.warn("扫描候选 ${c.path} 的名称为空，已跳过注册" +
-                    "（空名项目引用不到、且会污染聚合命令；如确需注册请用 moongit add --name）")
+                    "（空名项目引用不到、且会污染聚合命令；如确需注册请用 cambium add --name）")
                 continue
             }
             let id = projectIdFor(c.path)
@@ -403,7 +403,7 @@ func testScanNonGitDisabled(): Unit {
 ///
 /// addProject（registry.cj）修掉了「basename("/") 为空仍注册」，
 /// 而 registerCandidates 没跟上 —— scan 根目录本身成为 candidate 时
-/// （`moongit scan /`，根目录里有 .git 时它就是 candidate），
+/// （`cambium scan /`，根目录里有 .git 时它就是 candidate），
 /// basename("/") 是空串，会被静默写进一条 `name=""` 的项目：
 /// findProjectIn 对空 ref 返回 None，那条项目永远引用不到、连 remove
 /// 都删不掉，还永久污染每一次聚合命令（status/dashboard/report）。

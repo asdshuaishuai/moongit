@@ -3,12 +3,12 @@
 // `m_autoTimer->stop()` 写在 `AppModel::stop` 里：接收者的类型未知，裸名的唯一候选恰好是所在函数，
 // 词法解析会连出一条 resolved 自环（探针工程 51 条自环里 49 条是这种，真递归只有 2 条）。
 // 真递归（`this->stop()` / 裸调 `fact()`）必须原样保留。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
 import std.unittest.*
 import std.unittest.testmacro.*
-import moongit.util.*
+import cambium.util.*
 
 /// 某文件里名字叫 [name] 的调用点（按行序——callSites 出口已排定全序）。
 func sitesNamed(g: CodeGraph, file: String, name: String): ArrayList<ResolvedSite> {

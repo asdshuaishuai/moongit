@@ -1,5 +1,5 @@
 // 统一错误类型与结果封装。
-package moongit.util
+package cambium.util
 
 import std.collection.*
 import std.unittest.*

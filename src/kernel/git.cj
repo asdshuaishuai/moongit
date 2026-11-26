@@ -1,12 +1,12 @@
 // git 封装：所有 git 访问都经此处，返回结构化数据。
-package moongit.kernel
+package cambium.kernel
 
 import std.collection.*
 import std.fs.*
 import std.convert.*
 import std.unittest.*
 import std.unittest.testmacro.*
-import moongit.util.*
+import cambium.util.*
 
 /// 记录分隔符（与 util/exec 的 git 调用配合）
 /// 字段分隔符。**必须**是 NUL：git 只禁止提交信息含 NUL，对 0x1f/0x1e 毫无限制，
@@ -1094,7 +1094,7 @@ func testUntrackedFilesSurvivesDanglingSymlink(): Unit {
 
 @Test
 func testSelfRepoIfAvailable(): Unit {
-    // 在 moonGit 仓库自身运行时验证真实 git 读取
+    // 在 Cambium 仓库自身运行时验证真实 git 读取
     let here = "/Volumes/data/dev/coding/deepcodeUI/deepGit"
     if (isGitRepo(here)) {
         let branch = currentBranch(here)
@@ -1858,7 +1858,7 @@ public func runGitOp(root: String, op: String, message: String): GitOpResult {
             }
             return GitOpResult(op, r.ok() && !r.timedOut, out.trimAscii())
         case "stash" =>
-            let m = if (message.isBlank()) { "moongit stash ${nowIso()}" } else { message }
+            let m = if (message.isBlank()) { "cambium stash ${nowIso()}" } else { message }
             return gitOpExec(root, op, ["stash", "push", "-m", m])
         case "unstash" => return gitOpExec(root, op, ["stash", "pop"])
         case _ => return GitOpResult(op, false, "未知操作：${op}（支持 pull/push/commit/stash/unstash/fetch）")

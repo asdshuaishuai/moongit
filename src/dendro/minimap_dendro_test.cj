@@ -1,13 +1,15 @@
-// graph/minimap_test.cj — 热力图小地图：全图已在视口里时整块隐藏。
-//
-// 小地图是给「图比视口大」时导航用的。项目级只有一张模块卡时它被放大铺满整块小地图，
-// 低置信度的仓库看上去就是右下角一坨实心色块（打包态实拍确认）。这里钉住产物里的驱动。
-package moongit.graph
+// minimap_dendro_test.cj —— 从图谱包的 minimap_test.cj 搬来的用例：它们断言的是 Dendro（置信度）的契约，
+// 而图谱包的测试不能再引入 Dendro（cjpm：循环依赖）。用例原文未改，只换了所在的包。
+// 建图、扫描这类被测能力仍是图谱包的公开接口（import cambium.graph）。
 
+package cambium.dendro
+
+import cambium.util.*
 import std.collection.*
 import std.unittest.*
 import std.unittest.testmacro.*
-import moongit.util.*
+import cambium.graph.*
+
 
 /// 产物里带「全图可见就隐藏小地图」的驱动：判定只看世界包围盒与视口（不看节点个数），
 /// 隐藏 / 显示只在小地图容器上改 display，重新显示时按容器实尺寸重设 canvas。

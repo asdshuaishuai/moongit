@@ -10,11 +10,12 @@
 // 【词法边界，如实标注】S2/S7 依赖类型信息，词法层只能近似或置空（null 信号
 // 不进均值，diagnostics 披露）；S6 用括号配平作控制流代理。AST 可用时 S7
 // 用 type 节点提升，但 v1 先词法——诚实披露比装懂强。
-package moongit.graph
+package cambium.dendro
 
 import std.collection.*
 import std.convert.*
-import moongit.util.*
+import cambium.util.*
+import cambium.graph.*
 
 // MARK: - patch 解析
 

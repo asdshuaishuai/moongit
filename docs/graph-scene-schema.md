@@ -26,15 +26,15 @@ OffscreenCanvas、node-canvas、Skia 绑定、Qt QPainter 包装、CoreGraphics 
 Web 驱动还暴露注入式入口：
 
 ```js
-MoongitArch.renderTo(ctx, width, height, now)  // 往任何 Canvas2D 兼容 context 画一帧
-MoongitArch.draw(now)                          // 驱动自己的画布
-MoongitArch.setTheme(dark)                     // 切换主题
-MoongitArch.fit()                              // 复位视口
-MoongitArch.scene                              // 场景数据
+CambiumArch.renderTo(ctx, width, height, now)  // 往任何 Canvas2D 兼容 context 画一帧
+CambiumArch.draw(now)                          // 驱动自己的画布
+CambiumArch.setTheme(dark)                     // 切换主题
+CambiumArch.fit()                              // 复位视口
+CambiumArch.scene                              // 场景数据
 ```
 
 **数据契约 = 场景 JSON（moongit-graph-scene v1）。**
-`moongit graph arch --format scene` 导出引擎确定性计算的全部几何与语义：
+`cambium graph arch --format scene` 导出引擎确定性计算的全部几何与语义：
 布局坐标、分层、依赖边、命中区域、侧栏数据、动画时序——非 JS 驱动
 （如 Swift/CoreGraphics）消费这份数据，用上述 Canvas 子集逐条绘制即可。
 
@@ -101,9 +101,9 @@ token 表即 `themes` 的键（含 `langs` 下的每种语言）—— **引擎�
 
 | 场景 | Canvas 实现 | 数据 |
 |---|---|---|
-| macOS（deepDolphin） | **SwiftUI GraphicsContext**（Swift 语言版 Canvas2D 对应物，`ArchCanvasView`） | `--format scene` |
-| Linux（deepDolphin/linux，仓颉客户端） | **仓颉 Canvas 移植**（CangjieGUI 宿主，实现同一子集） | `--format scene` |
-| DDE / deepin（deepDolphin/deepin，C++ 客户端） | **Qt QPainter Canvas**（C++ 实现同一子集） | `--format scene` |
+| macOS（Canopy） | **SwiftUI GraphicsContext**（Swift 语言版 Canvas2D 对应物，`ArchCanvasView`） | `--format scene` |
+| Linux（Canopy/linux，仓颉客户端） | **仓颉 Canvas 移植**（CangjieGUI 宿主，实现同一子集） | `--format scene` |
+| DDE / deepin（Canopy/deepin，C++ 客户端） | **Qt QPainter Canvas**（C++ 实现同一子集） | `--format scene` |
 | Windows / 鸿蒙 PC | **平台 Canvas 实现（排期）**——不做 Web 运行时渲染 | `--format scene` |
 
 **HTML 导出的定位（`graph arch/tree` 默认导出，保留）**：它不是任何平台的渲染
@@ -127,9 +127,9 @@ token 表即 `themes` 的键（含 `langs` 下的每种语言）—— **引擎�
 |---|---|
 | Web Canvas2D（单文件 HTML，交互完整；tree 与 arch 默认导出） | ✅ |
 | 任何 Canvas2D API 移植（注入 ctx） | ✅ 契约级支持 |
-| macOS SwiftUI GraphicsContext（deepDolphin `ArchCanvasView`） | ✅ |
-| Linux 仓颉 Canvas 移植（deepDolphin/linux，CangjieGUI 宿主） | 📌 指定实现，进行中 |
-| DDE / deepin Qt QPainter Canvas（deepDolphin/deepin，C++） | 📌 指定实现，进行中 |
+| macOS SwiftUI GraphicsContext（Canopy `ArchCanvasView`） | ✅ |
+| Linux 仓颉 Canvas 移植（Canopy/linux，CangjieGUI 宿主） | 📌 指定实现，进行中 |
+| DDE / deepin Qt QPainter Canvas（Canopy/deepin，C++） | 📌 指定实现，进行中 |
 | Windows / 鸿蒙 PC Canvas | 排期（平台实现，不做 Web 运行时渲染） |
 | SVG / PDF 静态导出 | 规划 |
 | node-canvas / Skia 服务端栅格 | 规划 |

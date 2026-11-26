@@ -1,13 +1,14 @@
 // CLI 命令层：解析参数并分派到各模块。
-package moongit.cli
+package cambium.cli
 
 import std.collection.*
 import std.convert.*
 import std.env.*
-import moongit.flow.*
-import moongit.graph.*
-import moongit.kernel.*
-import moongit.util.*
+import cambium.flow.*
+import cambium.graph.*
+import cambium.kernel.*
+import cambium.util.*
+import cambium.dendro.*
 
 public class CliContext {
     public let args: ArrayList<String>
@@ -107,7 +108,7 @@ func hasFlag(args: ArrayList<String>, name: String): Bool {
 /// 参数中用 -- 分隔后要剔除 flag 对
 ///
 /// `--` 之后一律按字面量处理。以前 `--` 只是被当成一个无值 flag 跳过，
-/// 后面仍然是 flag 空间，于是 `moongit update -- --note "v2"` 里的 --note
+/// 后面仍然是 flag 空间，于是 `cambium update -- --note "v2"` 里的 --note
 /// 照样被解析成 flag，项目名/路径以 `-` 开头时根本没有表达方式。
 func positionalsOnly(args: ArrayList<String>, valueFlags: Array<String>): ArrayList<String> {
     let out = ArrayList<String>()
@@ -184,7 +185,7 @@ public func main2(argv: ArrayList<String>): Int64 {
     match (command) {
         case "--help" => printHelp(); return 0
         case "help" => printHelp(); return 0
-        case "version" => printOut("moonGit Engine " + ENGINE_VERSION + " (Cangjie " + CANGJIE_SDK_VERSION + " LTS)"); return 0
+        case "version" => printOut("Cambium Engine " + ENGINE_VERSION + " (Cangjie " + CANGJIE_SDK_VERSION + " LTS)"); return 0
         case "list" => return cmdList(rest, ctx)
         case "add" => return cmdAdd(rest, ctx)
         case "remove" => return cmdRemove(rest, ctx)
@@ -208,7 +209,8 @@ public func main2(argv: ArrayList<String>): Int64 {
         case "skill" => return cmdSkill(rest, ctx)
         case "report" => return cmdReport(rest, ctx)
         case "graph" => return cmdGraph(rest, ctx)
-        case "confidence" => return cmdConfidence(rest, ctx)
+        case "dendro" => return cmdDendro(rest, ctx)
+        case "confidence" => return cmdConfidence(rest, ctx)   // 旧名别名（= dendro gen|query|db）
         case "arch" => return cmdArch(rest, ctx)
         case "index" => return cmdIndex(rest, ctx)
         case "render" => return cmdRender(rest, ctx)
@@ -283,7 +285,7 @@ private func looksLikeFlag(s: String): Bool {
 /// 未知 flag 必须报错。
 ///
 /// 旧实现里未知 flag 落进 positionals 后被 positionalsOnly 无声丢弃：
-/// `moongit status --bogus` 照常 exit 0，`--limti 5` 照常用默认 20 条。
+/// `cambium status --bogus` 照常 exit 0，`--limti 5` 照常用默认 20 条。
 /// 打错一个字母的结果是「命令成功执行，但用的是默认值」—— 自动化脚本里最难查的一类。
 func validateKnownFlags(args: ArrayList<String>): Unit {
     for (a in args) {
@@ -300,16 +302,16 @@ func validateKnownFlags(args: ArrayList<String>): Unit {
             case None => ()
         }
         if (!KNOWN_FLAGS.contains(name)) {
-            throw DgError.usage(T("Unknown flag: ${a} (run moongit --help for supported options; when a value starts with -, use --flag=value)", "未知 flag：${a}（moongit --help 查看支持的参数；值以 - 开头时用 --flag=值 形式）"))
+            throw DgError.usage(T("Unknown flag: ${a} (run cambium --help for supported options; when a value starts with -, use --flag=value)", "未知 flag：${a}（cambium --help 查看支持的参数；值以 - 开头时用 --flag=值 形式）"))
         }
     }
 }
 
 /// 带值 flag 必须紧跟一个真正的值，缺值一律报错，不允许静默取到下一个 flag。
 ///
-/// 旧实现里 flagValue() 只看下一个 token，于是 `moongit add <path> --name --note`
+/// 旧实现里 flagValue() 只看下一个 token，于是 `cambium add <path> --name --note`
 /// 会把 "--note" 当成项目名写进 registry（已实证：项目真的被注册成 "--note"）；
-/// 而 `moongit report --out` 缺值时静默回落到默认路径，用户以为指定了输出位置。
+/// 而 `cambium report --out` 缺值时静默回落到默认路径，用户以为指定了输出位置。
 /// 报错文案引导改用 `--flag=值` 形式 —— 该形式是单个 token，不受此校验影响，
 /// 因此确实需要传 `--` 开头的值时仍然可用。`--` 之后的 token 是字面量，不校验。
 func validateValueFlags(args: ArrayList<String>): Unit {
@@ -340,7 +342,7 @@ func validateValueFlags(args: ArrayList<String>): Unit {
 func cmdGit(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let refs = positionalsOnly(rest, VALUE_FLAGS)
     if (refs.size == 0) {
-        throw DgError.usage(T("Usage: moongit git <pull|push|commit|stash|unstash|fetch> [project] [--message M]", "用法：moongit git <pull|push|commit|stash|unstash|fetch> [项目] [--message M]"))
+        throw DgError.usage(T("Usage: cambium git <pull|push|commit|stash|unstash|fetch> [project] [--message M]", "用法：cambium git <pull|push|commit|stash|unstash|fetch> [项目] [--message M]"))
     }
     let op = refs[0]
     var message = ""
@@ -361,7 +363,7 @@ func cmdGit(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let targets = resolveTargets(restNoOp, false)
     var failed = false
     // ⚠️ 收集而不是就地打印：旧实现在项目循环里逐个 printOut，于是
-    // `moongit git log`（不指定项目 → 全部项目）输出 N 份首尾相接的 JSON 文档，
+    // `cambium git log`（不指定项目 → 全部项目）输出 N 份首尾相接的 JSON 文档，
     // 整份 stdout 非法，任何 JSONDecoder 都解不出来。
     // 单项目正常、一多项目就崩，症状是「偶发」，最难查。
     let gitResults = ArrayList<JsonValue>()
@@ -442,10 +444,10 @@ func cmdMilestone(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let refs = positionalsOnly(rest, VALUE_FLAGS)
     let msl = loadConfig().language
     if (refs.size == 0) {
-        throw DgError.usage(T("Usage: moongit milestone <add|list|done|reopen|drop|remove> [project] [name] [--tag T] [--date YYYY-MM-DD] [--desc S]", "用法：moongit milestone <add|list|done|reopen|drop|remove> [项目] [名称] [--tag T] [--date YYYY-MM-DD] [--desc S]"))
+        throw DgError.usage(T("Usage: cambium milestone <add|list|done|reopen|drop|remove> [project] [name] [--tag T] [--date YYYY-MM-DD] [--desc S]", "用法：cambium milestone <add|list|done|reopen|drop|remove> [项目] [名称] [--tag T] [--date YYYY-MM-DD] [--desc S]"))
     }
     // ⚠️ #196：各子命令原来只查「至少 3 个」，多出来的位置参数被静默吞掉
-    // （`moongit milestone add alpha v1 extra` → 「✓ 已创建」rc=0，extra 蒸发）。
+    // （`cambium milestone add alpha v1 extra` → 「✓ 已创建」rc=0，extra 蒸发）。
     // 里程碑的元数是**固定**的（项目 + 名称），第 4 个参数不可能有别的含义，
     // 吞掉它等于把拼写错误变成一次「成功」。
     //
@@ -466,7 +468,7 @@ func cmdMilestone(rest: ArrayList<String>, ctx: CliContext): Int64 {
     match (action) {
         case "add" =>
             if (refs.size < 3) {
-                throw DgError.usage(T("Usage: moongit milestone add <project> <name> [--tag T] [--date YYYY-MM-DD] [--desc S]", "用法：moongit milestone add <项目> <名称> [--tag T] [--date YYYY-MM-DD] [--desc S]"))
+                throw DgError.usage(T("Usage: cambium milestone add <project> <name> [--tag T] [--date YYYY-MM-DD] [--desc S]", "用法：cambium milestone add <项目> <名称> [--tag T] [--date YYYY-MM-DD] [--desc S]"))
             }
             let p = requireProject(refs[1])
             let name = refs[2]
@@ -571,12 +573,12 @@ func cmdMilestone(rest: ArrayList<String>, ctx: CliContext): Int64 {
                 for (m in orphans) {
                     Log.info("  ${m.name}（projectId=${m.projectId}）")
                 }
-                Log.info(T("  Re-register the same path to show them again; to delete for good, run moongit milestone remove <project> <milestone>", "  重新注册同一路径即可恢复显示；确认要删就用 moongit milestone remove <项目> <里程碑>"))
+                Log.info(T("  Re-register the same path to show them again; to delete for good, run cambium milestone remove <project> <milestone>", "  重新注册同一路径即可恢复显示；确认要删就用 cambium milestone remove <项目> <里程碑>"))
             }
             return 0
         case "done" | "drop" | "reopen" =>
             if (refs.size < 3) {
-                throw DgError.usage(T("Usage: moongit milestone ${action} <project> <name>", "用法：moongit milestone ${action} <项目> <名称>"))
+                throw DgError.usage(T("Usage: cambium milestone ${action} <project> <name>", "用法：cambium milestone ${action} <项目> <名称>"))
             }
             let p = requireProject(refs[1])
             let status = match (action) {
@@ -614,7 +616,7 @@ func cmdMilestone(rest: ArrayList<String>, ctx: CliContext): Int64 {
             } else {
                 // ⚠️ 这一支不能被 --quiet 吞掉。
                 // 原来 `if (!ctx.quiet) { if (...) ok else warn }` 把两种结果
-                // 一起关掉了，于是 `moongit milestone set X done -q` 在
+                // 一起关掉了，于是 `cambium milestone set X done -q` 在
                 // 「写入没生效」时**什么都不打**、退出码仍是 0 ——
                 // 用户以为里程碑达成，实际被 tag 规则压回 open。
                 // 这不是日志安静，是谎报结果。
@@ -625,7 +627,7 @@ func cmdMilestone(rest: ArrayList<String>, ctx: CliContext): Int64 {
             return 0
         case "remove" =>
             if (refs.size < 3) {
-                throw DgError.usage(T("Usage: moongit milestone remove <project> <name>", "用法：moongit milestone remove <项目> <名称>"))
+                throw DgError.usage(T("Usage: cambium milestone remove <project> <name>", "用法：cambium milestone remove <项目> <名称>"))
             }
             let p = requireProject(refs[1])
             if (!removeMilestone(p.id, refs[2])) {
@@ -788,7 +790,7 @@ func cmdReport(rest: ArrayList<String>, ctx: CliContext): Int64 {
         }
     }
     if (targets.size == 0) {
-        Log.error(T("No registered projects; run moongit scan first", "没有已注册项目，先运行 moongit scan"))
+        Log.error(T("No registered projects; run cambium scan first", "没有已注册项目，先运行 cambium scan"))
         return 1
     }
 
@@ -838,8 +840,8 @@ func cmdReport(rest: ArrayList<String>, ctx: CliContext): Int64 {
 /// ⚠️ 这是 #196 的接缝。原来 `cmdDocs` / `cmdRemove` 各写了一份
 /// `targets.add(requireProject(refs[0]))` —— **只取第一个**，
 /// 其余项目名静默丢弃，退出码还是 0：
-///   `moongit docs alpha beta --json` → rc=0，输出只有 alpha 的 envelope
-///   `moongit remove alpha beta`      → rc=0，beta 原封不动留在注册表里
+///   `cambium docs alpha beta --json` → rc=0，输出只有 alpha 的 envelope
+///   `cambium remove alpha beta`      → rc=0，beta 原封不动留在注册表里
 /// `remove` 那个尤其恶劣：取消注册是破坏性操作，
 /// 「要注销两个、只注销一个、还告诉我成功了」会让用户把 beta 也划掉。
 ///
@@ -872,7 +874,7 @@ func cmdDocs(rest: ArrayList<String>, ctx: CliContext): Int64 {
     if (refs.size > 0) {
         // ⚠️⚠️ #196：原来这里是 `targets.add(requireProject(refs[0]))` ——
         // **只取第一个**，其余项目名静默丢弃，退出码还是 0。
-        // 实测 `moongit docs alpha beta --json`：
+        // 实测 `cambium docs alpha beta --json`：
         //     rc=0, 输出 = {"project":"alpha","docs":[…],"unreadable":[]}
         // beta 一个字都没出现，也没有任何「已忽略」提示。
         // 用户（和 agent）会以为这就是两个项目的完整答案。
@@ -988,7 +990,7 @@ func cmdContext(rest: ArrayList<String>, ctx: CliContext): Int64 {
 
 // ------------------------------ 代码图谱（CodeGraph） ------------------------------
 
-/// `moongit graph` —— 代码图谱：符号索引 + 关系树 + 影响面 + 技术架构图。
+/// `cambium graph` —— 代码图谱：符号索引 + 关系树 + 影响面 + 技术架构图。
 ///
 /// 【为什么引擎做这个】codegraph 类产品的核心能力（符号索引、关系树、影响面）
 /// 本质是「确定性事实」，正是引擎的职责边界：agent 要理解一个陌生仓库时，
@@ -1024,14 +1026,16 @@ func parseGraphTreeDepth(args: ArrayList<String>): Int64 {
     return depth
 }
 
-func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
+func cmdGraph(rest: ArrayList<String>, ctx: CliContext, legacyNote!: Bool = true): Int64 {
     // 顶层命名空间迁移（图能力重设计第一阶段）：graph * 整体保留兼容、
     // 行为不变，只在 stderr 给一行指路提示。stdout 契约零改动——
-    // --json 消费方（deepDolphin / 脚本）不受影响；提示走 Log.info
+    // --json 消费方（Canopy / 脚本）不受影响；提示走 Log.info
     //（叙述层，--quiet 可关）而不是 warn：迁移不是数据或环境出了问题。
-    Log.info(T(
-        "note: this command will move to `moongit index ...` (kept as a compatible alias; behavior unchanged)",
-        "提示：命令将迁移：moongit index …（graph 命令保留兼容，行为不变）"))
+    if (legacyNote) {
+        Log.info(T(
+            "note: this command will move to `cambium index ...` (kept as a compatible alias; behavior unchanged)",
+            "提示：命令将迁移：cambium index …（graph 命令保留兼容，行为不变）"))
+    }
     let subs = ["overview", "tree", "symbol", "impact", "arch", "confidence", "functions", "patchconf", "db"]
     var sub = "overview"
     let args = ArrayList<String>()
@@ -1051,8 +1055,8 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
         let mrefs = positionalsOnly(args, VALUE_FLAGS)
         if (mrefs.size != 2) {
             throw DgError.usage(T(
-                "Usage: moongit graph patchconf --merge <algorithm.json> <agent.json>",
-                "用法：moongit graph patchconf --merge <algorithm.json> <agent.json>"))
+                "Usage: cambium dendro merge <algorithm.json> <agent.json>   (alias: cambium graph patchconf --merge ...)",
+                "用法：cambium dendro merge <算法.json> <agent.json>（别名：cambium graph patchconf --merge …）"))
         }
         let algText = match (readFileText(mrefs[0])) {
             case Some(t) => t
@@ -1120,8 +1124,8 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
         let targets = resolveTargets(args, false)
         if (targets.size != 1) {
             throw DgError.usage(T(
-                "Usage: moongit graph <overview|tree|symbol|impact|arch|functions> [project] [...]; exactly one project required (got ${targets.size})",
-                "用法：moongit graph <overview|tree|symbol|impact|arch|functions> [项目] [...]；恰好一个项目（收到 ${targets.size} 个）"))
+                "Usage: cambium graph <overview|tree|symbol|impact|arch|functions> [project] [...]; exactly one project required (got ${targets.size})",
+                "用法：cambium graph <overview|tree|symbol|impact|arch|functions> [项目] [...]；恰好一个项目（收到 ${targets.size} 个）"))
         }
         return (targets[0], None)
     }
@@ -1196,8 +1200,8 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
             let name = match (symbolArg) {
                 case Some(n) => n
                 case None => throw DgError.usage(T(
-                    "Usage: moongit graph symbol <project> <symbol> (or run inside the project and pass <symbol>)",
-                    "用法：moongit graph symbol <项目> <符号名>（或在项目目录内只传 <符号名>）"))
+                    "Usage: cambium graph symbol <project> <symbol> (or run inside the project and pass <symbol>)",
+                    "用法：cambium graph symbol <项目> <符号名>（或在项目目录内只传 <符号名>）"))
             }
             if (ctx.json) {
                 printOut(Json.pretty(symbolJson(graph, name)))
@@ -1208,8 +1212,8 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
             let name = match (symbolArg) {
                 case Some(n) => n
                 case None => throw DgError.usage(T(
-                    "Usage: moongit graph impact <project> <symbol>",
-                    "用法：moongit graph impact <项目> <符号名>"))
+                    "Usage: cambium graph impact <project> <symbol>",
+                    "用法：cambium graph impact <项目> <符号名>"))
             }
             match (impactOf(graph, name)) {
                 case Some(res) =>
@@ -1243,8 +1247,8 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext): Int64 {
             let patchPath = match (flagValue(args, "--patch")) {
                 case Some(p) => p
                 case None => throw DgError.usage(T(
-                    "Usage: moongit graph patchconf <project> --patch <diff> [--skill] [--out F]",
-                    "用法：moongit graph patchconf <项目> --patch <diff> [--skill] [--out 文件]"))
+                    "Usage: cambium dendro patch <project> --patch <diff> [--skill] [--out F]   (alias: cambium graph patchconf ...)",
+                    "用法：cambium dendro patch <项目> --patch <diff> [--skill] [--out 文件]（别名：cambium graph patchconf …）"))
             }
             if (hasFlag(args, "--skill")) {
                 printOut(patchConfidenceSkill(p.name))
@@ -1406,7 +1410,76 @@ func confidenceDbResultJson(path: String, findings: Int64, dimensions: Int64,
     return o
 }
 
-/// `moongit confidence <db|gen|query> ...`：置信度命令家族。
+/// `cambium dendro <gen|query|db|check|patch|merge> ...`：置信度（Dendro）命令家族的正名——品牌升级
+/// （moongit→cambium，置信度模块→Dendro）后的写法。旧写法 `cambium confidence ...`、
+/// `cambium graph confidence|patchconf` 原样保留为别名：同一套实现，stdout 契约零改动。
+/// · gen / query / db：同 `confidence gen|query|db`（gen 现算并落盘快照；query 只读快照）
+/// · check <项目> [--no-ast] [--llm]：现算一份报告直接输出、不落盘（--llm 出复核提示词），同 `graph confidence <项目>`
+/// · patch <项目> --patch <diff>：Layer 1 补丁置信度，同 `graph patchconf <项目> --patch`
+/// · merge <algorithm.json> <agent.json>：Layer 3 合并，同 `graph patchconf --merge`
+func cmdDendro(rest: ArrayList<String>, ctx: CliContext): Int64 {
+    if (rest.size == 0) {
+        throw DgError.usage(T(
+            "Usage: cambium dendro <gen|query|db|check|patch|merge> ...  (gen <project> [--format text|json] [--no-ast] [--db] / query <project> / db <project> [--out F] / check <project> [--no-ast] [--llm] / patch <project> --patch <diff> / merge <algorithm.json> <agent.json>)",
+            "用法：cambium dendro <gen|query|db|check|patch|merge> …（gen <项目> [--format text|json] [--no-ast] [--db] / query <项目> / db <项目> [--out 文件] / check <项目> [--no-ast] [--llm] / patch <项目> --patch <diff> / merge <算法.json> <agent.json>）"))
+    }
+    match (rest[0]) {
+        case "gen" =>
+            return cmdConfidence(rest, ctx)
+        case "query" =>
+            return cmdConfidence(rest, ctx)
+        case "db" =>
+            return cmdConfidence(rest, ctx)
+        case "check" =>
+            // ⇔ graph confidence <项目> …：现算报告、不落盘（query 读的是已落盘的快照，两者不是一回事）
+            if (rest.size < 2 || rest[1].startsWith("-")) {
+                throw DgError.usage(T(
+                    "Usage: cambium dendro check <project> [--no-ast] [--llm] [--json]",
+                    "用法：cambium dendro check <项目> [--no-ast] [--llm] [--json]"))
+            }
+            return cmdGraph(prefixed("confidence", rest, 1), ctx, legacyNote: false)
+        case "patch" =>
+            // ⇔ graph patchconf <项目> …。关掉 graph 命令的迁移提示：dendro 是正名，不是别名
+            if (rest.size < 2 || rest[1].startsWith("-")) {
+                throw DgError.usage(T(
+                    "Usage: cambium dendro patch <project> --patch <diff> [--skill] [--out F]",
+                    "用法：cambium dendro patch <项目> --patch <diff> [--skill] [--out 文件]"))
+            }
+            return cmdGraph(prefixed("patchconf", rest, 1), ctx, legacyNote: false)
+        case "merge" =>
+            // ⇔ graph patchconf --merge <algorithm.json> <agent.json>
+            if (rest.size != 3) {
+                throw DgError.usage(T(
+                    "Usage: cambium dendro merge <algorithm.json> <agent.json>",
+                    "用法：cambium dendro merge <算法.json> <agent.json>"))
+            }
+            let args = ArrayList<String>()
+            args.add("patchconf")
+            args.add("--merge")
+            args.add(rest[1])
+            args.add(rest[2])
+            return cmdGraph(args, ctx, legacyNote: false)
+        case _ =>
+            throw DgError.usage(T(
+                "Usage: cambium dendro <gen|query|db|check|patch|merge> ...",
+                "用法：cambium dendro <gen|query|db|check|patch|merge> …"))
+    }
+    return 0
+}
+
+/// [head] + rest[from..]：给别名转发拼参数表。
+func prefixed(head: String, rest: ArrayList<String>, from: Int64): ArrayList<String> {
+    let args = ArrayList<String>()
+    args.add(head)
+    var i: Int64 = from
+    while (i < rest.size) {
+        args.add(rest[i])
+        i += 1
+    }
+    return args
+}
+
+/// `cambium dendro <gen|query|db> ...`（旧名别名 `cambium confidence <db|gen|query>`）：置信度（Dendro）命令家族。
 /// db = 单文件 SQLite（独立出口）；gen = 置信度持久化主产物 confidence.json
 /// （前置 index 自愈——置信度检测必须有符号级索引为前提）；
 /// query = 只读 confidence.json 快照（绝不重算）。
@@ -1414,8 +1487,8 @@ func cmdConfidence(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let subs = ["db", "gen", "query"]
     if (rest.size == 0 || !subs.contains(rest[0])) {
         throw DgError.usage(T(
-            "Usage: moongit confidence <db|gen|query> ...  (db <project> [--out F] / gen <project> [--format text|json] [--no-ast] [--db] [--out F] / query <project> [--file F] [--symbol S] [--kind K] [--weight N] [--top N])",
-            "用法：moongit confidence <db|gen|query> …（db <项目> [--out 文件] / gen <项目> [--format text|json] [--no-ast] [--db] [--out 文件] / query <项目> [--file 路径] [--symbol 符号] [--kind 类别] [--weight 权重] [--top 条数]）"))
+            "Usage: cambium dendro <gen|query|db> ...   (alias: cambium confidence <db|gen|query>)     (db <project> [--out F] / gen <project> [--format text|json] [--no-ast] [--db] [--out F] / query <project> [--file F] [--symbol S] [--kind K] [--weight N] [--top N])",
+            "用法：cambium dendro <gen|query|db> …（别名：cambium confidence <db|gen|query>）  （db <项目> [--out 文件] / gen <项目> [--format text|json] [--no-ast] [--db] [--out 文件] / query <项目> [--file 路径] [--symbol 符号] [--kind 类别] [--weight 权重] [--top 条数]）"))
     }
     let args = ArrayList<String>()
     var i: Int64 = 1
@@ -1436,8 +1509,8 @@ func cmdConfidence(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let targets = resolveTargets(refs, false)
     if (targets.size != 1) {
         throw DgError.usage(T(
-            "Usage: moongit confidence db <project> [--out F]; exactly one project required (got ${targets.size})",
-            "用法：moongit confidence db <项目> [--out 文件]；恰好一个项目（收到 ${targets.size} 个）"))
+            "Usage: cambium dendro db <project> [--out F]; exactly one project required (got ${targets.size})",
+            "用法：cambium dendro db <项目> [--out 文件]；恰好一个项目（收到 ${targets.size} 个）"))
     }
     let p = targets[0]
     let graph = buildGraph(p.path)
@@ -1473,7 +1546,7 @@ func cmdConfidence(rest: ArrayList<String>, ctx: CliContext): Int64 {
 
 // ------------------------------ 顶层图能力命名空间（arch / index / confidence / render） ------------------------------
 //
-// 【目标形态（已定稿）】moongit arch gen|update|query · index gen|overview|update|query ·
+// 【目标形态（已定稿）】cambium arch gen|update|query · index gen|overview|update|query ·
 // confidence gen|query · render arch|index。第一阶段落地 index 全链路 +
 // render index；第二阶段落地 arch 链路（arch.json 持久化 + render arch）与
 // confidence 链路（gen 以 index 为前置自愈 + query 只读快照）。
@@ -1751,14 +1824,14 @@ func archEnsureFresh(p: ProjectEntry): (Int64, Bool) {
     return (count, true)
 }
 
-/// `moongit arch` —— 顶层架构命名空间：gen（构建 + 持久化）/ update
+/// `cambium arch` —— 顶层架构命名空间：gen（构建 + 持久化）/ update
 ///（探针比对的增量重建）/ query（总览 · 单模块 · 违规清单）。
 func cmdArch(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let subs = ["gen", "update", "query"]
     if (rest.size == 0 || !subs.contains(rest[0])) {
         throw DgError.usage(T(
-            "Usage: moongit arch <gen|update|query> <project>  (gen [--format json|text] [--out F] / update [--force] / query [module] [--violations])",
-            "用法：moongit arch <gen|update|query> <项目>（gen [--format json|text] [--out 文件] / update [--force] / query [模块] [--violations]）"))
+            "Usage: cambium arch <gen|update|query> <project>  (gen [--format json|text] [--out F] / update [--force] / query [module] [--violations])",
+            "用法：cambium arch <gen|update|query> <项目>（gen [--format json|text] [--out 文件] / update [--force] / query [模块] [--violations]）"))
     }
     let args = ArrayList<String>()
     var i: Int64 = 1
@@ -1776,7 +1849,7 @@ func cmdArch(rest: ArrayList<String>, ctx: CliContext): Int64 {
     }
 }
 
-/// `moongit arch gen <项目> [--format json|text] [--out F]`：
+/// `cambium arch gen <项目> [--format json|text] [--out F]`：
 /// buildGraphProbed → buildArch → 持久化 arch.json（archJson 全量 + meta 包装）
 /// → stdout 按 --format（json = 持久化 payload 全量 / text = 模块与违规摘要）。
 /// 首版 = 0；已有 arch.json 时沿用旧版本号 +1。
@@ -1796,8 +1869,8 @@ func archGenCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     let targets = resolveTargets(args, false)
     if (targets.size != 1) {
         throw DgError.usage(T(
-            "Usage: moongit arch gen <project> [--format json|text] [--out F]; exactly one project required (got ${targets.size})",
-            "用法：moongit arch gen <项目> [--format json|text] [--out 文件]；恰好一个项目（收到 ${targets.size} 个）"))
+            "Usage: cambium arch gen <project> [--format json|text] [--out F]; exactly one project required (got ${targets.size})",
+            "用法：cambium arch gen <项目> [--format json|text] [--out 文件]；恰好一个项目（收到 ${targets.size} 个）"))
     }
     let p = targets[0]
     // 旧探针在重建前读（变更摘要用）
@@ -1836,20 +1909,20 @@ func archGenCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     printOut(T("  modules ${nMods} · files ${nFiles} · symbols ${nSyms} · violations ${nViol} · cycleEdges ${nCycle}",
         "  模块 ${nMods} 个 · 文件 ${nFiles} · 符号 ${nSyms} · 违规 ${nViol} · 环边 ${nCycle}"))
     printOut(T("  arch.json: ${archJsonPathOf(p)}", "  arch.json：${archJsonPathOf(p)}"))
-    printOut(T("  next: moongit arch query ${p.name} · moongit render arch ${p.name}",
-        "  下一步：moongit arch query ${p.name} · moongit render arch ${p.name}"))
+    printOut(T("  next: cambium arch query ${p.name} · cambium render arch ${p.name}",
+        "  下一步：cambium arch query ${p.name} · cambium render arch ${p.name}"))
     return 0
 }
 
-/// `moongit arch update <项目> [--force]`：轻探针（sourceProbeNow，毫秒级）
+/// `cambium arch update <项目> [--force]`：轻探针（sourceProbeNow，毫秒级）
 /// 比对 arch.json 的 meta.probe → 一致且非 --force → 「已最新」，exit 0，
 /// 不动任何文件；过期/缺失/--force → 重算重建（版本 +1）+ 变更摘要。
 func archUpdateCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     let targets = resolveTargets(args, false)
     if (targets.size != 1) {
         throw DgError.usage(T(
-            "Usage: moongit arch update <project> [--force]; exactly one project required (got ${targets.size})",
-            "用法：moongit arch update <项目> [--force]；恰好一个项目（收到 ${targets.size} 个）"))
+            "Usage: cambium arch update <project> [--force]; exactly one project required (got ${targets.size})",
+            "用法：cambium arch update <项目> [--force]；恰好一个项目（收到 ${targets.size} 个）"))
     }
     let p = targets[0]
     let force = hasFlag(args, "--force")
@@ -1895,7 +1968,7 @@ func archUpdateCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     return 0
 }
 
-/// `moongit arch query <项目> [模块] [--violations] [--json]`：
+/// `cambium arch query <项目> [模块] [--violations] [--json]`：
 /// 读 arch.json（探针过期 → 自动先 arch update 自愈）→ 三种视图：
 /// 无模块名 = 总览（模块列表 + fanIn/fanOut/instability + 违规/环计数）；
 /// 指定模块 = 单模块详情（入/出依赖逐条 + 权重、指标）；
@@ -1904,8 +1977,8 @@ func archQueryCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     let refs = positionalsOnly(args, VALUE_FLAGS)
     if (refs.size < 1 || refs.size > 2) {
         throw DgError.usage(T(
-            "Usage: moongit arch query <project> [module] [--violations]",
-            "用法：moongit arch query <项目> [模块] [--violations]"))
+            "Usage: cambium arch query <project> [module] [--violations]",
+            "用法：cambium arch query <项目> [模块] [--violations]"))
     }
     let p = requireProject(refs[0])
     var moduleId = ""
@@ -1916,8 +1989,8 @@ func archQueryCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     let payload = match (archStoreRead(p)) {
         case Some(j) => j
         case None => throw DgError("ARCH_JSON_MISSING", T(
-            "arch.json not found: ${archJsonPathOf(p)} (run `moongit arch gen` first)",
-            "找不到 arch.json：${archJsonPathOf(p)}（先执行 moongit arch gen）"))
+            "arch.json not found: ${archJsonPathOf(p)} (run `cambium arch gen` first)",
+            "找不到 arch.json：${archJsonPathOf(p)}（先执行 cambium arch gen）"))
     }
     if (wantViolations) {
         return archQueryViolations(p, payload, healed, ctx)
@@ -2018,8 +2091,8 @@ func archQueryOverview(p: ProjectEntry, payload: JsonValue, healed: Bool, ctx: C
         printOut(T("  ${Json.strAt(m, "id", "")}（${Json.strAt(m, "layerName", "")}）· files ${Json.intAt(m, "files", 0)} · symbols ${Json.intAt(m, "symbols", 0)} · in ${Json.intAt(m, "fanIn", 0)} / out ${Json.intAt(m, "fanOut", 0)} · instability ${Json.intAt(m, "instability", 0)}%",
             "  ${Json.strAt(m, "id", "")}（${Json.strAt(m, "layerName", "")}）· 文件 ${Json.intAt(m, "files", 0)} · 符号 ${Json.intAt(m, "symbols", 0)} · 入 ${Json.intAt(m, "fanIn", 0)} / 出 ${Json.intAt(m, "fanOut", 0)} · 不稳定度 ${Json.intAt(m, "instability", 0)}%"))
     }
-    printOut(T("  next: moongit arch query ${p.name} <module> · moongit arch query ${p.name} --violations",
-        "  下一步：moongit arch query ${p.name} <模块> · moongit arch query ${p.name} --violations"))
+    printOut(T("  next: cambium arch query ${p.name} <module> · cambium arch query ${p.name} --violations",
+        "  下一步：cambium arch query ${p.name} <模块> · cambium arch query ${p.name} --violations"))
     return 0
 }
 
@@ -2030,8 +2103,8 @@ func archQueryModule(p: ProjectEntry, payload: JsonValue, moduleId: String, heal
         case None =>
             // 查不到 → 报错（不编结果）；教回怎么查清单
             Log.error(T(
-                "Module not in the architecture: ${moduleId} (run `moongit arch query ${p.name}` for the module list)",
-                "模块不在架构中：${moduleId}（moongit arch query ${p.name} 查看模块清单）"))
+                "Module not in the architecture: ${moduleId} (run `cambium arch query ${p.name}` for the module list)",
+                "模块不在架构中：${moduleId}（cambium arch query ${p.name} 查看模块清单）"))
             return 1
     }
     if (ctx.json) {
@@ -2176,7 +2249,7 @@ func confidenceGenCore(p: ProjectEntry, useAst: Bool, wantDb: Bool): (JsonValue,
     return (o, report)
 }
 
-/// `moongit confidence gen <项目> [--format text|json] [--no-ast] [--db] [--out F]`：
+/// `cambium dendro gen <项目> [--format text|json] [--no-ast] [--db] [--out F]`：
 /// 见 confidenceGenCore（计算 + 持久化的唯一实现）；这里只做参数解析与呈现。
 func confidenceGenCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     var fmt = "text"
@@ -2197,8 +2270,8 @@ func confidenceGenCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     let targets = resolveTargets(args, false)
     if (targets.size != 1) {
         throw DgError.usage(T(
-            "Usage: moongit confidence gen <project> [--format text|json] [--no-ast] [--db] [--out F]; exactly one project required (got ${targets.size})",
-            "用法：moongit confidence gen <项目> [--format text|json] [--no-ast] [--db] [--out 文件]；恰好一个项目（收到 ${targets.size} 个）"))
+            "Usage: cambium dendro gen <project> [--format text|json] [--no-ast] [--db] [--out F]; exactly one project required (got ${targets.size})",
+            "用法：cambium dendro gen <项目> [--format text|json] [--no-ast] [--db] [--out 文件]；恰好一个项目（收到 ${targets.size} 个）"))
     }
     let p = targets[0]
     let (info, report) = confidenceGenCore(p, useAst, wantDb)
@@ -2226,12 +2299,12 @@ func confidenceGenCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     if (!dbPath.isEmpty()) {
         printOut(T("  db: ${dbPath}", "  db：${dbPath}"))
     }
-    printOut(T("  next: moongit confidence query ${p.name} · moongit render index ${p.name} --confidence",
-        "  下一步：moongit confidence query ${p.name} · moongit render index ${p.name} --confidence"))
+    printOut(T("  next: cambium dendro query ${p.name} · cambium render index ${p.name} --confidence",
+        "  下一步：cambium dendro query ${p.name} · cambium render index ${p.name} --confidence"))
     return 0
 }
 
-/// `moongit confidence query <项目> [--file F] [--symbol S] [--kind K] [--weight N] [--top N] [--json]`：
+/// `cambium dendro query <项目> [--file F] [--symbol S] [--kind K] [--weight N] [--top N] [--json]`：
 /// **只读**持久化 confidence.json，绝不重算——报告缺席 → 报错提示先执行
 /// confidence gen（exit 1，不自动触发：query 是读，不该带 gen 的全部副作用）。
 /// 输出恒带快照元信息（generatedAt + 依据的 index 版本），让人知道快照新旧；
@@ -2285,8 +2358,8 @@ func confidenceQueryCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     let refs = positionalsOnly(args, VALUE_FLAGS)
     if (refs.size != 1) {
         throw DgError.usage(T(
-            "Usage: moongit confidence query <project> [--file F] [--symbol S] [--kind K] [--weight N] [--top N]",
-            "用法：moongit confidence query <项目> [--file 路径] [--symbol 符号] [--kind 类别] [--weight 权重] [--top 条数]"))
+            "Usage: cambium dendro query <project> [--file F] [--symbol S] [--kind K] [--weight N] [--top N]",
+            "用法：cambium dendro query <项目> [--file 路径] [--symbol 符号] [--kind 类别] [--weight 权重] [--top 条数]"))
     }
     let p = requireProject(refs[0])
     let jsonPath = indexConfidencePathOf(p)
@@ -2295,14 +2368,14 @@ func confidenceQueryCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
             match (Json.parse(text)) {
                 case Some(j) => j
                 case None => throw DgError("CONFIDENCE_JSON_CORRUPT", T(
-                    "confidence.json is not valid JSON: ${jsonPath} (run `moongit confidence gen` to regenerate)",
-                    "confidence.json 不是合法 JSON：${jsonPath}（执行 moongit confidence gen 重新生成）"))
+                    "confidence.json is not valid JSON: ${jsonPath} (run `cambium dendro gen` to regenerate)",
+                    "confidence.json 不是合法 JSON：${jsonPath}（执行 cambium dendro gen 重新生成）"))
             }
         case None =>
             // 报告缺席 → 报错提示，不自动触发 gen（读操作不带来写的副作用）
             throw DgError.notFound(T(
-                "No confidence snapshot: ${jsonPath} — run `moongit confidence gen ${p.name}` first (query reads the persisted snapshot only, it never recomputes)",
-                "置信度快照缺席：${jsonPath}——先执行 moongit confidence gen ${p.name}（query 只读持久化快照，绝不重算）"))
+                "No confidence snapshot: ${jsonPath} — run `cambium dendro gen ${p.name}` first (query reads the persisted snapshot only, it never recomputes)",
+                "置信度快照缺席：${jsonPath}——先执行 cambium dendro gen ${p.name}（query 只读持久化快照，绝不重算）"))
     }
     let result = confidenceQueryJson(snap, p, fileArg, symbolArg, kindArg, weightArg, topArg)
     if (ctx.json) {
@@ -2410,7 +2483,7 @@ func findingFromSnapshot(f: JsonValue): JsonValue {
     return o
 }
 
-/// confidence query 的核心（CLI --json 与 MCP confidence_query 共用；
+/// confidence query 的核心（CLI --json 与 MCP dendro_query 共用；
 /// 过滤只有这一份实现）。无过滤 → 总览形状（score/dimensions/penaltyByFile/
 /// capped/astNote/findingCount）；有过滤 → findings 清单形状（matched/shown/
 /// topTruncated/findings）。两种形状都恒带 project/generatedAt/indexUpdateCount
@@ -2486,13 +2559,13 @@ func hasPathSuffix(path: String, suffix: String): Bool {
     return head.endsWith("/")
 }
 
-/// `moongit render <arch|index> ...`：渲染入口（两者都已落地——
+/// `cambium render <arch|index> ...`：渲染入口（两者都已落地——
 /// 持久化 payload → 单文件 HTML，复用/重绘三段判定）。
 func cmdRender(rest: ArrayList<String>, ctx: CliContext): Int64 {
     if (rest.size == 0) {
         throw DgError.usage(T(
-            "Usage: moongit render <arch|index> <project> [--confidence] [--force] [--out F]",
-            "用法：moongit render <arch|index> <项目> [--confidence] [--force] [--out 文件]"))
+            "Usage: cambium render <arch|index> <project> [--confidence] [--force] [--out F]",
+            "用法：cambium render <arch|index> <项目> [--confidence] [--force] [--out 文件]"))
     }
     let args = ArrayList<String>()
     var i: Int64 = 1
@@ -2505,8 +2578,8 @@ func cmdRender(rest: ArrayList<String>, ctx: CliContext): Int64 {
     }
     if (rest[0] != "index") {
         throw DgError.usage(T(
-            "Usage: moongit render <arch|index> <project> [--confidence] [--force] [--out F]",
-            "用法：moongit render <arch|index> <项目> [--confidence] [--force] [--out 文件]"))
+            "Usage: cambium render <arch|index> <project> [--confidence] [--force] [--out F]",
+            "用法：cambium render <arch|index> <项目> [--confidence] [--force] [--out 文件]"))
     }
     return renderIndexCmd(args, ctx)
 }
@@ -2536,12 +2609,12 @@ func renderIndexCore(p: ProjectEntry, wantConf: Bool, force: Bool, outPath: Stri
             match (Json.parse(text)) {
                 case Some(j) => j
                 case None => throw DgError("INDEX_JSON_CORRUPT", T(
-                    "index.json is not valid JSON: ${jsonPath} (run `moongit index gen` to regenerate)",
-                    "index.json 不是合法 JSON：${jsonPath}（执行 moongit index gen 重新生成）"))
+                    "index.json is not valid JSON: ${jsonPath} (run `cambium index gen` to regenerate)",
+                    "index.json 不是合法 JSON：${jsonPath}（执行 cambium index gen 重新生成）"))
             }
         case None => throw DgError("INDEX_JSON_MISSING", T(
-            "index.json not found: ${jsonPath} (run `moongit index gen` first)",
-            "找不到 index.json：${jsonPath}（先执行 moongit index gen）"))
+            "index.json not found: ${jsonPath} (run `cambium index gen` first)",
+            "找不到 index.json：${jsonPath}（先执行 cambium index gen）"))
     }
     // 复用判定的基准是 **index.json 自己的 updateCount**（不是 db 的）：
     // 两者理论上同源，但 index.json 是渲染的输入——比对输入与产物才回答
@@ -2673,17 +2746,17 @@ func renderIndexCore(p: ProjectEntry, wantConf: Bool, force: Bool, outPath: Stri
 func confidenceStaleNote(n: Int64, m: Int64): String {
     let nLabel = if (n >= 0) { indexVersionLabel(n) } else { T("an unknown version", "未知版本") }
     let mLabel = if (m >= 0) { indexVersionLabel(m) } else { T("an unknown version", "未知版本") }
-    return T("Confidence snapshot is stale (based on index ${nLabel}, current ${mLabel}) — run moongit confidence gen first",
-        "置信度快照过期（依据${nLabel}索引，当前${mLabel}）——先 moongit confidence gen")
+    return T("Confidence snapshot is stale (based on index ${nLabel}, current ${mLabel}) — run cambium dendro gen first",
+        "置信度快照过期（依据${nLabel}索引，当前${mLabel}）——先 cambium dendro gen")
 }
 
-/// `moongit render index <项目> [--confidence] [--force] [--out F]`。
+/// `cambium render index <项目> [--confidence] [--force] [--out F]`。
 func renderIndexCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     let targets = resolveTargets(args, false)
     if (targets.size != 1) {
         throw DgError.usage(T(
-            "Usage: moongit render index <project> [--confidence] [--force] [--out F]; exactly one project required (got ${targets.size})",
-            "用法：moongit render index <项目> [--confidence] [--force] [--out 文件]；恰好一个项目（收到 ${targets.size} 个）"))
+            "Usage: cambium render index <project> [--confidence] [--force] [--out F]; exactly one project required (got ${targets.size})",
+            "用法：cambium render index <项目> [--confidence] [--force] [--out 文件]；恰好一个项目（收到 ${targets.size} 个）"))
     }
     let p = targets[0]
     let force = hasFlag(args, "--force")
@@ -2744,14 +2817,14 @@ func renderArchCore(p: ProjectEntry, force: Bool, outPath: String): JsonValue {
     let payloadText = match (readFileText(jsonPath)) {
         case Some(t) => t
         case None => throw DgError("ARCH_JSON_MISSING", T(
-            "arch.json not found: ${jsonPath} (run `moongit arch gen` first)",
-            "找不到 arch.json：${jsonPath}（先执行 moongit arch gen）"))
+            "arch.json not found: ${jsonPath} (run `cambium arch gen` first)",
+            "找不到 arch.json：${jsonPath}（先执行 cambium arch gen）"))
     }
     let payload = match (Json.parse(payloadText)) {
         case Some(j) => j
         case None => throw DgError("ARCH_JSON_CORRUPT", T(
-            "arch.json is not valid JSON: ${jsonPath} (run `moongit arch gen` to regenerate)",
-            "arch.json 不是合法 JSON：${jsonPath}（执行 moongit arch gen 重新生成）"))
+            "arch.json is not valid JSON: ${jsonPath} (run `cambium arch gen` to regenerate)",
+            "arch.json 不是合法 JSON：${jsonPath}（执行 cambium arch gen 重新生成）"))
     }
     var payloadCount: Int64 = -1
     match (Json.asInt(Json.getOr(payload, "updateCount"))) {
@@ -2798,13 +2871,13 @@ func renderArchCore(p: ProjectEntry, force: Bool, outPath: String): JsonValue {
     return o
 }
 
-/// `moongit render arch <项目> [--force] [--out F]`。
+/// `cambium render arch <项目> [--force] [--out F]`。
 func renderArchCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     let targets = resolveTargets(args, false)
     if (targets.size != 1) {
         throw DgError.usage(T(
-            "Usage: moongit render arch <project> [--force] [--out F]; exactly one project required (got ${targets.size})",
-            "用法：moongit render arch <项目> [--force] [--out 文件]；恰好一个项目（收到 ${targets.size} 个）"))
+            "Usage: cambium render arch <project> [--force] [--out F]; exactly one project required (got ${targets.size})",
+            "用法：cambium render arch <项目> [--force] [--out 文件]；恰好一个项目（收到 ${targets.size} 个）"))
     }
     let p = targets[0]
     let force = hasFlag(args, "--force")
@@ -2836,15 +2909,15 @@ func renderArchCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     return 0
 }
 
-/// `moongit index <gen|overview|update|query|search|grep|refs|impact|file>`：持久化代码索引的顶层命令。
+/// `cambium index <gen|overview|update|query|search|grep|refs|impact|file>`：持久化代码索引的顶层命令。
 /// 查询类子命令（query / search / refs / impact / file）读 codegraph.db（探针过期先自愈）；
 /// grep 直接读工作区文件，不依赖索引。
 func cmdIndex(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let subs = ["gen", "overview", "update", "query", "search", "grep", "refs", "impact", "file"]
     if (rest.size == 0 || !subs.contains(rest[0])) {
         throw DgError.usage(T(
-            "Usage: moongit index <gen|overview|update|query|search|grep|refs|impact|file> ...  (gen <project> [--depth N] [--format json|tree] [--stats] [--out F] / overview <project> / update <project> [--force] / query <symbol> [project] | query --file <path> [project] / search <pattern> [project] [--kind K] [--lang L] [--limit N] [--file F] / grep <pattern> [project] [--ignore-case] [--limit N] [--context K] [--glob G] / refs <symbol> [project] / impact <symbol> [project] [--depth N] / file <path> [project])",
-            "用法：moongit index <gen|overview|update|query|search|grep|refs|impact|file> …（gen <项目> [--depth N] [--format json|tree] [--stats] [--out 文件] / overview <项目> / update <项目> [--force] / query <符号> [项目] | query --file <路径> [项目] / search <模式> [项目] [--kind K] [--lang L] [--limit N] [--file F] / grep <模式> [项目] [--ignore-case] [--limit N] [--context K] [--glob G] / refs <符号> [项目] / impact <符号> [项目] [--depth N] / file <路径> [项目]）"))
+            "Usage: cambium index <gen|overview|update|query|search|grep|refs|impact|file> ...  (gen <project> [--depth N] [--format json|tree] [--stats] [--out F] / overview <project> / update <project> [--force] / query <symbol> [project] | query --file <path> [project] / search <pattern> [project] [--kind K] [--lang L] [--limit N] [--file F] / grep <pattern> [project] [--ignore-case] [--limit N] [--context K] [--glob G] / refs <symbol> [project] / impact <symbol> [project] [--depth N] / file <path> [project])",
+            "用法：cambium index <gen|overview|update|query|search|grep|refs|impact|file> …（gen <项目> [--depth N] [--format json|tree] [--stats] [--out 文件] / overview <项目> / update <项目> [--force] / query <符号> [项目] | query --file <路径> [项目] / search <模式> [项目] [--kind K] [--lang L] [--limit N] [--file F] / grep <模式> [项目] [--ignore-case] [--limit N] [--context K] [--glob G] / refs <符号> [项目] / impact <符号> [项目] [--depth N] / file <路径> [项目]）"))
     }
     let sub = rest[0]
     let args = ArrayList<String>()
@@ -2878,8 +2951,8 @@ func indexProjectOf(sub: String, refs: ArrayList<String>): ProjectEntry {
     match (findProject(cwd)) {
         case Some(entry) => return entry
         case None => throw DgError.notFound(T(
-            "Current directory is not a registered project; pass the argument together with a project name (moongit index ${sub} <arg> <project>)",
-            "当前目录不属于任何已注册项目；请把参数和项目名一起给（moongit index ${sub} <参数> <项目>）"))
+            "Current directory is not a registered project; pass the argument together with a project name (cambium index ${sub} <arg> <project>)",
+            "当前目录不属于任何已注册项目；请把参数和项目名一起给（cambium index ${sub} <参数> <项目>）"))
     }
 }
 
@@ -2890,8 +2963,8 @@ func indexRequiredArg(sub: String, refs: ArrayList<String>, whatEn: String, what
     rejectExtraPositionals("index ${sub}", refs, 2)
     if (refs.size == 0 || refs[0].isEmpty()) {
         throw DgError.usage(T(
-            "Usage: moongit index ${sub} <${whatEn}> [project]${flagsEn}",
-            "用法：moongit index ${sub} <${whatZh}> [项目]${flagsEn}"))
+            "Usage: cambium index ${sub} <${whatEn}> [project]${flagsEn}",
+            "用法：cambium index ${sub} <${whatZh}> [项目]${flagsEn}"))
     }
     return refs[0]
 }
@@ -2911,7 +2984,7 @@ func indexIntFlag(args: ArrayList<String>, name: String, def: Int64, min: Int64)
     return v
 }
 
-/// `moongit index gen <项目> [--depth N] [--format json|tree] [--stats] [--out F]`。
+/// `cambium index gen <项目> [--depth N] [--format json|tree] [--stats] [--out F]`。
 /// 计算（含探针，一次扫描）→ 写 codegraph.db（store_meta 全套）+ index.json
 /// → 按 --format/--json/stdout 默认视图输出。版本明话恒发。
 func indexGenCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
@@ -2932,8 +3005,8 @@ func indexGenCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     let targets = resolveTargets(args, false)
     if (targets.size != 1) {
         throw DgError.usage(T(
-            "Usage: moongit index gen <project> [--depth N] [--format json|tree] [--stats] [--out F]; exactly one project required (got ${targets.size})",
-            "用法：moongit index gen <项目> [--depth N] [--format json|tree] [--stats] [--out 文件]；恰好一个项目（收到 ${targets.size} 个）"))
+            "Usage: cambium index gen <project> [--depth N] [--format json|tree] [--stats] [--out F]; exactly one project required (got ${targets.size})",
+            "用法：cambium index gen <项目> [--depth N] [--format json|tree] [--stats] [--out 文件]；恰好一个项目（收到 ${targets.size} 个）"))
     }
     let p = targets[0]
     let oldMeta = indexMetaRead(indexDbPathOf(p))
@@ -2977,8 +3050,8 @@ func indexGenCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
             }
             printOut(T("  modules: ${line}", "  模块：${line}"))
         }
-        printOut(T("  next: moongit index overview ${p.name} · moongit index query <symbol>",
-            "  下一步：moongit index overview ${p.name} · moongit index query <符号>"))
+        printOut(T("  next: cambium index overview ${p.name} · cambium index query <symbol>",
+            "  下一步：cambium index overview ${p.name} · cambium index query <符号>"))
     }
     return 0
 }
@@ -3010,15 +3083,15 @@ func indexUpdateJson(p: ProjectEntry, fresh: Bool, count: Int64, probe: Option<S
     return o
 }
 
-/// `moongit index update <项目> [--force]`：轻探针比对 → 一致且非 --force
+/// `cambium index update <项目> [--force]`：轻探针比对 → 一致且非 --force
 /// → 「已最新」，exit 0，不动任何文件；不一致/缺失/--force → 重建（版本 +1）
 /// + 重写 index.json，输出变更摘要。
 func indexUpdateCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     let targets = resolveTargets(args, false)
     if (targets.size != 1) {
         throw DgError.usage(T(
-            "Usage: moongit index update <project> [--force]; exactly one project required (got ${targets.size})",
-            "用法：moongit index update <项目> [--force]；恰好一个项目（收到 ${targets.size} 个）"))
+            "Usage: cambium index update <project> [--force]; exactly one project required (got ${targets.size})",
+            "用法：cambium index update <项目> [--force]；恰好一个项目（收到 ${targets.size} 个）"))
     }
     let p = targets[0]
     let force = hasFlag(args, "--force")
@@ -3081,15 +3154,15 @@ func indexOverviewJson(p: ProjectEntry, count: Int64, generatedAt: String, heale
     return o
 }
 
-/// `moongit index overview <项目>`：读 db 的 SQL 聚合统计
+/// `cambium index overview <项目>`：读 db 的 SQL 聚合统计
 ///（nodes/edges/files/byKind + 调用点/未解析/确信度分层；旧出口保留在
 /// graph overview 兼容面）。探针过期先自愈重建（④A），并输出说明。
 func indexOverviewCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     let targets = resolveTargets(args, false)
     if (targets.size != 1) {
         throw DgError.usage(T(
-            "Usage: moongit index overview <project>; exactly one project required (got ${targets.size})",
-            "用法：moongit index overview <项目>；恰好一个项目（收到 ${targets.size} 个）"))
+            "Usage: cambium index overview <project>; exactly one project required (got ${targets.size})",
+            "用法：cambium index overview <项目>；恰好一个项目（收到 ${targets.size} 个）"))
     }
     let p = targets[0]
     let (count, healed) = indexEnsureFresh(p)
@@ -3102,8 +3175,8 @@ func indexOverviewCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     let ov = match (indexOverviewRead(dbPath)) {
         case Some(v) => v
         case None => throw DgError("INDEX_DB_FAILED", T(
-            "Failed to read the index database: ${dbPath} (run `moongit index gen` first)",
-            "读不出索引库：${dbPath}（先执行 moongit index gen）"))
+            "Failed to read the index database: ${dbPath} (run `cambium index gen` first)",
+            "读不出索引库：${dbPath}（先执行 cambium index gen）"))
     }
     if (ctx.json) {
         printOut(Json.pretty(indexOverviewJson(p, count, generatedAt, healed, ov)))
@@ -3127,12 +3200,12 @@ func indexOverviewCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
         }
         printOut(T("  byKind: ${line}", "  按种类：${line}"))
     }
-    printOut(T("  next: moongit index search <pattern> · index query <symbol> · index refs <symbol> · index impact <symbol> · index grep <text>",
-        "  下一步：moongit index search <模式> · index query <符号> · index refs <符号> · index impact <符号> · index grep <文本>"))
+    printOut(T("  next: cambium index search <pattern> · index query <symbol> · index refs <symbol> · index impact <symbol> · index grep <text>",
+        "  下一步：cambium index search <模式> · index query <符号> · index refs <符号> · index impact <符号> · index grep <文本>"))
     return 0
 }
 
-/// `moongit index query <符号>` / `moongit index query --file <路径>`：
+/// `cambium index query <符号>` / `cambium index query --file <路径>`：
 /// 读 db（同样先自愈）→ 符号：defs + callers + callees + perDef 一体载荷；
 /// 文件：符号清单 + 调入/调出文件与权重。查不到 → 报错（不编结果）。
 func indexQueryCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
@@ -3154,8 +3227,8 @@ func indexQueryCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
         // 符号模式：<符号> [项目]，1..2 个位置参数
         if (refs.size < 1 || refs.size > 2) {
             throw DgError.usage(T(
-                "Usage: moongit index query <symbol> [project] | moongit index query --file <path> [project]",
-                "用法：moongit index query <符号> [项目] | moongit index query --file <路径> [项目]"))
+                "Usage: cambium index query <symbol> [project] | cambium index query --file <path> [project]",
+                "用法：cambium index query <符号> [项目] | cambium index query --file <路径> [项目]"))
         }
         symbolName = refs[0]
         if (refs.size == 2) { projectRef = refs[1] }
@@ -3180,8 +3253,8 @@ func indexQueryCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
             return 0
         case None =>
             Log.error(T(
-                "Symbol not found in the index: ${symbolName} (run `moongit index gen`; a bare name, a qualified name like Outer.method, or an id from `index search` all work)",
-                "符号不在索引中：${symbolName}（先执行 moongit index gen；可用裸名、限定名如 Outer.method、或 `index search` 给出的 id）"))
+                "Symbol not found in the index: ${symbolName} (run `cambium index gen`; a bare name, a qualified name like Outer.method, or an id from `index search` all work)",
+                "符号不在索引中：${symbolName}（先执行 cambium index gen；可用裸名、限定名如 Outer.method、或 `index search` 给出的 id）"))
             return 1
     }
 }
@@ -3280,8 +3353,8 @@ func indexPrintFileQuery(qOpt: Option<JsonValue>, fileArg: String, healed: Bool,
             return 0
         case None =>
             Log.error(T(
-                "File not in the index: ${fileArg} (run `moongit index gen`; only supported source languages are indexed)",
-                "文件不在索引中：${fileArg}（先执行 moongit index gen；索引只覆盖受支持的源码语言）"))
+                "File not in the index: ${fileArg} (run `cambium index gen`; only supported source languages are indexed)",
+                "文件不在索引中：${fileArg}（先执行 cambium index gen；索引只覆盖受支持的源码语言）"))
             return 1
     }
 }
@@ -3314,7 +3387,7 @@ func indexFileQueryText(q: JsonValue, healed: Bool): String {
     return sb.toString()
 }
 
-/// `moongit index search <模式> [项目] [--kind K] [--lang L] [--limit N] [--file F]`：
+/// `cambium index search <模式> [项目] [--kind K] [--lang L] [--limit N] [--file F]`：
 /// 符号模糊搜索（name 与 qual，大小写不敏感；名精确 > 限定名相等 > 前缀 > 子串 > 子序列）。
 func indexSearchCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     let refs = positionalsOnly(args, VALUE_FLAGS)
@@ -3373,7 +3446,7 @@ func indexSearchText(q: JsonValue, healed: Bool): String {
     return sb.toString()
 }
 
-/// `moongit index grep <模式> [项目] [--ignore-case] [--limit N] [--context K] [--glob G]`：
+/// `cambium index grep <模式> [项目] [--ignore-case] [--limit N] [--context K] [--glob G]`：
 /// 工作区定字符串搜索。不依赖索引（没有索引、索引过期都能搜）；扫描范围与索引器同源。
 func indexGrepCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     let refs = positionalsOnly(args, VALUE_FLAGS)
@@ -3460,7 +3533,7 @@ func indexGrepText(o: JsonValue): String {
     return sb.toString()
 }
 
-/// `moongit index refs <符号> [项目]`：解析到该符号定义的每一个调用点（file:line:col + 调用方）。
+/// `cambium index refs <符号> [项目]`：解析到该符号定义的每一个调用点（file:line:col + 调用方）。
 func indexRefsCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     let refs = positionalsOnly(args, VALUE_FLAGS)
     let symbol = indexRequiredArg("refs", refs, "symbol", "符号", "")
@@ -3499,7 +3572,7 @@ func indexRefsText(q: JsonValue, healed: Bool): String {
     return sb.toString()
 }
 
-/// `moongit index impact <符号> [项目] [--depth N]`：沿 direct / resolved 调用边反向传递闭包。
+/// `cambium index impact <符号> [项目] [--depth N]`：沿 direct / resolved 调用边反向传递闭包。
 func indexImpactCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     let refs = positionalsOnly(args, VALUE_FLAGS)
     let symbol = indexRequiredArg("impact", refs, "symbol", "符号", " [--depth N]")
@@ -3543,7 +3616,7 @@ func indexImpactText(q: JsonValue, healed: Bool): String {
     return sb.toString()
 }
 
-/// `moongit index file <路径> [项目]`：文件大纲（符号清单 + 调入/调出文件）。
+/// `cambium index file <路径> [项目]`：文件大纲（符号清单 + 调入/调出文件）。
 /// 与 `index query --file <路径>` 是同一个载荷。
 func indexFileCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     let refs = positionalsOnly(args, VALUE_FLAGS)
@@ -3559,20 +3632,20 @@ func indexHealedNote(healed: Bool): String {
 }
 
 func indexSymbolNotFound(symbol: String): String {
-    return T("Symbol not found in the index: ${symbol} (use `moongit index search` to see nearby names; a bare name, a qualified name like Outer.method, or an id all work)",
-        "符号不在索引中：${symbol}（用 `moongit index search` 看近似名字；可用裸名、限定名如 Outer.method、或 id）")
+    return T("Symbol not found in the index: ${symbol} (use `cambium index search` to see nearby names; a bare name, a qualified name like Outer.method, or an id all work)",
+        "符号不在索引中：${symbol}（用 `cambium index search` 看近似名字；可用裸名、限定名如 Outer.method、或 id）")
 }
 
 func cmdTools(rest: ArrayList<String>, ctx: CliContext): Int64 {
     // ⚠️ #196 同族（本轮审查补齐）：tools 不吃任何位置参数，多余的原来被静默
-    // 吞掉、rc=0 —— `moongit tools foo` 看起来成功，foo 蒸发，用户以为清单
+    // 吞掉、rc=0 —— `cambium tools foo` 看起来成功，foo 蒸发，用户以为清单
     // 按什么过滤过了。元数固定（0 个）⇒ rejectExtraPositionals 报 usage（exit 2）。
     rejectExtraPositionals("tools", positionalsOnly(rest, VALUE_FLAGS), 0)
     printOut(Json.pretty(agentToolsManifest()))
     return 0
 }
 
-let SKILL_FRONTMATTER = "---\nname: moongit\ndescription: 用 moonGit 引擎管理本地 git 项目群的进度与代码：查现状、记进度、浅/深更新文档、"
+let SKILL_FRONTMATTER = "---\nname: cambium\ndescription: 用 Cambium 引擎管理本地 git 项目群的进度与代码：查现状、记进度、浅/深更新文档、"
     + "git 操作、里程碑；代码索引（按名字搜符号、查定义/调用点/引用/影响面/文件大纲、搜文本）让 agent 快速定位代码；"
     + "代码置信度、热力图与架构图；补丁置信度三层体检。适用于任何关于本地项目状态、分支进度、项目文档维护、"
     + "代码在哪/谁在调用/改了影响谁、代码结构与可信度分析的问题。\n"
@@ -3586,7 +3659,7 @@ func skillGraphToolNote(name: String): String {
     if (name == "index_gen") {
         return "（写 codegraph.db + index.json，返回统计）"
     }
-    if (name == "confidence_gen") {
+    if (name == "dendro_gen") {
         return "（前置自愈索引；format=text|json|llm——llm 是可直接喂给模型的逐条复核提示词）"
     }
     if (name == "index_search") {
@@ -3624,7 +3697,7 @@ func skillGraphToolNote(name: String): String {
         return "（旧名别名，将移除 → arch_gen / arch_query / render；format=html|mermaid|dot|json|**scene**）"
     }
     if (name == "codegraph_confidence") {
-        return "（旧名别名，将移除 → confidence_gen / confidence_query；format=llm 出复核提示词）"
+        return "（旧名别名，将移除 → dendro_gen / dendro_query；format=llm 出复核提示词）"
     }
     if (name == "render") {
         return "（target=arch|index；落盘单文件交互 HTML，回执只带路径与复用/新绘判定）"
@@ -3635,7 +3708,7 @@ func skillGraphToolNote(name: String): String {
 /// 新工具面的图能力名（skillToolSection 的分组谓词用；旧 codegraph_* 走前缀判定）。
 func isGraphToolName(n: String): Bool {
     return n.startsWith("arch_") || n.startsWith("index_")
-        || n.startsWith("confidence_") || n == "render"
+        || n.startsWith("dendro_") || n == "render"
 }
 
 /// skill 教学包的「工具清单」段落：名字集合与计数全部从 mcpToolList() 派生。
@@ -3683,7 +3756,7 @@ func skillToolSection(): String {
     if (patch.size > 0) {
         var line = "   - 补丁置信度三层："
         if (patch.size == 2) {
-            line += patch[0] + "（Layer 1 算法分析）→ **你做 Layer 2**（按 `moongit skill print` 的任务书逐条裁决 uncertain）→ "
+            line += patch[0] + "（Layer 1 算法分析）→ **你做 Layer 2**（按 `cambium skill print` 的任务书逐条裁决 uncertain）→ "
                 + patch[1] + "（Layer 3 合并出 final 分数）"
         } else {
             // 名字集合仍然全部保留（对账测试按名字钉住），只是不再编排三层流程
@@ -3700,22 +3773,22 @@ func skillMarkdown(): String {
     let engine = currentExecutable()
     let ways = ArrayList<String>()
     ways.add("**MCP 服务器**（推荐，工具化接入）。宿主配置：\n   ```json\n   "
-        + "{\"mcpServers\": {\"moongit\": {\"command\": \"" + engine + "\", \"args\": [\"mcp\"]}}}\n   ```\n   "
-        + "（command 是生成这份教学包的那台机器上的引擎路径；换机器用 `command -v moongit` 的结果替换。"
-        + "Linux 上要用自带的启动器 `moongit`——它负责给仓颉运行时设 LD_LIBRARY_PATH，直接指向裸二进制会起不来。）\n   "
+        + "{\"mcpServers\": {\"cambium\": {\"command\": \"" + engine + "\", \"args\": [\"mcp\"]}}}\n   ```\n   "
+        + "（command 是生成这份教学包的那台机器上的引擎路径；换机器用 `command -v cambium` 的结果替换。"
+        + "Linux 上要用自带的启动器 `cambium`——它负责给仓颉运行时设 LD_LIBRARY_PATH，直接指向裸二进制会起不来。）\n   "
         + skillToolSection())
-    ways.add("**CLI**（一次性问答/脚本；`--json` 出机器可读结果）。把 `<moongit>` 换成引擎启动器：\n   "
-        + "进度：`<moongit> status --json` · `context [项目] --budget N` · `tools` · `journal <项目>` · `dashboard --json`\n   "
+    ways.add("**CLI**（一次性问答/脚本；`--json` 出机器可读结果）。把 `<cambium>` 换成引擎启动器：\n   "
+        + "进度：`<cambium> status --json` · `context [项目] --budget N` · `tools` · `journal <项目>` · `dashboard --json`\n   "
         + "代码定位：`index search <模式> [项目]` · `index query <符号|--file 路径> [项目]` · `index file <路径> [项目]` · "
         + "`index refs <符号> [项目]` · `index impact <符号> [项目]` · `index grep <文本> [项目]`\n   "
-        + "索引与置信度：`index gen|update|overview <项目>` · `confidence gen|query <项目>` · `arch gen|query <项目>`\n   "
+        + "索引与置信度：`index gen|update|overview <项目>` · `dendro gen|query <项目>` · `arch gen|query <项目>`\n   "
         + "交互图：`render <arch|index> <项目>`（单文件 HTML 落盘，回执带路径与复用/新绘判定）· "
         + "`graph tree|arch --format html|scene`\n   "
-        + "体检：`graph confidence [--llm]` · `graph patchconf --patch <diff>`")
+        + "体检：`dendro check <项目> [--llm]` · `dendro patch <项目> --patch <diff>`")
     let sb = StringBuilder()
     sb.append(SKILL_FRONTMATTER)
-    sb.append("# moonGit — 本地项目群进度与代码引擎（agent 使用指南）\n\n")
-    sb.append("moonGit 是 **AI 无关** 的确定性内核：它提供事实与动作，你（agent）负责理解与表达。\n\n")
+    sb.append("# Cambium — 本地项目群进度与代码引擎（agent 使用指南）\n\n")
+    sb.append("Cambium 是 **AI 无关** 的确定性内核：它提供事实与动作，你（agent）负责理解与表达。\n\n")
     sb.append("## ${ways.size} 种接入方式（按场景选）\n\n")
     for (i in 0..ways.size) {
         sb.append("${i + 1}. ${ways[i]}\n\n")
@@ -3744,21 +3817,21 @@ func skillMarkdown(): String {
     sb.append("- **改这个函数影响谁**：index_refs(name, symbol) 找全调用点 → index_impact(name, symbol) "
         + "拿传递影响面（每个带 distance）→ 按距离给改动顺序。结论是**词法级候选**，不是编译器闭包，"
         + "措辞必须带上；`guessed` 边不参与影响面。\n")
-    sb.append("- **这段代码可信吗**：index_gen(name) → confidence_gen(name) 生成置信度快照 → "
-        + "confidence_query(name) 读疑点（每条带符号 id 与限定名，可直接回到 index_query）"
+    sb.append("- **这段代码可信吗**：index_gen(name) → dendro_gen(name) 生成置信度快照 → "
+        + "dendro_query(name) 读疑点（每条带符号 id 与限定名，可直接回到 index_query）"
         + "→ 要给人看：render(target=index) 再 `render index <项目> --confidence` 出热力图"
-        + "（符号带「路径:行:列」定位串，可一键复制）；要自己做语义复核：confidence_gen(name, format=llm) "
-        + "拿逐条复核提示词自己过一遍。回执说快照过期就先重跑 confidence_gen，不要拿旧快照下结论。\n")
-    sb.append("- **提交前补丁体检（三层）**：`git diff > /tmp/p.diff` → codegraph_patch_confidence(name, patch_path) "
+        + "（符号带「路径:行:列」定位串，可一键复制）；要自己做语义复核：dendro_gen(name, format=llm) "
+        + "拿逐条复核提示词自己过一遍。回执说快照过期就先重跑 dendro_gen，不要拿旧快照下结论。\n")
+    sb.append("- **提交前补丁体检（三层）**：`git diff > /tmp/p.diff` → dendro_patch_confidence(name, patch_path) "
         + "拿 S1..S10 信号与 uncertain 清单 → 你逐条裁决（confirm/dismiss/unsure，必须引用代码原文）→ "
-        + "codegraph_patch_merge(algorithm_json, agent_json) → final 分数与披露\n")
+        + "dendro_patch_merge(algorithm_json, agent_json) → final 分数与披露\n")
     sb.append("- **架构图**：arch_gen(name) 产出 arch.json 与模块摘要 → arch_query(name[, module]) 读分层/违规/环 → "
         + "render(target=arch) 出零依赖单文件交互图；要自己画：arch_gen(name, format=scene) 出 moongit-graph-scene v1 JSON "
         + "（主题 token、形状、粒子、hits 点击区、panels 详情面板、逐视图 edgesDropped 截断披露）——"
         + "任何 Canvas2D 移植（浏览器/Swift/Skia）按 docs/graph-scene-schema.md 驱动\n\n")
     sb.append("## 红线\n\n")
     sb.append("- git_op 只允许白名单操作（pull/push/commit/stash/unstash/fetch），没有 reset/clean/force-push\n")
-    sb.append("- 文档更新只发生 moonGit 托管区域内（引擎保证），用户内容逐字节保留\n")
+    sb.append("- 文档更新只发生 Cambium 托管区域内（引擎保证），用户内容逐字节保留\n")
     sb.append("- 引擎是 AI 无关的：所有判断与表达由你完成，引擎只提供事实\n")
     sb.append("- 索引、调用边、影响面都是词法级近似，不是编译器闭包：对用户表述时必须带「词法级候选」限定，"
         + "不许说成精确引用；转述 tier。\n")
@@ -3767,11 +3840,11 @@ func skillMarkdown(): String {
         + "协议方法）恒报——先看它是不是框架约定的方法名。\n")
     sb.append("- `unresolved-call`（幻觉调用）只是「全仓没有该名字的裸调用」：框架密集的工程上抽样几乎全是框架 / 标准库调用——"
         + "先 `index grep` 或查依赖确认这个名字确实不存在，再说「编造了 API」。\n")
-    sb.append("- 代码图谱里被标为旧名别名的 codegraph_* 工具不要写进方案（见文末），新面用 index_* / arch_* / confidence_* / render。\n\n")
+    sb.append("- 代码图谱里被标为旧名别名的 codegraph_* 工具不要写进方案（见文末），新面用 index_* / arch_* / dendro_* / render。\n\n")
     sb.append("## 旧名别名（将移除）\n\n")
     sb.append("codegraph_overview / codegraph_tree / codegraph_symbol / codegraph_impact / codegraph_arch / codegraph_confidence "
         + "是早期工具名，仅为兼容保留、将移除。对应关系：overview→index_overview、tree→index_gen、symbol→index_query、"
-        + "impact→index_impact、arch→arch_gen+arch_query+render、confidence→confidence_gen+confidence_query。\n")
+        + "impact→index_impact、arch→arch_gen+arch_query+render、confidence→dendro_gen+dendro_query。\n")
     return sb.toString()
 }
 
@@ -3787,7 +3860,7 @@ func cmdSkill(rest: ArrayList<String>, ctx: CliContext): Int64 {
             var dir = ""
             match (flagValue(rest, "--dir")) {
                 case Some(v) => dir = expandHome(v)
-                case None => dir = expandHome("~/.zcode/skills/moongit")
+                case None => dir = expandHome("~/.zcode/skills/cambium")
             }
             ensureDir(dir)
             let file = dir + "/SKILL.md"
@@ -3802,7 +3875,7 @@ func cmdSkill(rest: ArrayList<String>, ctx: CliContext): Int64 {
             }
             return 0
         case _ =>
-            throw DgError.usage(T("Usage: moongit skill <print|install> [--dir D]", "用法：moongit skill <print|install> [--dir D]"))
+            throw DgError.usage(T("Usage: cambium skill <print|install> [--dir D]", "用法：cambium skill <print|install> [--dir D]"))
     }
 }
 
@@ -3934,7 +4007,7 @@ func milestoneListSelection(projects: ArrayList<ProjectEntry>, allMs: ArrayList<
     }
     // 孤儿：projectId 在注册表里已经对不上任何项目。
     //
-    // 实测 `moongit remove orph` 之后，用户手写的「v1.0 重要里程碑」
+    // 实测 `cambium remove orph` 之后，用户手写的「v1.0 重要里程碑」
     // 数据还在 milestones.json 里，但 milestone list 报「（无里程碑）」exit 0。
     // 用户看到的是「remove 掉的项目，它的里程碑也没了」，
     // 实际是「还在，但每条命令都看不见」。
@@ -3994,7 +4067,7 @@ func cmdDashboard(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let projs = Json.getOr(dash, "projects")
     printOut(dashboardProjectLine(projs, config.language))
     if (Json.intAt(projs, "failed", 0) > 0 && Json.intAt(projs, "total", 0) == 0) {
-        Log.error(T("Every project failed to read; all statistics below are empty. Debug one by one: moongit status <project>", "全部项目都读取失败，下面所有统计都是空的。逐个排查：moongit status <项目名>"))
+        Log.error(T("Every project failed to read; all statistics below are empty. Debug one by one: cambium status <project>", "全部项目都读取失败，下面所有统计都是空的。逐个排查：cambium status <项目名>"))
     }
     let work = Json.getOr(dash, "work")
     printOut(T("Working surface: branches ${Json.intAt(work, "branches", 0)} · merge candidates ${Json.intAt(work, "mergeCandidates", 0)} · untracked files ${Json.intAt(work, "untrackedFiles", 0)} · stashes ${Json.intAt(work, "stashes", 0)}", "工作面：分支 ${Json.intAt(work, "branches", 0)} · 待合入分支 ${Json.intAt(work, "mergeCandidates", 0)} · 未跟踪文件 ${Json.intAt(work, "untrackedFiles", 0)} · stash ${Json.intAt(work, "stashes", 0)}"))
@@ -4010,7 +4083,7 @@ func cmdDashboard(rest: ArrayList<String>, ctx: CliContext): Int64 {
         var shown: Int64 = 0
         for (it in items) {
             if (shown >= 8) {
-                printOut(T("  ... ${items.size} in total; full list: moongit milestone list", "  … 共 ${items.size} 条，完整列表：moongit milestone list"))
+                printOut(T("  ... ${items.size} in total; full list: cambium milestone list", "  … 共 ${items.size} 条，完整列表：cambium milestone list"))
                 break
             }
             printOut("  ${milestoneLine(it, loadConfig().language)}")
@@ -4063,9 +4136,9 @@ func cmdDashboard(rest: ArrayList<String>, ctx: CliContext): Int64 {
 
 func printHelp(): Unit {
     if (uiLanguage() == "en") {
-        printOut("moonGit Engine - git-based local project progress engine")
+        printOut("Cambium Engine - git-based local project progress engine")
         printOut("")
-        printOut("Usage: moongit <command> [args] [--json] [-q] [-v]")
+        printOut("Usage: cambium <command> [args] [--json] [-q] [-v]")
         printOut("")
         printOut("Commands:")
         printOut("  list                     List registered projects with a one-line status")
@@ -4088,16 +4161,19 @@ func printHelp(): Unit {
         printOut("  mcp                      Run as an MCP server (stdio JSON-RPC; for Claude and other agent hosts)")
         printOut("  skill <print|install>    Print/install the agent Skill pack (--dir for the target directory)")
         printOut("  report [project] [--out F]  Export a Markdown progress report")
-        printOut("  graph [overview|tree|symbol|impact|arch|functions|confidence|patchconf] [project]")
-        printOut("                           patchconf: patch-level confidence (3-layer: --patch analyze")
-        printOut("                           / --skill agent / --merge final)")
-        printOut("                           confidence: structural confidence report (--llm for the LLM review prompt;")
-        printOut("                             --no-ast skips the syntax-tree layer)")
+        printOut("  graph [overview|tree|symbol|impact|arch|functions] [project]")
+        printOut("  dendro <gen|query|db|check|patch|merge>  Confidence (Dendro):")
+        printOut("                           gen/query/db <project>  generate (persisted) / read / export the confidence snapshot")
+        printOut("                           check <project> [--no-ast] [--llm]  compute a report without persisting")
+        printOut("                           patch <project> --patch <diff>  patch-level confidence (3-layer: --patch analyze")
+        printOut("                           / --skill agent / --merge final);  merge <algorithm.json> <agent.json>")
+        printOut("                           (old names kept as aliases: confidence <gen|query|db>, graph confidence,")
+        printOut("                            graph patchconf)")
         printOut("                           Code graph: symbol index / relationship tree / impact /")
         printOut("                           interactive architecture canvas (--format html|mermaid|dot|json|scene)")
         printOut("  graph db [project] [--out F]  Write the symbol-level index to a single-file SQLite DB")
         printOut("                           (nodes/edges with confidence tiers; query callers/callees via SQL)")
-        printOut("  confidence db [project] [--out F]  Write the confidence report to a single-file SQLite DB")
+        printOut("  dendro db [project] [--out F]  Write the confidence report to a single-file SQLite DB")
         printOut("                           (findings/dimensions/penalty table)")
         printOut("  arch <gen|update|query> <project>  Architecture index: gen (arch.json, layout included)")
         printOut("                           / update (probe-driven, --force) / query [module] [--violations]")
@@ -4109,7 +4185,7 @@ func printHelp(): Unit {
         printOut("                             --ignore-case/--limit/--context/--glob)")
         printOut("                           query <symbol> (name | Outer.method | id) | --file <path> · file <path> (outline)")
         printOut("                           refs <symbol> (every call site) · impact <symbol> (reverse closure; --depth N)")
-        printOut("  confidence <gen|query> <project>  Confidence: gen (confidence.json; rebuilds the index first")
+        printOut("  dendro <gen|query> <project>  Confidence: gen (confidence.json; rebuilds the index first")
         printOut("                           when stale; --db also writes confidence.db)")
         printOut("                           / query (read-only snapshot; --file/--symbol/--kind/--weight/--top)")
         printOut("  render <arch|index> <project>  Render deliverables from the persisted payload (reuses when")
@@ -4126,19 +4202,19 @@ func printHelp(): Unit {
         printOut("  -v, --verbose            Verbose logging")
         printOut("")
         printOut("Examples:")
-        printOut("  moongit scan ~/dev --depth 3        # scan and register a project group")
-        printOut("  moongit status                      # status of all projects")
-        printOut("  moongit update moonGit              # shallow-update one project")
-        printOut("  moongit deep --scope readme         # manually trigger a README deep update")
-        printOut("  moongit hook install                # install the post-commit hook")
-        printOut("  moongit milestone add myapp v1.0 --tag v1.0.0 --date 2026-12-01")
-        printOut("  moongit dashboard                   # group-wide overview")
-        printOut("  moongit report --out ~/Desktop/progress.md  # export a report")
+        printOut("  cambium scan ~/dev --depth 3        # scan and register a project group")
+        printOut("  cambium status                      # status of all projects")
+        printOut("  cambium update Cambium              # shallow-update one project")
+        printOut("  cambium deep --scope readme         # manually trigger a README deep update")
+        printOut("  cambium hook install                # install the post-commit hook")
+        printOut("  cambium milestone add myapp v1.0 --tag v1.0.0 --date 2026-12-01")
+        printOut("  cambium dashboard                   # group-wide overview")
+        printOut("  cambium report --out ~/Desktop/progress.md  # export a report")
         return
     }
-    printOut("moonGit Engine — git-based local project progress engine")
+    printOut("Cambium Engine — git-based local project progress engine")
     printOut("")
-    printOut("用法：moongit <命令> [参数] [--json] [-q] [-v]")
+    printOut("用法：cambium <命令> [参数] [--json] [-q] [-v]")
     printOut("")
     printOut("命令：")
     printOut("  list                     列出已注册项目及一句话现状")
@@ -4169,7 +4245,7 @@ func printHelp(): Unit {
     printOut("                           （arch 用 --format html|mermaid|dot|json|scene；html 为 Canvas 交互图）")
     printOut("  graph db [项目] [--out F]  符号级索引写入单文件 SQLite（nodes/edges，含 tier 确信度；")
     printOut("                           agent 用 SQL 查 callers/callees）")
-    printOut("  confidence db [项目] [--out F]  置信度报告写入单文件 SQLite（findings/dimensions/罚分表）")
+    printOut("  dendro db [项目] [--out F]  置信度报告写入单文件 SQLite（findings/dimensions/罚分表）")
     printOut("  arch <gen|update|query> <项目>  架构索引：gen（arch.json，含布局坐标）/ update（探针增量，--force 强制）")
     printOut("                           / query [模块] [--violations]（违规对清单 + 环上模块）")
     printOut("  index <gen|overview|update|query|search|grep|refs|impact|file>  持久化代码索引（成员级，稳定 id）")
@@ -4178,7 +4254,7 @@ func printHelp(): Unit {
     printOut("                           grep <文本>（字面文本，不依赖索引；--ignore-case/--limit/--context/--glob）")
     printOut("                           query <符号>（裸名 | Outer.method | id）| --file <路径> · file <路径>（文件大纲）")
     printOut("                           refs <符号>（每一个调用点）· impact <符号>（反向传递闭包；--depth N）")
-    printOut("  confidence <gen|query> <项目>  置信度：gen（confidence.json；索引过期先自动重建；--db 另写")
+    printOut("  dendro <gen|query> <项目>  置信度：gen（confidence.json；索引过期先自动重建；--db 另写")
     printOut("                           confidence.db）/ query（只读快照；--file/--symbol/--kind/--weight/--top 过滤）")
     printOut("  render <arch|index> <项目>  用持久化 payload 渲染单文件交互 HTML（未变即复用；--force 重绘；")
     printOut("                           render index --confidence 叠加 confidence.json 热力图）")
@@ -4193,14 +4269,14 @@ func printHelp(): Unit {
     printOut("  -v, --verbose            详细日志")
     printOut("")
     printOut("示例：")
-    printOut("  moongit scan ~/dev --depth 3        # 扫描并注册项目群")
-    printOut("  moongit status                      # 看全部项目现状")
-    printOut("  moongit update moonGit              # 浅更新指定项目")
-    printOut("  moongit deep --scope readme         # 手动触发 README 深度更新")
-    printOut("  moongit hook install                # 装 post-commit 钩子")
-    printOut("  moongit milestone add myapp v1.0 --tag v1.0.0 --date 2026-12-01")
-    printOut("  moongit dashboard                   # 项目群全景")
-    printOut("  moongit report --out ~/Desktop/progress.md  # 导出报告")
+    printOut("  cambium scan ~/dev --depth 3        # 扫描并注册项目群")
+    printOut("  cambium status                      # 看全部项目现状")
+    printOut("  cambium update Cambium              # 浅更新指定项目")
+    printOut("  cambium deep --scope readme         # 手动触发 README 深度更新")
+    printOut("  cambium hook install                # 装 post-commit 钩子")
+    printOut("  cambium milestone add myapp v1.0 --tag v1.0.0 --date 2026-12-01")
+    printOut("  cambium dashboard                   # 项目群全景")
+    printOut("  cambium report --out ~/Desktop/progress.md  # 导出报告")
 }
 
 /// 解析目标项目：给了就用，没给则用 cwd 推断
@@ -4226,7 +4302,7 @@ func resolveTargets(rest: ArrayList<String>, allowAll: Bool): ArrayList<ProjectE
     let cwd = normalizePath(expandHome(getCwd()))
     match (findProject(cwd)) {
         case Some(p) => out.add(p)
-        case None => throw DgError.notFound(T("Current directory is not part of any registered project (register it with `moongit add .`)", "当前目录不属于任何已注册项目（可用 `moongit add .` 注册）"))
+        case None => throw DgError.notFound(T("Current directory is not part of any registered project (register it with `cambium add .`)", "当前目录不属于任何已注册项目（可用 `cambium add .` 注册）"))
     }
     return out
 }
@@ -4238,9 +4314,9 @@ func resolveTargets(rest: ArrayList<String>, allowAll: Bool): ArrayList<ProjectE
 /// 把它们改成报错会直接打断客户端的解码契约。
 ///
 /// 旧实现在空注册表下静默 exit 0、stdout 全空：
-///   moongit update         → 无任何输出，exit 0
-///   moongit update --json  → `[]`，exit 0
-///   moongit deep           → 无任何输出，exit 0
+///   cambium update         → 无任何输出，exit 0
+///   cambium update --json  → `[]`，exit 0
+///   cambium deep           → 无任何输出，exit 0
 /// agent / CI 读到 exit 0 就认定「全部项目已是最新」，于是永远不去跑
 /// `scan` / `add`，注册表就一直空着 —— 静默降级成事实性谎言。
 /// 同一份「没有目标」的判定散在多个命令里各写一遍也是隐患，
@@ -4253,12 +4329,12 @@ func requireWorkableTargets(targets: ArrayList<ProjectEntry>): Unit {
     // 走到这里必然是 allowAll 分支，所以「为空」只有两种成因，且必须分开说
     let reg = loadRegistry()
     if (reg.projects.isEmpty()) {
-        throw DgError.notFound(T("No projects registered yet; nothing to process. Run `moongit scan <root>` or `moongit add <path>` first", "尚未注册任何项目，没有可处理的内容；先运行 `moongit scan <根目录>` 或 `moongit add <路径>`"))
+        throw DgError.notFound(T("No projects registered yet; nothing to process. Run `cambium scan <root>` or `cambium add <path>` first", "尚未注册任何项目，没有可处理的内容；先运行 `cambium scan <根目录>` 或 `cambium add <路径>`"))
     }
     // 全部被停用：同样是「没有活可干」，但成因不同。
     // 笼统说「尚未注册」会让用户去跑一遍 scan，发现还是不行。
     //
-    // ⚠️ 这里**不能**建议 `moongit enable` —— 引擎根本没有这个子命令。
+    // ⚠️ 这里**不能**建议 `cambium enable` —— 引擎根本没有这个子命令。
     // `disabled` 字段全代码只读不写（registry.cj 只有 `toJson` / 反序列化两处触碰），
     // 唯一能置 true 的途径是手改 registry.json。给一个不存在的命令，
     // 是「静默降级成事实性谎言」的另一种形态：不是没说，是说错了。
@@ -4311,7 +4387,7 @@ func dashboardLanguageNotes(dash: JsonValue, shown: Int64): ArrayList<String> {
     return out
 }
 
-/// `moongit list` 单行的「现状」列。**纯函数**。
+/// `cambium list` 单行的「现状」列。**纯函数**。
 ///
 /// 抽出来的原因不是洁癖：cmdList 直接 printOut，测试截不到 stdout，
 /// 「停用项目有没有被采集」这个判定就只能靠人眼看输出 —— 而这正是
@@ -4343,7 +4419,7 @@ func listRowHeadline(p: ProjectEntry, config: Config): String {
     }
 }
 
-/// `moongit list` 的分母行。
+/// `cambium list` 的分母行。
 ///
 /// list 列的是**注册表**（含已停用），dashboard / status 报的是
 /// **可处理项目**（排除已停用）。两个数不同是设计使然，但两边都沉默时
@@ -4351,8 +4427,8 @@ func listRowHeadline(p: ProjectEntry, config: Config): String {
 /// 所以停用数必须写出来，把「口径不同」变成「口径已知」。
 func listSummaryLine(total: Int64, disabledCount: Int64, lang: String): String {
     let note = if (disabledCount > 0) { tl(lang, " (${disabledCount} disabled, excluded from stats)", "（${disabledCount} 个已停用，不参与统计）") } else { "" }
-    return tl(lang, "${total} projects${note}. Use `moongit status <project>` for details.",
-        "共 ${total} 个项目${note}。用 `moongit status <项目>` 看详情。")
+    return tl(lang, "${total} projects${note}. Use `cambium status <project>` for details.",
+        "共 ${total} 个项目${note}。用 `cambium status <项目>` 看详情。")
 }
 
 func cmdList(rest: ArrayList<String>, ctx: CliContext): Int64 {
@@ -4374,7 +4450,7 @@ func cmdList(rest: ArrayList<String>, ctx: CliContext): Int64 {
         return 0
     }
     if (reg.projects.size == 0) {
-        Log.info(T("No projects registered yet. Run `moongit scan <root>` or `moongit add <path>`.", "尚未注册任何项目。运行 `moongit scan <根目录>` 或 `moongit add <路径>`。"))
+        Log.info(T("No projects registered yet. Run `cambium scan <root>` or `cambium add <path>`.", "尚未注册任何项目。运行 `cambium scan <根目录>` 或 `cambium add <路径>`。"))
         return 0
     }
     let rows = ArrayList<Array<String>>()
@@ -4394,9 +4470,9 @@ func cmdList(rest: ArrayList<String>, ctx: CliContext): Int64 {
 func cmdAdd(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let refs = positionalsOnly(rest, VALUE_FLAGS)
     if (refs.size == 0) {
-        throw DgError.usage(T("Usage: moongit add <path> [--name NAME]", "用法：moongit add <路径> [--name 名称]"))
+        throw DgError.usage(T("Usage: cambium add <path> [--name NAME]", "用法：cambium add <路径> [--name 名称]"))
     }
-    // ⚠️ #196：原来多出来的位置参数被静默丢弃（`moongit add /p n1 n2` → rc=0）。
+    // ⚠️ #196：原来多出来的位置参数被静默丢弃（`cambium add /p n1 n2` → rc=0）。
     // 项目名走的是 `--name`，第二个位置参数**没有**别的含义 ——
     // 静默吞掉它等于把用户的拼写错误（以为可以直接写名字）变成成功。
     rejectExtraPositionals("add", refs, 1)   // 项目名走 --name，不是第二个位置参数
@@ -4423,11 +4499,11 @@ func cmdAdd(rest: ArrayList<String>, ctx: CliContext): Int64 {
 func cmdRemove(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let refs = positionalsOnly(rest, VALUE_FLAGS)
     if (refs.size == 0) {
-        throw DgError.usage(T("Usage: moongit remove <project...> [--purge]", "用法：moongit remove <项目...> [--purge]"))
+        throw DgError.usage(T("Usage: cambium remove <project...> [--purge]", "用法：cambium remove <项目...> [--purge]"))
     }
     let purge = hasFlag(rest, "--purge")
     // ⚠️⚠️ #196：原来只处理 `refs[0]`，其余项目名静默丢弃、退出码 0。
-    // 实测 `moongit remove alpha beta` → 「✓ 已取消注册：alpha」rc=0，
+    // 实测 `cambium remove alpha beta` → 「✓ 已取消注册：alpha」rc=0，
     // 而 beta **原封不动留在注册表里**（`list` 仍能看到）。
     // 这是本族里最有害的一个：取消注册是**破坏性操作**，
     // 「要注销两个、只注销一个、还告诉我成功了」比不响应更糟 ——
@@ -4458,7 +4534,7 @@ func cmdRemove(rest: ArrayList<String>, ctx: CliContext): Int64 {
                 // 不说的话用户会以为数据被删了而放弃找回。
                 Log.warn(T("${orphanCandidates} milestones now point to a deregistered project and no longer appear in milestone list.", "${orphanCandidates} 条里程碑现在指向一个已取消注册的项目，不再出现在 milestone list 里。"))
                 Log.info(T("  The data is not lost; it is still in ${deepgitPath(["milestones.json"])}. Re-register the same path to show them again.", "  数据仍在 ${deepgitPath(["milestones.json"])} 里没丢；重新注册同一路径即可恢复显示。"))
-                Log.info(T("  To delete them for good: moongit milestone remove <project> <milestone> (re-register the project first)", "  想彻底删掉它们：moongit milestone remove <项目> <里程碑>（需要先重新注册该项目）"))
+                Log.info(T("  To delete them for good: cambium milestone remove <project> <milestone> (re-register the project first)", "  想彻底删掉它们：cambium milestone remove <项目> <里程碑>（需要先重新注册该项目）"))
             }
         }
     }
@@ -4599,7 +4675,7 @@ func cmdScan(rest: ArrayList<String>, ctx: CliContext): Int64 {
     if (roots.size == 0) {
         let config = loadConfig()
         if (config.roots.size == 0) {
-            throw DgError.usage(T("Usage: moongit scan <root...> [--depth N]\n(Set roots in the config as default scan roots: moongit config set roots a,b)", "用法：moongit scan <根目录...> [--depth N]\n（可在配置里设 roots 作为默认扫描根：moongit config set roots a,b）"))
+            throw DgError.usage(T("Usage: cambium scan <root...> [--depth N]\n(Set roots in the config as default scan roots: cambium config set roots a,b)", "用法：cambium scan <根目录...> [--depth N]\n（可在配置里设 roots 作为默认扫描根：cambium config set roots a,b）"))
         }
         for (r in config.roots) {
             roots.add(r)
@@ -4755,7 +4831,7 @@ func cmdStatus(rest: ArrayList<String>, ctx: CliContext): Int64 {
     }
     Log.info(T("${Json.intAt(summary, "listedProjects", 0)} projects in total${failedNote} · ${Json.intAt(summary, "branchCount", 0)} branches${branchNote} · active ${Json.intAt(summary, "activeProjects", 0)} · stale ${Json.intAt(summary, "staleProjects", 0)}", "共 ${Json.intAt(summary, "listedProjects", 0)} 个项目${failedNote} · ${Json.intAt(summary, "branchCount", 0)} 个分支${branchNote} · 活跃 ${Json.intAt(summary, "activeProjects", 0)} · 停滞 ${Json.intAt(summary, "staleProjects", 0)}"))
     if (failed > 0 && Json.intAt(summary, "projectCount", 0) == 0) {
-        Log.error(T("Every project failed to read; no facts were produced. Debug one by one: moongit status <project>", "全部项目都读取失败，没有生成任何事实。逐个排查：moongit status <项目名>"))
+        Log.error(T("Every project failed to read; no facts were produced. Debug one by one: cambium status <project>", "全部项目都读取失败，没有生成任何事实。逐个排查：cambium status <项目名>"))
     }
     return groupExitCode(Json.intAt(summary, "projectCount", 0), Json.intAt(summary, "listedProjects", 0))
 }
@@ -4813,7 +4889,7 @@ func printSingleStatus(project: ProjectEntry, config: Config): Int64 {
         }
         printOut(renderTable([T("Branch", "分支"), T("Status", "状态"), "HEAD", T("Last commit", "最近提交"), T("Tag", "标记"), T("Summary", "摘要")], rows.toArray()))
     } else {
-        printOut(if (zh) { T("(no progress records yet; run `moongit update` to generate)", "（暂无进度记录，运行 `moongit update` 生成）") } else { "(no progress yet)" })
+        printOut(if (zh) { T("(no progress records yet; run `cambium update` to generate)", "（暂无进度记录，运行 `cambium update` 生成）") } else { "(no progress yet)" })
     }
 
     let progressMeta = Json.getOr(status, "progress")
@@ -4822,7 +4898,7 @@ func printSingleStatus(project: ProjectEntry, config: Config): Int64 {
     let lastDeep = Json.strAt(progressMeta, "lastDeepAt", "")
     printOut(T("Shallow update: ${if (lastUpdate.size > 0) { formatDateTime(lastUpdate) } else { "never" }} · Deep update: ${if (lastDeep.size > 0) { formatDateTime(lastDeep) } else { "never" }}", "进度更新：${if (lastUpdate.size > 0) { formatDateTime(lastUpdate) } else { "从未" }} · 深度更新：${if (lastDeep.size > 0) { formatDateTime(lastDeep) } else { "从未" }}"))
     if (Json.intAt(status, "userDirtyCount", 0) > 0) {
-        printOut(T("Working tree: ${Json.intAt(status, "userDirtyCount", 0)} uncommitted changes (moonGit-managed docs excluded)", "工作区：${Json.intAt(status, "userDirtyCount", 0)} 处未提交改动（不含 moonGit 托管文档）"))
+        printOut(T("Working tree: ${Json.intAt(status, "userDirtyCount", 0)} uncommitted changes (Cambium-managed docs excluded)", "工作区：${Json.intAt(status, "userDirtyCount", 0)} 处未提交改动（不含 Cambium 托管文档）"))
     }
 
     let journal = Json.arrAt(status, "journal")
@@ -4840,7 +4916,7 @@ func printSingleStatus(project: ProjectEntry, config: Config): Int64 {
         // 截断必须写出来。只打 5 条就收工，用户会以为「这个项目最近就这些」。
         // JSON 路径已有 journalTruncated 字段，这里是文本路径的对应披露。
         if (Json.boolAt(status, "journalTruncated", false)) {
-            printOut(T("- ... showing the latest ${Json.intAt(status, "journalLimit", 5)} entries; full history: moongit journal ${Json.strAt(status, "name", "<project>")} --limit N", "- … 仅显示最近 ${Json.intAt(status, "journalLimit", 5)} 条，完整历史：moongit journal ${Json.strAt(status, "name", "<项目>")} --limit N"))
+            printOut(T("- ... showing the latest ${Json.intAt(status, "journalLimit", 5)} entries; full history: cambium journal ${Json.strAt(status, "name", "<project>")} --limit N", "- … 仅显示最近 ${Json.intAt(status, "journalLimit", 5)} 条，完整历史：cambium journal ${Json.strAt(status, "name", "<项目>")} --limit N"))
         }
         // 坏行也必须说：entries 少了内容却不说原因，调用方会以为「最近没更新过」
         if (Json.intAt(status, "journalUnparsableLines", 0) > 0) {
@@ -5176,7 +5252,7 @@ func cmdJournal(rest: ArrayList<String>, ctx: CliContext): Int64 {
         let filtered = entries
         if (ctx.json) {
             // 收集而不是就地打印：旧实现在项目循环里逐个 printOut 数组，
-            // 于是 `moongit journal --json`（不指定项目 → 默认全部项目）
+            // 于是 `cambium journal --json`（不指定项目 → 默认全部项目）
             // 会输出 N 个首尾相接的 JSON 数组，整份 stdout 非法，任何 JSONDecoder 都解不出来。
             // 归属不用我们补：readJournal 的条目本来就带 project / projectId 字段，
             // 所以单项目输出与旧版字节一致，多项目则靠该字段区分来源。
@@ -5245,7 +5321,7 @@ func cmdJournal(rest: ArrayList<String>, ctx: CliContext): Int64 {
         }
         // 「有结果」这一路同样必须披露窗口被截断 —— 文案与 HTTP 出口共用同一份纯函数。
         // 上一版只把标志位接到了「筛完为空」那一路，于是
-        //   moongit journal gamma --branch main --limit 3   （实际有 30 条）
+        //   cambium journal gamma --branch main --limit 3   （实际有 30 条）
         // 打出 3 条就干净收工，看上去和「这个分支一共就 3 条」一模一样。
         // 「上限当全量」这一族已经栽到第 12 次：只接一半等于把谎报从
         // 「说没有」换成「说只有这些」。
@@ -5311,7 +5387,7 @@ func cmdJournal(rest: ArrayList<String>, ctx: CliContext): Int64 {
 func cmdHook(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let sub = positionalsOnly(rest, VALUE_FLAGS)
     if (sub.size == 0) {
-        throw DgError.usage(T("Usage: moongit hook <install|uninstall|status> [project]", "用法：moongit hook <install|uninstall|status> [项目]"))
+        throw DgError.usage(T("Usage: cambium hook <install|uninstall|status> [project]", "用法：cambium hook <install|uninstall|status> [项目]"))
     }
     let action = sub[0]
     // 去掉动作词本身，resolveTargets 只应看到项目引用
@@ -5327,7 +5403,7 @@ func cmdHook(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let targets = resolveTargets(restNoAction, false)
     var failed = false
     // ⚠️ 同 cmdGit / cmdTrack：多项目 --json 只能输出一份文档。
-    // 旧实现在项目循环里逐个 printOut，`moongit hook install --json`（不指定项目）
+    // 旧实现在项目循环里逐个 printOut，`cambium hook install --json`（不指定项目）
     // 会吐出 N 个首尾相接的 JSON 数组，整份 stdout 非法。
     let hookResults = ArrayList<JsonValue>()
     for (p in targets) {
@@ -5453,18 +5529,18 @@ func cmdConfig(rest: ArrayList<String>, ctx: CliContext): Int64 {
         printOut(T("Scan roots: ${if (cfg.roots.size == 0) { "(not set)" } else { joinStrings(cfg.roots, ", ") } }", "扫描根：${if (cfg.roots.size == 0) { "（未设置）" } else { joinStrings(cfg.roots, ", ") } }"))
         printOut(T("Docs: ${joinStrings(cfg.docs, ", ")}", "文档：${joinStrings(cfg.docs, ", ")}"))
         printOut(T("Branch limit: ${cfg.maxShallowBranches}", "分支上限：${cfg.maxShallowBranches}"))
-        printOut(T("AI: handled by the client layer (deepDolphin.app settings); the engine stays AI-agnostic", "AI：由客户端层负责（deepDolphin.app 设置），引擎保持 AI 无关"))
+        printOut(T("AI: handled by the client layer (Canopy.app settings); the engine stays AI-agnostic", "AI：由客户端层负责（Canopy.app 设置），引擎保持 AI 无关"))
         return 0
     }
     if (sub[0] == "get") {
         if (sub.size < 2) {
-            throw DgError.usage(T("Usage: moongit config get <key>", "用法：moongit config get <键>"))
+            throw DgError.usage(T("Usage: cambium config get <key>", "用法：cambium config get <键>"))
         }
         let key = sub[1]
         // ⚠️ #194：未知键**必须报错**，不能返回 null + rc=0。
         //
         // 原来 `configGetValue` 的兜底是 `Json.null()`，于是
-        //   moongit config get 瞎写的键   → 打印 `null`，退出码 0
+        //   cambium config get 瞎写的键   → 打印 `null`，退出码 0
         // 而同一批键在 `config set` 那边是「✗ 未知配置键：瞎写的键」+ 非 0。
         // 读侧说「这个键的值是 null」、写侧说「这个键不存在」——
         // 两套判据、两种结论，脚本没法分辨自己是拼错了键还是键真的没值。
@@ -5479,7 +5555,7 @@ func cmdConfig(rest: ArrayList<String>, ctx: CliContext): Int64 {
     }
     if (sub[0] == "set") {
         if (sub.size < 3) {
-            throw DgError.usage(T("Usage: moongit config set <key> <value>", "用法：moongit config set <键> <值>"))
+            throw DgError.usage(T("Usage: cambium config set <key> <value>", "用法：cambium config set <键> <值>"))
         }
         let key = sub[1]
         let value = sub[2]
@@ -5612,7 +5688,7 @@ func parseIntStrict(s: String, key: String): Int64 {
 /// 文档缺失那一支在 `checked += 1` **之前**就 continue 了，
 /// 所以 missing 根本不在 checked 里。实测 checked=1/undetermined=0/missing=1
 /// → passed=0，于是 `verified:false` 配 note「暂无可校验的文档
-/// （需要先执行 moongit update）」—— 而**同一命令的文本路径**
+/// （需要先执行 cambium update）」—— 而**同一命令的文本路径**
 /// （checked - undeterminedCount）算出 1，打印「✓ 校验通过：1 份」。
 /// JSON 与文本自相矛盾。
 ///
@@ -5653,7 +5729,7 @@ public func verifyOutcome(checked: Int64, undetermined: Int64, missing: Int64, f
     // 「没有任何可校验的东西」和「可校验的都缺失/无法判定」必须分开说 ——
     // 前者的正确处置是先 update，后者是去恢复文档 / 查权限。
     if (checked == 0 && missing == 0) {
-        return (0, false, "暂无可校验的文档（需要先执行 moongit update）")
+        return (0, false, "暂无可校验的文档（需要先执行 cambium update）")
     }
     if (checked == 0) {
         return (0, false, "没有可校验的文档：${missing} 份文档缺失（备份仍在，可从备份恢复）")
@@ -5924,7 +6000,7 @@ func cmdDoctor(rest: ArrayList<String>, ctx: CliContext): Int64 {
     checks.add(["git", if (gitOk) { "OK" } else { tl(lang, "missing", "缺失") }, if (gitOk) { gitRun(".", ["--version"], true) } else { tl(lang, "git is required", "需要安装 git") }])
     checks.add([tl(lang, "data dir", "数据目录"), if (isDirectoryPath(deepgitHome())) { "OK" } else { tl(lang, "not created", "未创建") }, deepgitHome()])
     let reg = loadRegistry()
-    checks.add([tl(lang, "registered projects", "注册项目"), "${reg.projects.size}", tl(lang, "run `moongit scan` to add", "用 `moongit scan` 添加")])
+    checks.add([tl(lang, "registered projects", "注册项目"), "${reg.projects.size}", tl(lang, "run `cambium scan` to add", "用 `cambium scan` 添加")])
     let missing = ArrayList<String>()
     for (p in reg.projects) {
         if (!isDirectoryPath(p.path)) {
@@ -5998,10 +6074,10 @@ func currentExecutable(): String {
         return args[0]
     }
     // ⚠️ L2：兜底原来返回旧名 `deepgit`。改名后这个分支只在「PATH 查找启动
-    //（argv[0] 是 moongit，不以 / 开头）且未设 DEEPGIT_BIN」时走到，
+    //（argv[0] 是 cambium，不以 / 开头）且未设 DEEPGIT_BIN」时走到，
     // 于是 hook install 写进去的是指向不存在命令的钩子 —— 老用户的钩子
     // 会报「unknown command」，而这类失败只发生在用户机器上，CI 全绿。
-    return "moongit"
+    return "cambium"
 }
 
 func getCwd(): String {

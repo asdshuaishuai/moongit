@@ -1,12 +1,12 @@
 // 叙述规则引擎：确定性的提交分类与摘要启发式。
-// 引擎是 AI 无关的——LLM 增强由上层 AI 实现（deepDolphin.app）通过引擎的
+// 引擎是 AI 无关的——LLM 增强由上层 AI 实现（Canopy.app）通过引擎的
 // 上下文（`context --json`）与工具（`tools --json`）接口完成。
-package moongit.kernel
+package cambium.kernel
 
 import std.collection.*
 import std.unittest.*
 import std.unittest.testmacro.*
-import moongit.util.*
+import cambium.util.*
 
 let TYPE_PATTERNS: Array<(String, String)> = [
     ("feat", "新增"),
@@ -340,7 +340,7 @@ public func rulesOverallNotes(facts: RepoFacts, lang: String): ArrayList<String>
     let zh = !isEnglish(lang)
     let notes = ArrayList<String>()
     if (!facts.dirty.clean) {
-        // 排除 moonGit 自己维护的文档，避免自引用噪音
+        // 排除 Cambium 自己维护的文档，避免自引用噪音
         var userDirty: Int64 = 0
         for (f in facts.dirty.files) {
             if (!isManagedDoc(f)) {

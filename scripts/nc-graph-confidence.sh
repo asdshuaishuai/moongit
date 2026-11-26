@@ -24,7 +24,7 @@ set -u
 # ⚠️ **不能**写 `${SDKROOT:-…}`：envsetup.sh 会在 SDKROOT 未设时把它设成 Xcode 全量 SDK
 # （macOS 26/27 的 libSystem.tbd 缺 arm64-macos 声明 ⇒ ld64.lld 报 undefined symbol: _strtod）。
 # 必须在 source 之后**无条件**改用极简兼容 SDK。
-export SDKROOT="${MOONGIT_SDKROOT:-$HOME/.local/share/sdks/MacOSX.minimal/latest}"
+export SDKROOT="${CAMBIUM_SDKROOT:-$HOME/.local/share/sdks/MacOSX.minimal/latest}"
 # 自建默认 DEEPGIT_HOME 才在收尾时删；用户显式传入的绝不碰（里面可能有真实数据）。
 # 原来 cleanup() 只删 $SB，这个目录每次跑完都残留在 /tmp（缺陷同 #37 的沙箱兄弟目录）。
 DG_HOME_SELFMADE=false
@@ -33,7 +33,7 @@ if [ -z "${DEEPGIT_HOME:-}" ]; then
   DG_HOME_SELFMADE=true
 fi
 
-SB="$(mktemp -d "${TMPDIR:-/tmp}/moonGit-nc-graph.XXXXXX")"
+SB="$(mktemp -d "${TMPDIR:-/tmp}/Cambium-nc-graph.XXXXXX")"
 FILES="src/graph/confidence.cj src/graph/confidence_detect.cj src/graph/extract.cj src/graph/archhtml.cj src/graph/archscene.cj src/graph/arch.cj"
 
 restore_all() {

@@ -7,13 +7,13 @@
 //
 // 【仓颉并发留白】逐文件的提取天然可 `spawn` 并行；v1 刻意串行 ——
 // 确定性输出优先于吞吐（同一棵树两次构建必须逐字节一致，agent 才能对账）。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
 import std.convert.*
 import std.fs.*
 import std.sort.*
-import moongit.util.*
+import cambium.util.*
 
 // MARK: - 上限与跳过规则
 
@@ -239,13 +239,13 @@ func walkSources(dir: String, rel: String, files: ArrayList<(String, String)>,
     }
 }
 
-func lastSeg(p: String): String {
+public func lastSeg(p: String): String {
     let segs = p.split("/")
     return segs[segs.size - 1]
 }
 
 /// 小规模插入排序（每层条目数有限；避免依赖不确定的泛型比较 API）
-func insertionSort(list: ArrayList<String>): Unit {
+public func insertionSort(list: ArrayList<String>): Unit {
     let n = Int64(list.size)
     var i: Int64 = 1
     while (i < n) {
@@ -795,7 +795,7 @@ public func buildGraphProbed(root: String): (CodeGraph, SourceProbe) {
     // （行号来自 FileEntry.importLines，与 imports 平行）
     //
     // ⚠️ M6（引擎自食其果）：原判据是「f 是否引用了**解析出的那一个文件**」。
-    // 仓颉/Swift 的 import 是**包级**语义（`import moongit.util` 引入整个 util
+    // 仓颉/Swift 的 import 是**包级**语义（`import cambium.util` 引入整个 util
     // 模块），而 moduleIndex 按目录段取「排序序前两个」里的第一个 ⇒ import 到
     // util 的 build.cj 被拿去对账 util/errors.cj，真正用到的 readFileText
     // 在 util/paths.cj —— 于是「用了」被报成未使用。实测本仓库 10 条报告里
@@ -904,7 +904,7 @@ public func unresolvedCallsFrom(sites: ArrayList<ResolvedSite>,
 // 的假设成立，但对整仓文件列表（320 文件是 5 万次比较，4000 文件是千万级）
 // 不成立。仓颉标准库 std.sort.sort 是 O(n log n) 的稳定实现，直接换掉；
 // 包内唯一的排序入口保留在这一个函数里，语义（less 闭包）不变。
-func insertionSortBy<T>(list: ArrayList<T>, less: (T, T) -> Bool): Unit {
+public func insertionSortBy<T>(list: ArrayList<T>, less: (T, T) -> Bool): Unit {
     sort(list, by: { a, b =>
         if (less(a, b)) {
             Ordering.LT

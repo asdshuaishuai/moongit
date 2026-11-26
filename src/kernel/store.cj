@@ -2,12 +2,12 @@
 //
 // 设计取舍：进度状态存全局 store 而非项目内 —— 使状态天然跨分支安全，
 // 不会污染任何工作区，也不产生「记录进度」的提交噪音。项目内只写生成文档。
-package moongit.kernel
+package cambium.kernel
 
 import std.collection.*
 import std.env.*
 import std.fs.*
-import moongit.util.*
+import cambium.util.*
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -296,14 +296,14 @@ public func appendJournal(projectId: String, entry: JsonValue, projectName: Stri
     let truncated = probe.size > JOURNAL_MD_KEEP
     let keep = if (truncated) { JOURNAL_MD_KEEP } else { probe.size }
     let sb = StringBuilder()
-    sb.append("# moonGit 进度日志")
+    sb.append("# Cambium 进度日志")
     if (!projectName.isEmpty()) {
         sb.append(" — ${projectName}")
     }
-    sb.append("\n\n> 由 moonGit 自动维护，最新条目在最上方。")
+    sb.append("\n\n> 由 Cambium 自动维护，最新条目在最上方。")
     if (truncated) {
         sb.append("**本文件仅显示最近 ${JOURNAL_MD_KEEP} 条**，不是全部历史；")
-        sb.append("更早的记录在同目录的 journal.jsonl 里，用 `moongit journal <项目> --limit N` 查看。")
+        sb.append("更早的记录在同目录的 journal.jsonl 里，用 `cambium journal <项目> --limit N` 查看。")
     }
     sb.append("\n\n")
     for (i in 0..keep) {
@@ -419,8 +419,8 @@ public func readJournalWindow(projectId: String, limit: Int64): (ArrayList<JsonV
 ///   HTTP 连放大都没有，窗口就是 limit
 /// 于是「记录存在但落在窗口之外」与「这个分支没有记录」完全同构：
 ///   gamma 有 1 条 feat/x + 90 条 main，feat/x 在最旧
-///   moongit journal gamma --branch feat/x --limit 20  → 「（暂无记录）」
-///   moongit journal gamma --branch feat/x --limit 200 → 记录就在那里
+///   cambium journal gamma --branch feat/x --limit 20  → 「（暂无记录）」
+///   cambium journal gamma --branch feat/x --limit 200 → 记录就在那里
 /// 后果不是「少显示几条」，而是**谎报该分支没有历史**。
 ///
 /// 第三个返回值 `windowExhausted`：窗口用完仍未凑够 limit 条匹配记录时为真。
@@ -1198,8 +1198,8 @@ func testBranchFilteredJournalDoesNotReportMissingAsAbsent(): Unit {
     //
     // 调用点原来就是这么干的（CLI 还先把窗口放大成 limit*4，HTTP 连放大都没有）：
     //   最旧的 5 条是 feat/x，最新的 30 条是 main，读是倒序扫（最新在前）
-    //   moongit journal gamma --branch feat/x --limit 5 → 旧实现「（暂无记录）」
-    //   moongit journal gamma --branch feat/x --limit 50 → 记录就在那里
+    //   cambium journal gamma --branch feat/x --limit 5 → 旧实现「（暂无记录）」
+    //   cambium journal gamma --branch feat/x --limit 50 → 记录就在那里
     //
     // 后果不是「少显示几条」，而是**谎报该分支没有历史**。
     let base = "/tmp/deepgit-jbranch-${nowMillis()}"

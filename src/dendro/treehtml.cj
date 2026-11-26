@@ -1,4 +1,4 @@
-// graph/treehtml.cj — 代码图谱 HTML 交付物（单一画布，两级缩放）。
+// dendro/treehtml.cj — 代码图谱 HTML 交付物（单一画布，两级缩放）。
 //
 // 【形态】一张「代码图谱」画布承载全部信息，右侧详情侧栏。热力呈现不是
 // 独立视图，而是代码图谱本身的着色系统：
@@ -47,10 +47,11 @@
 // 第二份划分实现）+ archRefEdges 文件级三元组（代码层调用边叠画的唯一数据源，
 // 与模块边同一架构判据）。引擎单独跑或被 agent 驱动时只产出本 HTML，
 // 无其他渲染通道。
-package moongit.graph
+package cambium.dendro
 
 import std.collection.*
-import moongit.util.*
+import cambium.util.*
+import cambium.graph.*
 
 // MARK: - 分级阈值（treehtml 顶部：三视图的默认落点由它们决定）
 
@@ -570,7 +571,7 @@ public func renderIndexHtml(payload: JsonValue, confOpt: Option<JsonValue>, en: 
     // 持久化产物的自报家门（复用判定比对的就是这一行）
     var metaComment = ""
     if (Json.has(root, "updateCount")) {
-        metaComment = "<!-- moongit index render · updateCount=" +
+        metaComment = "<!-- cambium index render · updateCount=" +
             Int64(Json.intAt(root, "updateCount", 0)).toString() +
             " · generatedAt=" + Json.strAt(root, "generatedAt", "") + " -->\n"
     }
@@ -580,14 +581,14 @@ public func renderIndexHtml(payload: JsonValue, confOpt: Option<JsonValue>, en: 
         // 置信度状态指纹另起一行：第一行注释的格式是 renderIndexEmbeddedGeneratedAt
         // 的读取契约（读到 ` -->` 为止），往里追加字段会让它读回整段后缀
         if (!confTag.isEmpty()) {
-            metaComment += "<!-- moongit index render · confidence=" + confTag + " -->\n"
+            metaComment += "<!-- cambium index render · confidence=" + confTag + " -->\n"
         }
     }
     let langTag = if (en) { "en" } else { "zh-CN" }
     let sb = StringBuilder()
     sb.append("<!DOCTYPE html>\n${metaComment}<html lang=\"${langTag}\">\n<head>\n<meta charset=\"UTF-8\">\n")
     sb.append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n")
-    sb.append("<meta name=\"generator\" content=\"moonGit graph tree (Cangjie engine, deterministic layout)\">\n")
+    sb.append("<meta name=\"generator\" content=\"Cambium graph tree (Cangjie engine, deterministic layout)\">\n")
     sb.append("<title>${title} · ${fileCount} files</title>\n")
     sb.append("""
 <style>
@@ -617,7 +618,7 @@ ${embedBootstrapTag()}
   <header class="topbar">
     <div class="brand">
       <div class="brandmark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5.5 12 2l8 3.5v8L12 22 4 13.5z"/><path d="m4 5.5 8 4 8-4M12 9.5V22"/><circle cx="12" cy="9.5" r="2" fill="currentColor" stroke="none"/></svg></div>
-      <div><h1>AI CODE RELIABILITY</h1><small>CONFIDENCE GRAPH · moonGit</small></div>
+      <div><h1>AI CODE RELIABILITY</h1><small>CONFIDENCE GRAPH · Cambium</small></div>
     </div>
     <div class="vdiv"></div>
     <div class="project-select"><div class="project-avatar" id="projAvatar">MG</div><div><strong id="projName">project</strong><small id="projMeta">indexing…</small></div><span class="tierchip" id="tierChip">—</span></div>
@@ -661,7 +662,7 @@ ${embedBootstrapTag()}
       <div class="side-body" id="sideBody"></div>
     </aside>
   </main>
-  <footer class="bottom-status"><div class="status-left"><span class="status-green" id="freshTag">● INDEX</span><span id="footerNodes">–</span><span id="modelTag">MODEL: LEX-1</span><span id="evalTag"></span></div><div class="status-right"><span>Canvas renderer</span><span><span class="kbd">?</span> <span id="lblHelp">交互说明</span></span><span>moongit codegraph</span></div></footer>
+  <footer class="bottom-status"><div class="status-left"><span class="status-green" id="freshTag">● INDEX</span><span id="footerNodes">–</span><span id="modelTag">MODEL: LEX-1</span><span id="evalTag"></span></div><div class="status-right"><span>Canvas renderer</span><span><span class="kbd">?</span> <span id="lblHelp">交互说明</span></span><span>cambium codegraph</span></div></footer>
 </div>
 <div class="toast" id="toast"></div>
 <div class="modal-backdrop" id="modalBackdrop"><div class="modal"><div class="modal-head"><h2 id="modalTitle">综合置信度计算模型</h2><button class="icon-btn" id="closeModal">×</button></div><p id="modalIntro"></p><div class="formula" id="modalFormula"></div><table class="weights"><thead><tr><th id="modalTh1">疑点档位</th><th>weight</th><th id="modalTh2">观察内容</th></tr></thead><tbody><tr><td id="modalW1">低档 &lt;4</td><td>1–3</td><td id="modalD1">风格与可读性类疑点，按条数线性累积</td></tr><tr><td id="modalW2">中档 4–7</td><td>4–7</td><td id="modalD2">可信度实质受损：深嵌套/超长函数/魔法数等</td></tr><tr><td id="modalW3">高档 ≥8</td><td>8+</td><td id="modalD3">高风险模式：并发风险/指针风险/结构性缺陷</td></tr></tbody></table><p id="modalCaps"></p><button class="primary-btn" id="closeModal2" style="margin-top:5px">理解</button></div></div>
@@ -719,31 +720,6 @@ public func renderIndexEmbeddedGeneratedAt(html: String): String {
     return html[from..end]
 }
 
-/// 渲染模板的版本号：外壳、样式或驱动变了就 +1。
-/// 产物以注释行自报（renderTemplateTag），复用判定比对它——否则引擎升级后旧产物会被当成
-/// 「输入没变」一直复用，用户永远看不到新外壳（v0.3.0 加嵌入模式时实测抓到）。
-/// 3 = 嵌入尺寸融合：泳道折行、按区域选列、色带包住卡片、图例进底条、尺寸契约变量。
-public let RENDER_TEMPLATE: Int64 = 3
-
-/// 产物里自报模板版本的注释行（两份产物同一格式）。
-public func renderTemplateTag(): String {
-    return "<!-- moongit render · template=" + RENDER_TEMPLATE.toString() + " -->\n"
-}
-
-/// 从渲染产物读回模板版本；没有这一行（更早的引擎画的）/ 读不出来 = -1，调用方按不可复用处理。
-public func renderEmbeddedTemplate(html: String): Int64 {
-    let marker = "<!-- moongit render · template="
-    let a = indexOfStrFrom(html, marker, 0)
-    if (a < 0) { return -1 }
-    let from = a + marker.size
-    let end = indexOfStrFrom(html, " -->", from)
-    if (end <= from) { return -1 }
-    // 版本号是纯 ASCII 数字串，UTF-8 切片安全
-    match (metaInt(html[from..end])) {
-        case Some(n) => return n
-        case None => return -1
-    }
-}
 
 /// 从渲染产物读回内嵌的置信度状态指纹（第二行注释 `confidence=… -->`）。
 /// 与 renderIndexHtml 的写入是同一格式的一对。**只在首行注释之后找**：
@@ -751,9 +727,9 @@ public func renderEmbeddedTemplate(html: String): Int64 {
 /// 而首行注释恒在文档最前。找不到 = 旧版引擎的产物 / 兼容面产物，返回空串——
 /// 调用方按「置信度状态无法证明相同」处理，不复用。
 public func renderIndexEmbeddedConfTag(html: String): String {
-    let head = indexOfStrFrom(html, "<!-- moongit index render · updateCount=", 0)
+    let head = indexOfStrFrom(html, "<!-- cambium index render · updateCount=", 0)
     if (head < 0) { return "" }
-    let marker = "<!-- moongit index render · confidence="
+    let marker = "<!-- cambium index render · confidence="
     let a = indexOfStrFrom(html, marker, head)
     if (a < 0) { return "" }
     let from = a + marker.size
@@ -865,8 +841,8 @@ func codegraphDriverJs(en: Bool): String {
     let tConfMissing = if (en) { "no confidence data in this render (confidence.json absent); structure only" }
         else { "无置信度数据（本次渲染未提供 confidence.json）——本页只呈现结构" }
     // 快照过期：版本号 N/M 由引擎随数据下发（D.confStaleNote），本串只是兜底
-    let tConfStale = if (en) { "confidence snapshot is stale (based on another index version) — run moongit confidence gen" }
-        else { "置信度快照过期（依据的索引版本与当前不一致）——先 moongit confidence gen" }
+    let tConfStale = if (en) { "confidence snapshot is stale (based on another index version) — run cambium dendro gen" }
+        else { "置信度快照过期（依据的索引版本与当前不一致）——先 cambium dendro gen" }
     // 详情面板的定位区（阶段二 D）：定位串 / 限定名 / 签名 / 复制符号 ID
     let tLocation = if (en) { "LOCATOR" } else { "定位" }
     let tLocator = if (en) { "Location" } else { "定位串" }
@@ -936,9 +912,10 @@ func codegraphDriverJs(en: Bool): String {
         + ", tierLf: " + jsStr(tierLf) + ", tierLs: " + jsStr(tierLs) + ", tierC: " + jsStr(tierC) + " };\n"
     return constJs + """
 'use strict';
-// ── 嵌入模式：宿主页面内嵌时（window.MOONGIT_EMBED.chrome === 'page'），画在 canvas 上的颜色、
+// ── 嵌入模式：宿主页面内嵌时（window.CAMBIUM_EMBED.chrome === 'page'），画在 canvas 上的颜色、
 //    圆角也从宿主令牌取；独立打开产物时一律用 cv 的第二个参数（原值）──
-var EMB = window.MOONGIT_EMBED, EMB_ON = !!(EMB && EMB.chrome === 'page'), CAN = (EMB_ON && EMB.canvas) || {};
+// 嵌入声明读新名，旧名兜底：改名前写的宿主（注入 window.MOONGIT_EMBED）配新产物时仍进嵌入模式
+var EMB = window.CAMBIUM_EMBED || window.MOONGIT_EMBED, EMB_ON = !!(EMB && EMB.chrome === 'page'), CAN = (EMB_ON && EMB.canvas) || {};
 // 适应画布的放大上限：嵌入时宿主的页面已经留了白，小项目可以再放大一些——卡片上的元信息
 // 从 10px 到 12px（外壳的最小字级）；独立版沿用 1.16（定稿）。
 var EMB_FIT_CAP = EMB_ON ? 1.3 : 1.16;
@@ -2660,35 +2637,14 @@ if (EMB_ON && window.ResizeObserver) {
     resizeTimer = setTimeout(function () { if (!userView) { hasFit = false; resize(); fitView(); } else { resize(); keepInView(); } }, 80);
   }).observe(wrap);
 }
-window.MoongitCodeGraph = {
+// 旧名别名：改名前照着 window.MoongitCodeGraph 写的脚本/宿主照常可用
+window.MoongitCodeGraph = window.CambiumCodeGraph = {
   scene: D, nodes: NODES, version: 2,
   enterScope: enterScope,
   jumpTo: jumpToNode,
   select: function (id) { selectedId = id; renderSidebar(); draw(); }
 };
 """
-}
-
-// MARK: - 嵌入模式（宿主页面内嵌）
-
-/// 嵌入契约：宿主在产物**任何脚本之前**（<head> 最前面）注入
-///   window.MOONGIT_EMBED = { chrome: "page", vars: { "--bg": "#…", … }, canvas: { bg: "#…", … } }
-/// · chrome === "page"：收拢外壳（宿主已有页头与状态条）、换宿主主题；不注入或别的值 = 独立完整版，逐字节同旧。
-/// · vars：CSS 自定义属性，由下面的引导脚本写到 <html> 与 <body> 的内联样式上。
-/// · canvas：画在 canvas 上的颜色与圆角（驱动 JS 经 cv(key, 原值) 读取）。
-///
-/// 引导脚本放在 <body> 开头：那时 body 已存在，内联变量才盖得过 `body.dark { --bg: … }` 这类
-/// 写在类选择器上的变量（架构图产物就是这么定义的）；也早于第一帧绘制，不会先闪一下独立版外壳。
-func embedBootstrapJs(): String {
-    return "(function(){var e=window.MOONGIT_EMBED;if(!e||e.chrome!=='page'){return;}" +
-        "document.documentElement.setAttribute('data-embed','page');" +
-        "var v=e.vars||{};for(var k in v){if(Object.prototype.hasOwnProperty.call(v,k)){" +
-        "document.documentElement.style.setProperty(k,String(v[k]));" +
-        "document.body.style.setProperty(k,String(v[k]));}}})();"
-}
-
-func embedBootstrapTag(): String {
-    return "<script>" + embedBootstrapJs() + "\n</script>\n"
 }
 
 /// 热力图产物（render/index.html）的嵌入样式：只对 html[data-embed="page"] 生效。

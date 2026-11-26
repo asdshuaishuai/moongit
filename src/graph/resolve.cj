@@ -25,10 +25,10 @@
 //
 // 【如实说的边界】这是词法级解析：没有类型信息，实例接收者 `obj.load(` 不知道 obj
 // 的类型，只能按裸名走。所以 guessed 边是真实的不确定，不是可以后期消掉的噪声。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
-import moongit.util.*
+import cambium.util.*
 
 /// 一个有效定义的位置：(文件下标, 符号下标)。
 struct DefRef {

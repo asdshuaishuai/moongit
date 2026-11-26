@@ -14,9 +14,9 @@
 // 进度），不是反复复用的 UI 词汇；169 个 key 的表需要全仓跳转对齐，
 // 成本高于把两句话写在一起。同一句话出现在两处就该收敛成函数
 // （本项目一贯纪律），而不是靠 key 表去重。
-package moongit.cli
+package cambium.cli
 
-import moongit.util.*
+import cambium.util.*
 
 /// 外壳层文案选择器：`T("Unknown command: ${c}", "未知命令：${c}")`。
 /// 英文在前 —— 外壳默认是中文（与 Config.language 默认值一致），

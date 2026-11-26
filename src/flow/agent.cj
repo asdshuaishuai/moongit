@@ -1,12 +1,12 @@
-// Agent 接口：为上层 AI 实现（deepDolphin.app / 未来的 deepDesign 式层）提供
+// Agent 接口：为上层 AI 实现（Canopy.app / 未来的 deepDesign 式层）提供
 // 「所需的一切」——预算内的 markdown 上下文包 + 可执行工具清单。
 // 引擎本身是 AI 无关的：这里只做确定性的事实组装与裁剪。
-package moongit.flow
+package cambium.flow
 
 import std.collection.*
 import std.env.*
-import moongit.kernel.*
-import moongit.util.*
+import cambium.kernel.*
+import cambium.util.*
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -173,7 +173,7 @@ public func checkContextScope(scope: String, name: String): ContextScopeCheck {
     return if (name.isEmpty()) { ContextScopeCheck.Ok } else { ContextScopeCheck.NameWithoutProjectScope }
 }
 
-/// `moongit context` 的产物：正文 + 采集健康度。
+/// `cambium context` 的产物：正文 + 采集健康度。
 ///
 /// ⚠️ M18：正文里其实已经跑过一遍 allProjectStatuses + buildDashboard，
 /// 而 cmdContext 为了算退出码**又原样跑了一遍** —— 所有项目的 git 采集开销
@@ -216,7 +216,7 @@ public func buildAgentContext(
     let dash = buildDashboard(targets, config)
     let sb = StringBuilder()
 
-    sb.append("# moonGit 项目群上下文\n\n")
+    sb.append("# Cambium 项目群上下文\n\n")
     sb.append("> 生成于 ${formatDateTime(nowIso())} · 引擎为 AI 无关内核，以下为确定性事实\n\n")
 
     // ⚠️ 存储损坏必须在**第一屏**说，不能只躺在某个项目的字段里。
@@ -567,8 +567,8 @@ public func safeSliceAtLine(s: String, maxBytes: Int64): String {
 /// 原来每个工具带 `method` + `path`（`GET /api/context?scope=group` …），
 /// 末尾 note 还写着「由上层 AI 通过 HTTP 调用执行」。
 /// HTTP 服务端已按「传输层只在本机进程之间通信、不跨网络」整体删除（AGENTS.md 第一条不变量：
-/// **没有 HTTP 服务，没有 `moongit serve`，没有 `/api/*`**），
-/// 于是 `moongit tools --json` 每次调用都在教 agent 去打 10 个不存在的端点。
+/// **没有 HTTP 服务，没有 `cambium serve`，没有 `/api/*`**），
+/// 于是 `cambium tools --json` 每次调用都在教 agent 去打 10 个不存在的端点。
 /// 唯一没暴露的原因是客户端 `engineToolDefinitions` 只读 name/description/params，
 /// 把这两列丢掉了 —— 那是调用方的将就，不是这里没坏。
 ///
@@ -628,8 +628,11 @@ public func agentToolsManifest(): JsonValue {
     addTool("index_refs", "引用点：解析到某符号定义的每一个调用点（位置、接收者、确信度、所在函数）。改签名前用它找全要动的地方。params: name, symbol(裸名|限定名|id)", "name,symbol")
     addTool("index_impact", "影响面：沿确定的调用边反向求传递闭包——这个符号改了哪些符号跟着坏（带距离），并按文件汇总；词法级结果，不是编译器闭包。params: name, symbol(裸名|限定名|id), depth", "name,symbol,depth")
     addTool("index_outline", "文件大纲：一个文件里的全部符号（种类、qual、位置、行范围、签名、可见性）+ 调入/调出文件。读陌生文件前先看它。params: name, file", "name,file")
-    addTool("confidence_gen", "置信度生成：前置自愈索引（过期先重建并披露）→ 结构性疑点确定性度量 → 持久化 confidence.json。params: name, format(text|json|llm), no_ast, db", "name,format,no_ast,db")
-    addTool("confidence_query", "置信度快照查询：只读持久化 confidence.json 绝不重算（缺席报错，提示先 confidence_gen）；过滤 file/symbol/kind/weight/top；回执恒带快照元信息。params: name, file, symbol, kind, weight, top", "name,file,symbol,kind,weight,top")
+    // 置信度工具正名 dendro_*（品牌升级：置信度模块 → Dendro）；旧名保留为别名，将移除——与 MCP 清单同一批名字
+    addTool("dendro_gen", "置信度生成：前置自愈索引（过期先重建并披露）→ 结构性疑点确定性度量 → 持久化 confidence.json。params: name, format(text|json|llm), no_ast, db", "name,format,no_ast,db")
+    addTool("dendro_query", "置信度快照查询：只读持久化 confidence.json 绝不重算（缺席报错，提示先 dendro_gen）；过滤 file/symbol/kind/weight/top；回执恒带快照元信息。params: name, file, symbol, kind, weight, top", "name,file,symbol,kind,weight,top")
+    addToolDeprecated("confidence_gen", "置信度生成（旧名别名，将移除 → dendro_gen）。params: name, format(text|json|llm), no_ast, db", "name,format,no_ast,db", "dendro_gen")
+    addToolDeprecated("confidence_query", "置信度快照查询（旧名别名，将移除 → dendro_query）。params: name, file, symbol, kind, weight, top", "name,file,symbol,kind,weight,top", "dendro_query")
     addTool("render", "渲染交付物：持久化 payload → 单文件交互 HTML（落盘，回执带路径与复用/新绘判定，不带 HTML 全文）。params: name, target(arch|index), confidence, force", "name,target,confidence,force")
     // ── 改名期兼容：旧 codegraph_*（patch 两工具除外）保留为别名，将移除 ──
     addToolDeprecated("codegraph_overview", "代码图谱概览（文件/符号/引用边统计）（旧名别名，将移除——新面用 index_overview / index_gen）。params: name", "name", "index_overview")
@@ -637,9 +640,11 @@ public func agentToolsManifest(): JsonValue {
     addToolDeprecated("codegraph_symbol", "符号定位：定义处 + 词法引用（旧名别名，将移除——新面用 index_query）。params: name, symbol", "name,symbol", "index_query")
     addToolDeprecated("codegraph_impact", "影响面：改这个符号会波及哪些文件与符号（词法文件级粒度）（旧名别名，将移除）。params: name, symbol", "name,symbol", "index_query")
     addToolDeprecated("codegraph_arch", "技术架构图：模块分层依赖（Canvas 交互 HTML / mermaid / dot / json）（旧名别名，将移除——新面用 arch_gen / render）。params: name, format", "name,format", "arch_gen")
-    addTool("codegraph_patch_confidence", "补丁级置信度 Layer 1：S1..S10 信号 + uncertain 待办清单（配合 skill 做 Layer 2 复核）。params: name, patch_path", "name,patch_path")
-    addTool("codegraph_patch_merge", "补丁级置信度 Layer 3：合并 algorithm+agent 输出。params: algorithm_json, agent_json", "algorithm_json,agent_json")
-    addToolDeprecated("codegraph_confidence", "代码置信度报告：结构性疑点（孤儿/占位/吞错/魔法数/重复体）。被动能力，仅显式调用时分析（旧名别名，将移除——新面用 confidence_gen / confidence_query）。params: name, format(json|text|llm)", "name,format", "confidence_gen")
+    addTool("dendro_patch_confidence", "补丁级置信度 Layer 1：S1..S10 信号 + uncertain 待办清单（配合 skill 做 Layer 2 复核）。params: name, patch_path", "name,patch_path")
+    addTool("dendro_patch_merge", "补丁级置信度 Layer 3：合并 algorithm+agent 输出。params: algorithm_json, agent_json", "algorithm_json,agent_json")
+    addToolDeprecated("codegraph_patch_confidence", "补丁级置信度 Layer 1（旧名别名，将移除 → dendro_patch_confidence）。params: name, patch_path", "name,patch_path", "dendro_patch_confidence")
+    addToolDeprecated("codegraph_patch_merge", "补丁级置信度 Layer 3（旧名别名，将移除 → dendro_patch_merge）。params: algorithm_json, agent_json", "algorithm_json,agent_json", "dendro_patch_merge")
+    addToolDeprecated("codegraph_confidence", "代码置信度报告：结构性疑点（孤儿/占位/吞错/魔法数/重复体）。被动能力，仅显式调用时分析（旧名别名，将移除——新面用 dendro_gen / dendro_query）。params: name, format(json|text|llm)", "name,format", "dendro_gen")
 
     let o = Json.obj()
     Json.set(o, "tools", JArr(arr))
@@ -720,7 +725,7 @@ func testBuildAgentContextEmpty(): Unit {
     let config = Config.defaults()
     let reg = Registry()
     let ctx = buildAgentContext(reg.projects, config, "group", "", 8000)
-    @Assert(ctx.text.contains("moonGit 项目群上下文"))
+    @Assert(ctx.text.contains("Cambium 项目群上下文"))
     let miss = buildAgentContext(reg.projects, config, "project", "ghost", 8000)
     @Assert(miss.text.contains("未找到项目"))
 }

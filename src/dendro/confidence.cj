@@ -14,11 +14,12 @@
 // 【语法树从哪来】不自造 parser：调用已装的开源 `ast-grep`
 // （tree-sitter 内核，9 种语言）。不可用时**优雅降级**为纯词法度量，
 // 并在 coverage 里如实披露降级（不许把降级说成全量）。
-package moongit.graph
+package cambium.dendro
 
 import std.collection.*
 import std.convert.*
-import moongit.util.*
+import cambium.util.*
+import cambium.graph.*
 
 // MARK: - 模型
 
@@ -689,7 +690,7 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
 /// findings 的**全序**排序（`AGENTS.md` 契约：同一仓库两次运行逐字节一致）。
 /// ⚠️ 原比较器只按 (权重, file, line)：权重并列且 file:line 相同时判等，
 /// 于是依赖**输入顺序** —— 而输入来自 `runAstGrep` 里按语言分组的 HashMap 迭代，
-/// 顺序不确定。实测 deepDolphin 两次运行 findings 的 (long-function, deep-nesting)
+/// 顺序不确定。实测 Canopy 两次运行 findings 的 (long-function, deep-nesting)
 /// 对在同一函数首行翻转（两者权重都是 4）。补足全序：
 /// 权重↓ → file↑ → line↑ → flawId↑ → symbol↑ → id↑。
 /// 最后一维是符号键：同一位置上两个同名声明（重载各挂各的 id）不许再判等。

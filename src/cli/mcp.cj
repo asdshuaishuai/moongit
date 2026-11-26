@@ -6,7 +6,7 @@
 //   （HTTP 服务端已整体删除：AGENTS.md 第一条不变量「没有 /api/*」）
 // - 无状态：除显式写操作外全部只读；写操作走与 CLI 相同的锁与白名单
 // - AI 无关：MCP 只暴露事实与动作，供任何 MCP 宿主（Claude/其它 agent）消费
-package moongit.cli
+package cambium.cli
 
 import std.collection.*
 import std.console.*
@@ -14,10 +14,11 @@ import std.convert.*
 import std.env.*
 import std.unittest.*
 import std.unittest.testmacro.*
-import moongit.flow.*
-import moongit.graph.*
-import moongit.kernel.*
-import moongit.util.*
+import cambium.flow.*
+import cambium.graph.*
+import cambium.kernel.*
+import cambium.util.*
+import cambium.dendro.*
 
 // ------------------------------ 工具清单 ------------------------------
 
@@ -71,7 +72,7 @@ let MCP_READONLY_TOOLS: Array<String> = ["index_query", "index_search", "index_g
 /// index_search 的 kind 取值（= symKindId 的 7 个契约值）。
 let INDEX_KINDS: Array<String> = ["func", "class", "struct", "interface", "enum", "extension", "typealias"]
 
-/// MCP 工具全集（与 `moongit tools --json` 同源能力，进程内直连）
+/// MCP 工具全集（与 `cambium tools --json` 同源能力，进程内直连）
 public func mcpToolList(): JsonValue {
     let arr = ArrayList<JsonValue>()
     arr.add(mcpTool("list_projects", "列出全部已注册项目及一句话现状", mcpSchemaObject([], [])))
@@ -99,7 +100,7 @@ public func mcpToolList(): JsonValue {
     //      实测会改写所有项目的 README」）。那次只加在客户端，
     //      引擎自己的 MCP 工具表里这一层**没跟上**。
     //   ③ 工具描述写的是「浅更新」——单数，默认动作与描述不符。
-    // 引擎 CLI 的 `moongit update`（不带名字 = 全部）仍然保留；
+    // 引擎 CLI 的 `cambium update`（不带名字 = 全部）仍然保留；
     // 那是**人**敲的命令，而这里是**模型**填的参数表。
     arr.add(mcpTool("run_shallow_update", "浅更新：记录各分支进度并刷新文档托管区域。name 必填；传 * 表示整个项目群", mcpSchemaObject([("name", "string", "项目名或 ID；传 * 表示全部项目")], ["name"])))
     arr.add(mcpTool("run_deep_update", "深度更新：重写 overview/architecture/commands/history。name 必填（与 run_shallow_update / run_track 同构）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("scope", "string", "all|readme|agent")], ["name"])))
@@ -131,9 +132,15 @@ public func mcpToolList(): JsonValue {
     arr.add(mcpTool("index_refs", "引用点：解析到某符号定义的每一个调用点（file:line:col、接收者、确信度 tier、所在函数 caller/callerQual/callerFile/callerLine）。改签名前用它找全要动的地方", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号：裸名、限定名（Outer.method）或 id")], ["name", "symbol"])))
     arr.add(mcpTool("index_impact", "影响面：沿 direct/resolved 调用边反向求传递闭包——这个符号改了，哪些符号会跟着坏（每个带 distance 距离），并按文件汇总。词法级结果，不是编译器闭包；guessed 边不参与", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号：裸名、限定名（Outer.method）或 id"), ("depth", "integer", "传递深度，默认 4")], ["name", "symbol"])))
     arr.add(mcpTool("index_outline", "文件大纲：一个文件里的全部符号（种类、qual、file:line:col、行范围、签名、可见性、仅声明的标记）+ 调入/调出文件与权重。读一个陌生文件前先看它", mcpSchemaObject([("name", "string", "项目名或 ID"), ("file", "string", "文件相对路径")], ["name", "file"])))
-    arr.add(mcpTool("confidence_gen", "置信度生成：前置自愈索引（过期先重建并披露）→ 结构性疑点确定性度量 → 持久化 confidence.json（render index --confidence 的消费端就吃它）。no_ast=true 跳过语法树层；db=true 额外写 confidence.db", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "text|json|llm（llm = 可直接喂给模型的逐条复核提示词），默认 json"), ("no_ast", "boolean", "跳过语法树层（纯词法）"), ("db", "boolean", "额外写 confidence.db")], ["name"])))
-    arr.add(mcpTool("confidence_query", "置信度快照查询：只读持久化 confidence.json，绝不重算（报告缺席报错，提示先 confidence_gen）。无过滤出总览（分数/维度/罚分 Top/限流披露）；file/symbol/kind/weight/top 过滤 findings；回执恒带快照元信息（generatedAt + 依据的索引版本）。每条 finding 带 id / qual——挂靠符号的稳定 id 与限定名，与 codegraph.db 的 nodes.sid 同一个键，可直接交给 index_refs / index_query（定位不到为空串）。structuredContent 与文本是同一份 JSON", mcpSchemaObject([("name", "string", "项目名或 ID"), ("file", "string", "按文件过滤（精确或路径后缀）"), ("symbol", "string", "按符号过滤"), ("kind", "string", "按类别 id 过滤（如 orphan）"), ("weight", "integer", "按权重下限过滤"), ("top", "integer", "取前 N 条"), ("json", "boolean", "返回 JSON（默认 true）")], ["name"])))
-    arr.add(mcpTool("render", "渲染交付物：持久化 payload → 单文件交互 HTML（落盘到项目库，回执只带路径与复用/新绘判定，不内塞 HTML 全文）。target=arch|index；confidence=true 时 index 叠加 confidence.json——快照缺席则纯结构渲染并注明；快照依据的 indexUpdateCount 与当前索引版本不一致则不叠加旧快照，回执 confidence=stale、staleConfidence=true、confidenceIndexUpdateCount=<快照依据的版本>（先调 confidence_gen）；staleConfidence 恒发；force=true 强制重绘", mcpSchemaObject([("name", "string", "项目名或 ID"), ("target", "string", "arch|index，默认 index"), ("confidence", "boolean", "index 叠加 confidence.json（仅当它与当前索引版本一致）"), ("force", "boolean", "强制重绘")], ["name"])))
+    let dendroGenSchema = mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "text|json|llm（llm = 可直接喂给模型的逐条复核提示词），默认 json"), ("no_ast", "boolean", "跳过语法树层（纯词法）"), ("db", "boolean", "额外写 confidence.db")], ["name"])
+    arr.add(mcpTool("dendro_gen", "置信度生成：前置自愈索引（过期先重建并披露）→ 结构性疑点确定性度量 → 持久化 confidence.json（render index --confidence 的消费端就吃它）。no_ast=true 跳过语法树层；db=true 额外写 confidence.db", dendroGenSchema))
+    // 旧名别名（品牌升级：置信度模块 → Dendro）：同一份 schema、同一套 handler，只换名字 + 废弃标记
+    arr.add(mcpToolDeprecated("confidence_gen", "置信度生成（旧名别名，将移除 → dendro_gen）", dendroGenSchema, "dendro_gen"))
+    let dendroQuerySchema = mcpSchemaObject([("name", "string", "项目名或 ID"), ("file", "string", "按文件过滤（精确或路径后缀）"), ("symbol", "string", "按符号过滤"), ("kind", "string", "按类别 id 过滤（如 orphan）"), ("weight", "integer", "按权重下限过滤"), ("top", "integer", "取前 N 条"), ("json", "boolean", "返回 JSON（默认 true）")], ["name"])
+    arr.add(mcpTool("dendro_query", "置信度快照查询：只读持久化 confidence.json，绝不重算（报告缺席报错，提示先 dendro_gen）。无过滤出总览（分数/维度/罚分 Top/限流披露）；file/symbol/kind/weight/top 过滤 findings；回执恒带快照元信息（generatedAt + 依据的索引版本）。每条 finding 带 id / qual——挂靠符号的稳定 id 与限定名，与 codegraph.db 的 nodes.sid 同一个键，可直接交给 index_refs / index_query（定位不到为空串）。structuredContent 与文本是同一份 JSON", dendroQuerySchema))
+    // 旧名别名（品牌升级：置信度模块 → Dendro）：同一份 schema、同一套 handler，只换名字 + 废弃标记
+    arr.add(mcpToolDeprecated("confidence_query", "置信度快照查询（旧名别名，将移除 → dendro_query）", dendroQuerySchema, "dendro_query"))
+    arr.add(mcpTool("render", "渲染交付物：持久化 payload → 单文件交互 HTML（落盘到项目库，回执只带路径与复用/新绘判定，不内塞 HTML 全文）。target=arch|index；confidence=true 时 index 叠加 confidence.json——快照缺席则纯结构渲染并注明；快照依据的 indexUpdateCount 与当前索引版本不一致则不叠加旧快照，回执 confidence=stale、staleConfidence=true、confidenceIndexUpdateCount=<快照依据的版本>（先调 dendro_gen）；staleConfidence 恒发；force=true 强制重绘", mcpSchemaObject([("name", "string", "项目名或 ID"), ("target", "string", "arch|index，默认 index"), ("confidence", "boolean", "index 叠加 confidence.json（仅当它与当前索引版本一致）"), ("force", "boolean", "强制重绘")], ["name"])))
     // ── CodeGraph：代码图谱（仓颉引擎的确定性词法分析，零依赖）──
     // ⚠️ 改名期兼容：旧 codegraph_*（patch 两工具除外）保留为**别名**——
     //    执行仍走各自原有的 handler（行为不变，已配好的客户端不断），
@@ -143,8 +150,14 @@ public func mcpToolList(): JsonValue {
     arr.add(mcpToolDeprecated("codegraph_symbol", "符号定位：定义处 + 词法引用文件（旧名别名，将移除——新面用 index_query）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"]), "index_query"))
     arr.add(mcpToolDeprecated("codegraph_impact", "影响面分析：符号定义 + 引用文件 + 受影响符号（词法文件级粒度，非语义调用图）（旧名别名，将移除）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"]), "index_query"))
     arr.add(mcpToolDeprecated("codegraph_arch", "技术架构图：模块聚合 + 分层判定（治理信号：分层违规/依赖环）。format=scene 出 moongit-graph-scene v1——主题 token/形状/粒子/hits 点击区/panels 详情面板的交互契约，任何 Canvas2D 移植（浏览器/Swift/Skia）按 docs/graph-scene-schema.md 驱动；html=零依赖单文件交互图；另有 mermaid / dot / json（旧名别名，将移除——新面用 arch_gen / render）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "scene|html|mermaid|dot|json，默认 html")], ["name"]), "arch_gen"))
-    arr.add(mcpTool("codegraph_patch_confidence", "补丁级置信度 Layer 1（算法层）：S1..S10 信号 + certain/uncertain 分层。uncertain 是给 Agent 的待办清单（配合 --skill 的任务说明）。name=项目名，patch_path=diff 文件路径", mcpSchemaObject([("name", "string", "项目名或 ID"), ("patch_path", "string", "unified diff 文件路径")], ["name", "patch_path"])))
-    arr.add(mcpTool("codegraph_patch_merge", "补丁级置信度 Layer 3（合并器）：algorithm.json + agent.json → final.json。规则：agent resolved ×0.9 / unresolved 计负分 / ambiguous 0.5 / 未处理 deferred 0.5", mcpSchemaObject([("algorithm_json", "string", "Layer 1 输出的 JSON 文本"), ("agent_json", "string", "Layer 2 输出的 JSON 文本")], ["algorithm_json", "agent_json"])))
+    let dendroPatchSchema = mcpSchemaObject([("name", "string", "项目名或 ID"), ("patch_path", "string", "unified diff 文件路径")], ["name", "patch_path"])
+    arr.add(mcpTool("dendro_patch_confidence", "补丁级置信度 Layer 1（算法层）：S1..S10 信号 + certain/uncertain 分层。uncertain 是给 Agent 的待办清单（配合 --skill 的任务说明）。name=项目名，patch_path=diff 文件路径", dendroPatchSchema))
+    // 旧名别名（品牌升级：置信度模块 → Dendro）：同一份 schema、同一套 handler，只换名字 + 废弃标记
+    arr.add(mcpToolDeprecated("codegraph_patch_confidence", "补丁级置信度 Layer 1（旧名别名，将移除 → dendro_patch_confidence）", dendroPatchSchema, "dendro_patch_confidence"))
+    let dendroMergeSchema = mcpSchemaObject([("algorithm_json", "string", "Layer 1 输出的 JSON 文本"), ("agent_json", "string", "Layer 2 输出的 JSON 文本")], ["algorithm_json", "agent_json"])
+    arr.add(mcpTool("dendro_patch_merge", "补丁级置信度 Layer 3（合并器）：algorithm.json + agent.json → final.json。规则：agent resolved ×0.9 / unresolved 计负分 / ambiguous 0.5 / 未处理 deferred 0.5", dendroMergeSchema))
+    // 旧名别名（品牌升级：置信度模块 → Dendro）：同一份 schema、同一套 handler，只换名字 + 废弃标记
+    arr.add(mcpToolDeprecated("codegraph_patch_merge", "补丁级置信度 Layer 3（合并器）（旧名别名，将移除 → dendro_patch_merge）", dendroMergeSchema, "dendro_patch_merge"))
     arr.add(mcpToolDeprecated("codegraph_confidence", "代码置信度：结构性疑点（孤儿/占位/吞错/魔法数/重复体…）的确定性度量。被动能力——只在本工具被显式调用时分析。format=json|text|llm（llm 产出可直接喂模型的逐条复核提示词）（旧名别名，将移除——新面用 confidence_gen / confidence_query）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "json|text|llm，默认 json")], ["name"]), "confidence_gen"))
     // 只读工具带 `annotations.readOnlyHint`（MCP 工具注解：宿主据此免确认直接执行）。
     // 清单行保持 `arr.add(mcpTool("…"))` 的标准形态（schema 与处理器一致性的 lint 按它解析），
@@ -216,6 +229,18 @@ func mcpRequireProject(ref: String): ProjectEntry {
 }
 
 /// 工具执行：与 CLI 同源，进程内直连。
+/// MCP 工具的旧名别名 → 正名（品牌升级：置信度模块 → Dendro）。
+/// 旧名在清单里带 deprecated / replacedBy；行为不变——走与正名同一套 handler。
+func mcpCanonicalTool(name: String): String {
+    match (name) {
+        case "confidence_gen" => return "dendro_gen"
+        case "confidence_query" => return "dendro_query"
+        case "codegraph_patch_confidence" => return "dendro_patch_confidence"
+        case "codegraph_patch_merge" => return "dendro_patch_merge"
+        case _ => return name
+    }
+}
+
 public func mcpCallTool(name: String, args: JsonValue): JsonValue {
     func getStr(key: String): String {
         match (Json.get(args, key)) {
@@ -294,7 +319,7 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
     let reg = loadRegistry()
 
     try {
-        match (name) {
+        match (mcpCanonicalTool(name)) {
             case "list_projects" =>
                 let statuses = allProjectStatuses(reg.projects, config, true)
                 let lines = ArrayList<String>()
@@ -387,7 +412,7 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                     case Some(res) => mcpOk(Json.pretty(impactJson(res)))
                     case None => mcpErr("symbol not found: ${sym}")
                 }
-            case "codegraph_patch_confidence" =>
+            case "dendro_patch_confidence" =>
                 let p = mcpRequireProject(getStr("name"))
                 let patchPath = getStr("patch_path")
                 if (patchPath.isEmpty()) { return mcpErr("patch_path is required") }
@@ -397,7 +422,7 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                 }
                 let g = buildGraph(p.path)
                 mcpOk(Json.pretty(patchConfidenceJson(analyzePatchConfidence(g, patchText))))
-            case "codegraph_patch_merge" =>
+            case "dendro_patch_merge" =>
                 let algText = getStr("algorithm_json")
                 let agText = getStr("agent_json")
                 if (algText.isEmpty() || agText.isEmpty()) {
@@ -449,7 +474,7 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                     mcpOk(archCanvasHtml(arch, false))
                 } else if (format == "scene") {
                     // moongit-graph-scene v1：给任意 Canvas2D 移植（含
-                    // deepDolphin 的 SwiftUI 驱动）的交互契约出口
+                    // Canopy 的 SwiftUI 驱动）的交互契约出口
                     mcpOk(Json.pretty(buildArchScene(arch, false)))
                 } else {
                     mcpErr("format accepts scene | html | mermaid | dot | json (got: ${format})")
@@ -467,7 +492,7 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                 //     （cli.cj 的注释原话：「恒定 envelope 形状…（客户端契约）」）。
                 //
                 // 消费方要共用解码器就得写两个分支 —— 这是**已知且刻意**的取舍，
-                // 由 deepDolphin/macos/scripts/contract-check.sh 的第 10 组断言钉住，
+                // 由 Canopy/macos/scripts/contract-check.sh 的第 10 组断言钉住，
                 // 改形状会立刻红。
                 return mcpText(Json.pretty(st), false)
             case "get_dashboard" =>
@@ -943,7 +968,7 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                     case Some(q) => return mcpStructured(indexFileQueryText(q, healed), q)
                     case None => return mcpErr("文件不在索引中：${fileArg}（索引只覆盖受支持的源码语言）")
                 }
-            case "confidence_gen" =>
+            case "dendro_gen" =>
                 let p = mcpRequireProject(getStr("name"))
                 var format = "json"
                 let f = getStr("format")
@@ -969,7 +994,7 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                     return mcpOk(joinStrings(lines, "\n"))
                 }
                 return mcpOk(Json.pretty(info))
-            case "confidence_query" =>
+            case "dendro_query" =>
                 let p = mcpRequireProject(getStr("name"))
                 let jsonPath = indexConfidencePathOf(p)
                 let snapOpt: Option<JsonValue> = match (readFileText(jsonPath)) {
@@ -983,7 +1008,7 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                 let snap = match (snapOpt) {
                     case Some(j) => j
                     case None =>
-                        return mcpErr("置信度快照缺席：${jsonPath}——先调 confidence_gen（query 只读持久化快照，绝不重算）")
+                        return mcpErr("置信度快照缺席：${jsonPath}——先调 dendro_gen（query 只读持久化快照，绝不重算）")
                 }
                 var weightArg: Int64 = -1
                 if (Json.has(args, "weight")) {
@@ -1075,7 +1100,7 @@ public func mcpHandle(req: JsonValue): Option<JsonValue> {
     match (method) {
         case "initialize" =>
             let server = Json.obj()
-            Json.set(server, "name", Json.of("moongit"))
+            Json.set(server, "name", Json.of("cambium"))
             Json.set(server, "version", Json.of(ENGINE_VERSION))
             let caps = Json.obj()
             let toolsCap = Json.obj()
@@ -1538,7 +1563,7 @@ func archQueryTextBrief(o: JsonValue): String {
     return joinStrings(lines, "\n")
 }
 
-/// confidence_query 的文本回执投影（json=false 时用）：总览形状与
+/// dendro_query 的文本回执投影（json=false 时用）：总览形状与
 /// 过滤形状各取关键行（构造点只有 confidenceQueryJson 一份）。
 func confidenceQueryTextBrief(o: JsonValue): String {
     let lines = ArrayList<String>()
@@ -2127,12 +2152,12 @@ func testMcpShallowUpdateSchemaMarksNameRequired(): Unit {
 
 /// #198：`addProject` 不得收下**空名**项目。
 ///
-/// 实测 `moongit add /` 与 MCP `add_project {"path": ""}` 都能注册出
+/// 实测 `cambium add /` 与 MCP `add_project {"path": ""}` 都能注册出
 /// `name=""`、`path="/"` 的条目，后果不是「多一行」：
 ///   ① 那条项目**永远引用不到** —— `findProjectIn` 对空 ref 直接返回 None，
 ///      连 `remove` 都删不掉它；
 ///   ② 它**永久污染每一次聚合命令**：实测之后
-///        moongit status --json → summary.failedProjects = 1
+///        cambium status --json → summary.failedProjects = 1
 ///      而那条项目的 error 是「Native function error.」—— 用户看不懂、
 ///      也查不出是哪来的。
 @Test
@@ -2356,7 +2381,7 @@ func testSiblingWriteToolsAllRequireName(): Unit {
 }
 
 /// codegraph_arch 的 scene 出口：moongit-graph-scene v1 必须真从这里出来
-/// （deepDolphin 的 SwiftUI 画布与任何 Canvas2D 移植都吃这个格式）。
+/// （Canopy 的 SwiftUI 画布与任何 Canvas2D 移植都吃这个格式）。
 /// 此前 codegraph_* 六个工具在 MCP 层零直连测试——CLI 测过 ≠ 分发层测过。
 @Test
 func testMcpCodegraphArchScene(): Unit {

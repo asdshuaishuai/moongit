@@ -1,7 +1,7 @@
-# moonGit Engine — 路线图与现状
+# Cambium Engine（Sylva 家族）— 路线图与现状
 
 > **定位**：AI 无关的确定性项目群进度内核 + 代码事实引擎。引擎只回答「事实是什么」和
-> 「能做什么」；判断与表达由上层（deepDolphin / MCP 宿主 / 任意 agent）完成。
+> 「能做什么」；判断与表达由上层（Canopy / MCP 宿主 / 任意 agent）完成。
 >
 > **版本节奏**：按能力批次发 minor（0.x），1.0 为 API 冻结的稳定版。
 >
@@ -22,13 +22,14 @@ skill / 帮助 / 文档 / 版本 + 索引查询补丁）两条分支上，**尚�
 | 项目群进度内核：注册 / 扫描 / 浅更新 / 深更新 / 追踪 / 里程碑 / 进度日志 / 仪表盘 / 报告 | `list` `add` `scan` `status` `track` `update` `deep` `journal` `milestone` `dashboard` `report` | 已发版 |
 | 文档生成与完整性校验（README / AGENTS / CLAUDE 的托管区域） | `update --docs` `deep` `docs` `verify` | 已发版 |
 | git 安全操作与 post-commit 钩子 | `git <pull\|push\|commit\|stash\|unstash\|fetch>`、`hook <install\|uninstall\|status>` | 已发版 |
-| agent 三件套 | CLI（`--json`）/ `moongit mcp`（38 个工具）/ `moongit skill` | 已发版，持续补 |
+| agent 三件套 | CLI（`--json`）/ `cambium mcp`（38 个工具）/ `cambium skill` | 已发版，持续补 |
 | 代码图谱（符号索引 / 关系树 / 影响面）+ SQLite 图库 | `graph overview\|tree\|symbol\|impact`、`graph db` | 已发版 |
 | 架构图（模块聚合 / 分层判定 / 泳道布局 / Canvas 交互图） | `arch gen\|update\|query`、`graph arch --format …` | 已发版 |
-| 代码置信度（确定性疑点）+ 置信度库 + 热力图 | `confidence gen\|query\|db`、`render index --confidence` | 已发版 |
-| 补丁级置信度三层（算法信号 / agent 复核 / 合并） | `graph patchconf`、MCP `codegraph_patch_confidence` / `_merge` | 已发版 |
+| 代码置信度（确定性疑点）+ 置信度库 + 热力图 | `cambium dendro gen\|query\|db`、`render index --confidence` | 已发版 |
+| 补丁级置信度三层（算法信号 / agent 复核 / 合并） | `cambium dendro patch\|merge`、MCP `dendro_patch_confidence` / `_merge` | 已发版 |
 | **代码索引 v2**：成员级符号、调用点、稳定 id、9 个 `index_*` 工具 | `index gen\|update\|overview\|search\|query\|file\|refs\|impact\|grep` | v0.3.0（未发版） |
 | **置信度 × 索引 × 热力图协同**：疑点带符号键（与索引同键）、孤儿与幻觉调用吃解析后的调用点、渲染过期校验、热力图定位串与复制 | `confidence gen\|query`、`render index --confidence` | v0.3.0（未发版） |
+| **品牌升级 Sylva**：引擎 Cambium（命令 `cambium`，旧名 `moongit` / `deepgit` 留软链）、置信度剥离成引擎内独立包 **Dendro**（`src/dendro`，命令 `cambium dendro …`、MCP `dendro_*`，旧名全是别名）；数据面身份不变 | `cambium dendro …`、`cambium version` | v0.3.0（未发版） |
 | **图谱产物嵌入模式 + 嵌入尺寸融合**：宿主声明配置后产物收拢外壳、改走宿主主题与控件尺寸；嵌入时按视口排布（架构图泳道折行、热力图按区域选列 / 色带包卡 / 通栏底条），视口变化重取景；`arch.json` 带 `geo`，旧形状自愈重建 | `render index\|arch`（产物自带，模板 3） | v0.3.0（未发版） |
 
 ---
@@ -70,7 +71,7 @@ skill / 帮助 / 文档 / 版本 + 索引查询补丁）两条分支上，**尚�
 | 1.2 | 速度追踪 `velocity` | 未做 | 按周 / 月的提交速率与趋势 |
 | 1.3 | 子进程生命周期管理 | **已交付** | `execCapture` 超时路径杀子进程（util/exec.cj 的用例组） |
 | 1.4 | 并发 serve | **已废弃** | HTTP 服务端已整体删除；传输层只有 CLI 子进程与 MCP(stdio)，零 socket |
-| 1.5 | Linux x64 二进制 | **已交付** | release 流水线产出 `moongit-<tag>-linux-x64.tar.gz`（`AGENTS.md` 不变量 140） |
+| 1.5 | Linux x64 二进制 | **已交付** | release 流水线产出 `cambium-<tag>-linux-x64.tar.gz`（`AGENTS.md` 不变量 140） |
 | 1.6 | 数据导出 `export` | 形态变了 | 没有独立的 `export` 命令；每个命令都有 `--json`，`report --out` 导出 Markdown |
 | 1.7 | registry v2 | 部分交付 | 项目群（group）与标签（tags）已有；排序权重未做 |
 | 1.8 | 进度历史 HTTP API | **已废弃**（HTTP 形态） | 数据在 `journal` / MCP `get_journal` 里；没有 HTTP 端点 |
@@ -111,9 +112,9 @@ skill / 帮助 / 文档 / 版本 + 索引查询补丁）两条分支上，**尚�
 
 ---
 
-## 客户端跟进（deepDolphin 对应表）
+## 客户端跟进（Canopy 对应表）
 
-| 引擎能力 | deepDolphin 需要的 |
+| 引擎能力 | Canopy 需要的 |
 |---|---|
 | 疑点符号键 / 渲染过期校验 / 热力图定位串（v0.3.0） | CMP 客户端已接：镜像补符号键、置信度页显示限定名、快照过期自愈（渲染后读到过期回执就补生成快照再重绘）；macOS 客户端尚未同步 |
 | 代码索引 v2（`index_*`） | AgentCore 接入查询工具；热力图按定位串跳转 |

@@ -1,9 +1,9 @@
 // 文档读取：把项目内 README / AGENTS / CLAUDE 的内容供给客户端平铺展示。
-package moongit.flow
+package cambium.flow
 
 import std.collection.*
-import moongit.kernel.*
-import moongit.util.*
+import cambium.kernel.*
+import cambium.util.*
 import std.unittest.*
 import std.unittest.testmacro.*
 

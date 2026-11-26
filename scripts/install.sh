@@ -1,14 +1,14 @@
 #!/bin/sh
-# moonGit 安装脚本：构建引擎 + 装到 PATH + 可选构建 macOS 菜单栏应用
+# Cambium 安装脚本：构建引擎 + 装到 PATH + 可选构建 macOS 菜单栏应用
 set -e
 
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ENGINE="$DIR"
-# 命令名 2026-10-03 起是 moongit。MOONGIT_PREFIX 是新的，
+# 命令名 2026-10-03 起是 cambium。CAMBIUM_PREFIX 是新的，
 # DEEPGIT_PREFIX 保留为兼容入口（老 shell 配置里可能还写着它）。
-PREFIX="${MOONGIT_PREFIX:-${DEEPGIT_PREFIX:-$HOME/.local/bin}}"
+PREFIX="${CAMBIUM_PREFIX:-${DEEPGIT_PREFIX:-$HOME/.local/bin}}"
 
-echo "moonGit 安装"
+echo "Cambium 安装"
 echo "  仓库：$DIR"
 echo "  安装到：$PREFIX"
 echo
@@ -103,9 +103,9 @@ echo "  构建成功（日志：/tmp/deepgit-build.log）"
 BIN=""
 for CANDIDATE in \
   "$ENGINE/target/release/bin/main" \
-  "$ENGINE/target/release/bin/moongit" \
+  "$ENGINE/target/release/bin/cambium" \
   "$ENGINE/target/debug/bin/main" \
-  "$ENGINE/target/debug/bin/moongit"; do
+  "$ENGINE/target/debug/bin/cambium"; do
   if [ -x "$CANDIDATE" ]; then BIN="$CANDIDATE"; break; fi
 done
 
@@ -120,21 +120,21 @@ mkdir -p "$PREFIX"
 # 决定（**必须带单位**，如 `1gb`；范围 [4MB, 系统内存]），而它只在**进程启动前**生效 ——
 # 程序自己改不了，只能在启动器这一层设。默认堆偏小：大仓库的 `graph arch --format
 # json|html|scene` 会 `OutOfMemoryError`（实测 deepGit / deepOrca / ddolphin 默认堆下崩、
-# `cjHeapSize=1gb` 下恒通过）。客户端按 `~/.local/bin/moongit` 发现引擎，也会走到这里。
-cp "$BIN" "$PREFIX/.moongit-bin"
-chmod 755 "$PREFIX/.moongit-bin"
-cat > "$PREFIX/moongit" <<'WRAP'
+# `cjHeapSize=1gb` 下恒通过）。客户端按 `~/.local/bin/cambium` 发现引擎，也会走到这里。
+cp "$BIN" "$PREFIX/.cambium-bin"
+chmod 755 "$PREFIX/.cambium-bin"
+cat > "$PREFIX/cambium" <<'WRAP'
 #!/bin/sh
-# moonGit 启动器：给仓颉运行时一个够用的堆（只在未设置时设，尊重调用方的选择）。
+# Cambium 启动器：给仓颉运行时一个够用的堆（只在未设置时设，尊重调用方的选择）。
 if [ -z "${cjHeapSize:-}" ]; then export cjHeapSize=1gb; fi
 SELF="$0"
 case "$SELF" in */*) ;; *) SELF="$(command -v "$SELF" 2>/dev/null || echo "$SELF")" ;; esac
-exec "$(dirname "$SELF")/.moongit-bin" "$@"
+exec "$(dirname "$SELF")/.cambium-bin" "$@"
 WRAP
-chmod 755 "$PREFIX/moongit"
-echo "✓ 已安装：$PREFIX/moongit（启动器；真实二进制：$PREFIX/.moongit-bin）"
+chmod 755 "$PREFIX/cambium"
+echo "✓ 已安装：$PREFIX/cambium（启动器；真实二进制：$PREFIX/.cambium-bin）"
 
-# 兼容软链：老脚本、老习惯里敲的还是 `deepgit`。
+# 兼容软链：老脚本、老习惯里敲的还是 `deepgit`（上上次的名字）或 `moongit`（上次的）。
 #
 # ⚠️ 引擎的**数据目录仍然是 ~/.deepgit**、文档托管区域标记仍然是
 #    `<!-- deepgit:begin -->` —— 这两样是用户既有数据与既有文档里的内容，
@@ -142,9 +142,13 @@ echo "✓ 已安装：$PREFIX/moongit（启动器；真实二进制：$PREFIX/.m
 #    所以本次只改「命令名」这一层，落在磁盘上的东西一律不动。
 #
 # 软链而不是拷贝：拷贝会出现两份各自独立、版本不一致的二进制，
-# 而 `moongit upgrade` 只更新本体，旧名字那份会永远停在旧版本。
-ln -sf moongit "$PREFIX/deepgit"
-echo "✓ 兼容软链：$PREFIX/deepgit -> moongit"
+# 而 `cambium upgrade` 只更新本体，旧名字那份会永远停在旧版本。
+ln -sf cambium "$PREFIX/deepgit"
+echo "✓ 兼容软链：$PREFIX/deepgit -> cambium"
+# 同理，上一次改名（deepGit → moonGit）留下的命令名 `moongit` 也留一层：已装进用户仓库的
+# git 钩子里写的是它，老脚本、老习惯里敲的也是它。
+ln -sf cambium "$PREFIX/moongit"
+echo "✓ 兼容软链：$PREFIX/moongit -> cambium"
 
 if ! echo ":$PATH:" | grep -q ":$PREFIX:"; then
   echo
@@ -155,21 +159,21 @@ fi
 # ------------------------------- 验证 -------------------------------
 echo
 echo "› 自检："
-"$PREFIX/moongit" doctor 2>&1 | head -12
+"$PREFIX/cambium" doctor 2>&1 | head -12
 
-# macOS 客户端（deepDolphin.app）单独构建：
-#   sh deepDolphin/macos/build.sh   （在 deepDolphin 仓库中）
+# macOS 客户端（Canopy.app）单独构建：
+#   sh Canopy/macos/build.sh   （在 Canopy 仓库中）
 
 echo
 echo "下一步："
-echo "  1. 注册项目群：moongit scan ~/dev --depth 4"
-echo "  2. 查看进度：  moongit status"
-echo "  3. 浅更新：    moongit update"
-echo "  4. 装提交钩子：moongit hook install <项目>"
+echo "  1. 注册项目群：cambium scan ~/dev --depth 4"
+echo "  2. 查看进度：  cambium status"
+echo "  3. 浅更新：    cambium update"
+echo "  4. 装提交钩子：cambium hook install <项目>"
 # 注意：这里曾引导配置引擎的 AI 相关键 —— 引擎已 AI 无关，那些键在
 # 全仓库零引用（照做只会得到 config 的未知键报错）。
 # agent 接入走真实存在的入口：MCP（stdio）或 skill 教学包。
-echo "  5. 接入 agent：moongit mcp（stdio JSON-RPC）或 moongit skill install（装教学包）"
+echo "  5. 接入 agent：cambium mcp（stdio JSON-RPC）或 cambium skill install（装教学包）"
 echo
-echo "  旧命令名 deepgit 仍可用（软链到 moongit）；"
+echo "  旧命令名 deepgit 仍可用（软链到 cambium）；"
 echo "  数据目录 ~/.deepgit 与文档托管区域标记均未改动。"

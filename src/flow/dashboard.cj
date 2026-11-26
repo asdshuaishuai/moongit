@@ -1,13 +1,13 @@
 // 跨项目聚合仪表盘：项目群健康度 + 里程碑总览 + 语言分布 + 合入候选。
-package moongit.flow
+package cambium.flow
 
 import std.collection.*
 import std.convert.*
 import std.env.*
 import std.sync.*
 import std.time.*
-import moongit.kernel.*
-import moongit.util.*
+import cambium.kernel.*
+import cambium.util.*
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -1020,7 +1020,7 @@ func testUnrecognizedMilestoneStatusIsCountedNotDropped(): Unit {
             + Json.intAt(counts, "orphaned", 0)
         @Assert(sum == Json.intAt(counts, "readCount", -1))
         // 文本披露由 cli 包的 testDashboardMilestoneLineDisclosesOtherStatus 覆盖
-        // （dashboardMilestoneLine 在 moongit.cli，这里跨包访问不到）
+        // （dashboardMilestoneLine 在 cambium.cli，这里跨包访问不到）
     } finally {
         exitTestHome()
         removePathIfExists(repo)
@@ -1049,13 +1049,13 @@ private func buildTwoMilestones(projectId: String): String {
 /// #184 回归：报告里的「已注册」必须是注册表里一共多少条，不是参与统计的数。
 ///
 /// 负控（曾真实发红）：停用 1 个项目后，
-/// `moongit list` 诚实地说「共 3 个项目（1 个已停用，不参与统计）」，
+/// `cambium list` 诚实地说「共 3 个项目（1 个已停用，不参与统计）」，
 /// 而报告写「项目总数（已注册） | 2」—— 3 个注册的报成 2。
 /// 而同一份报告的里程碑小节**却**披露了停用项目（#158 只修了那一半）。
 ///
 /// ⚠️ 本条只覆盖**渲染函数**（给什么数写什么数）。
 /// `cmdReport` 那个「整群报告该传谁」的接缝在另一个包里，本测试结构上走不到，
-/// 由 `moongit.cli` 的 `testCmdReportGroupReportCountsDisabledAsRegistered`
+/// 由 `cambium.cli` 的 `testCmdReportGroupReportCountsDisabledAsRegistered`
 /// 端到端调用 `cmdReport` 后断言落盘文件来钉住。
 /// 别因为这条绿就以为接线也绿了 —— 负控 NC35-c 实测：接线退回错误版本时本条照样全绿。
 @Test

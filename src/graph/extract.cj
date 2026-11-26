@@ -8,15 +8,15 @@
 //
 // 【AI 原生的落点】关键词 → SymKind 的映射是**穷尽 match + 规则表**：
 // 新语言 = 往词表加几个词，种类语义轴由类型系统保证不会写错。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
-import moongit.util.*
+import cambium.util.*
 
 // MARK: - 语言识别
 
 /// ASCII 小写（扩展名识别用；不做完整 Unicode case 映射 —— 没必要）
-func lowerAscii(s: String): String {
+public func lowerAscii(s: String): String {
     let bytes = s.toArray()
     let out = ArrayList<UInt8>()
     for (b in bytes) {
@@ -68,10 +68,10 @@ func buildKeywords(): HashSet<String> {
     return s
 }
 
-let KEYWORDS: HashSet<String> = buildKeywords()
+public let KEYWORDS: HashSet<String> = buildKeywords()
 
 /// 判断 ASCII 字节是否属于标识符（[A-Za-z0-9_]）
-func isIdentByte(b: UInt8): Bool {
+public func isIdentByte(b: UInt8): Bool {
     return (b >= 97 && b <= 122) || (b >= 65 && b <= 90) || (b >= 48 && b <= 57) || b == 95
 }
 
@@ -175,7 +175,7 @@ func cFuncNameBeforeParen(line: String, lang: String): Option<String> {
 /// 关键词表扫不到 ⇒ 同文件函数互调全被幻觉调用误报（实测 conc-demo）。
 /// 形态判定：剥注释后行匹配「返回类型 name(」且行含 `{`（定义而非声明）。
 /// 声明（以 ; 结尾）不算。
-func cStyleFuncName(line: String, lang: String): Option<String> {
+public func cStyleFuncName(line: String, lang: String): Option<String> {
     // ⚠️ M8：C 形态兜底只对 **C 系**语言生效。原来它对全部 9 种语言都生效，
     // 而形态判定只看「首 token 非关键字 + 次 token 后跟 ( + 行含 {」——
     // 于是 `it("works", () => { ... })` 这种「方法调用 + 花括号块」被编出
@@ -622,7 +622,7 @@ func wholeLineComment(trimmed: String): Bool {
 /// **无状态**：不知道上一行有没有开块注释，所以不认 ` * 续行`——块注释内的行由
 /// 带状态的调用方（stripCommentTracked）整行跳过；块注释外的行首 `*` 是代码
 /// （`*errOut = f(x);`）。
-func stripComment(line: String): String {
+public func stripComment(line: String): String {
     let n = Int64(line.size)
     // 行首注释前缀（跳过前导空白后判首个非空白字节）
     var s: Int64 = 0
@@ -658,7 +658,7 @@ func stripComment(line: String): String {
 /// （闭合同行 `*/` 之后的代码接续按代码剥），块注释外的行首 `*` 是代码。
 /// 开块注释只认**行首**的 `/*` 且本行不闭合（文档注释的常见形态）；行中开的 `/*`
 /// 历来不跟，维持原口径。
-func stripCommentTracked(line: String, inBlock: Bool): (String, Bool) {
+public func stripCommentTracked(line: String, inBlock: Bool): (String, Bool) {
     if (inBlock) {
         match (findSubstr(line, "*/")) {
             case Some(rel) => return stripCommentTracked(" " + line[rel + 2..], false)
@@ -672,7 +672,7 @@ func stripCommentTracked(line: String, inBlock: Bool): (String, Bool) {
 }
 
 /// 行是否全空白（零分配；替代 trimAscii().isEmpty() 的两次分配）
-func blankLine(line: String): Bool {
+public func blankLine(line: String): Bool {
     for (b in line) {
         if (b != 32 && b != 9 && b != 13) { return false }
     }
@@ -680,7 +680,7 @@ func blankLine(line: String): Bool {
 }
 
 /// token 是否像符号名（字母或下划线开头，非关键词/修饰符）。
-func looksLikeName(t: String): Bool {
+public func looksLikeName(t: String): Bool {
     if (t.isEmpty()) { return false }
     let b0 = t.toArray()[0]
     let letter = (b0 >= 97 && b0 <= 122) || (b0 >= 65 && b0 <= 90) || b0 == 95
@@ -794,7 +794,7 @@ let DECL_TABLES: HashMap<String, HashSet<String>> = buildDeclTables()
 
 
 /// 扫一行声明。返回 Some((kind, name))。
-func scanDeclLine(tokens: ArrayList<String>): Option<(SymKind, String)> {
+public func scanDeclLine(tokens: ArrayList<String>): Option<(SymKind, String)> {
     var i: Int64 = 0
     while (i < Int64(tokens.size)) {
         let t = tokens[i]
@@ -852,7 +852,7 @@ func scanImportLineForLang(t: String, lang: String): String {
 }
 
 /// 从一行里取 import 的模块名。返回空串 = 不是 import 行。
-func scanImportLine(t: String): String {
+public func scanImportLine(t: String): String {
     // C/C++ `#include "x.h"` → x.h 的文件名键（系统头 <...> 不在仓内，跳过）
     if (t.startsWith("#include")) {
         let q = quotedPart(t)
@@ -876,11 +876,11 @@ func scanImportLine(t: String): String {
             let segs = q.split("/")
             return segs[segs.size - 1]
         }
-        // 仓颉/swift 的跨包引用语义在**末段**（import moongit.util → util），
+        // 仓颉/swift 的跨包引用语义在**末段**（import cambium.util → util），
         // 这才是能命中项目内目录/文件名的那一段。
         // ⚠️ tokenize 已把 `.` 当分隔符，所以 `toks[1]` 只是首段 —— 必须收集
         // 「`import` 之后、`as` 之前」的**最后一个**标识符。原实现取 `toks[1]`
-        // 得 `moongit`（仓里无此目录）⇒ 整个仓颉仓库 import 边恒为 0。
+        // 得 `cambium`（仓里无此目录）⇒ 整个仓颉仓库 import 边恒为 0。
         // 边界：`import struct Foundation.Date` 这类修饰形态会取到 `Date`，
         // 解析不到目录 ⇒ 不加边（不会编出错边）。
         let toks = tokenize(t)
