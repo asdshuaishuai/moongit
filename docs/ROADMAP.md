@@ -29,6 +29,7 @@ skill / 帮助 / 文档 / 版本 + 索引查询补丁）两条分支上，**尚�
 | 补丁级置信度三层（算法信号 / agent 复核 / 合并） | `graph patchconf`、MCP `codegraph_patch_confidence` / `_merge` | 已发版 |
 | **代码索引 v2**：成员级符号、调用点、稳定 id、9 个 `index_*` 工具 | `index gen\|update\|overview\|search\|query\|file\|refs\|impact\|grep` | v0.3.0（未发版） |
 | **置信度 × 索引 × 热力图协同**：疑点带符号键（与索引同键）、孤儿与幻觉调用吃解析后的调用点、渲染过期校验、热力图定位串与复制 | `confidence gen\|query`、`render index --confidence` | v0.3.0（未发版） |
+| **图谱产物嵌入模式 + 嵌入尺寸融合**：宿主声明配置后产物收拢外壳、改走宿主主题与控件尺寸；嵌入时按视口排布（架构图泳道折行、热力图按区域选列 / 色带包卡 / 通栏底条），视口变化重取景；`arch.json` 带 `geo`，旧形状自愈重建 | `render index\|arch`（产物自带，模板 3） | v0.3.0（未发版） |
 
 ---
 

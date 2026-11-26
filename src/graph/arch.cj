@@ -784,6 +784,17 @@ public func archJson(data: ArchData, en: Bool): JsonValue {
     // 泳道矩形（恒发；空仓库给空数组）：分层泳道的几何唯一来源，
     // 驱动按它画淡底泳道与左端层标签，不许从模块坐标反推（那是第二份布局）。
     Json.set(o, "lanes", JArr(archLaneRects(data, en)))
+    // 槽位几何（恒发）：嵌入模式下驱动按视口宽高比把泳道内的模块折行——
+    // 折行只能用这一份常量，不在驱动里再抄一组（抄一份就多一处会漂的几何）。
+    let geo = Json.obj()
+    Json.set(geo, "cardW", Json.of(ARCH_CARD_W))
+    Json.set(geo, "cardH", Json.of(ARCH_CARD_H))
+    Json.set(geo, "slotW", Json.of(ARCH_SLOT_W))
+    Json.set(geo, "labelW", Json.of(ARCH_LANE_LABEL_W))
+    Json.set(geo, "padV", Json.of(ARCH_LANE_PAD_V))
+    Json.set(geo, "laneGap", Json.of(ARCH_LANE_GAP))
+    Json.set(geo, "margin", Json.of(ARCH_MARGIN))
+    Json.set(o, "geo", geo)
     Json.set(o, "warnings", warns)
     Json.set(o, "drilldown", dd)
     Json.set(o, "totalFiles", Json.of(data.totalFiles))

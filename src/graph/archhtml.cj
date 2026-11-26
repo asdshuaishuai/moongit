@@ -347,6 +347,47 @@ func renderJs(en: Bool): String {
     sb.append("  function P() { return EMB_ON ? PAL.embed : (dark ? PAL.dark : PAL.light); }\n")
     sb.append("  // 嵌入模式取景时避开顶部的命令条与四周留白（命令条换行时高度会变，取景时现量）\n")
     sb.append("  function embTop() { if (!EMB_ON) { return 0; } var bar = document.getElementById('bar'); return bar ? bar.offsetHeight + 12 : 0; }\n")
+    // 嵌入模式底部图例条的高度（宿主可用 --e-foot-h 改）：取景与小地图都要让开它
+    sb.append("  function embFoot() { if (!EMB_ON) { return 0; } var v = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--e-foot-h')); return v > 0 ? v : 32; }\n")
+    // 用户是否手动缩放/平移过：取景（fit）之后为 true；滚轮、拖拽、小地图定位之后为 false。
+    // 视口变了（窗口拖大拖小）时，还在「适应画布」状态就重新取景；用户定好的视角不动，只保证内容不出视野。
+    sb.append("  var viewFit = true;\n")
+    // 泳道折行（嵌入模式·架构级）：引擎给的泳道是「一层一行、各层同宽」的定稿布局，
+    // 页面里嵌着时画布又宽又矮或又窄又高，整行硬塞进去只能整体缩小——卡片上的字缩到 6px。
+    // 这里按可用区域的宽高比选「每行几张卡」：选让取景倍率最大的那个（同倍率取形状更贴合的），
+    // 泳道随之变高变窄。几何常量取自 DATA.geo（与引擎 layoutArch 同源）；
+    // 独立打开时不折行，画面与定稿一致。
+    sb.append("  function embLaneCols() {\n")
+    sb.append("    var g = DATA.geo; if (!g || !DATA.lanes || !DATA.lanes.length) { return 0; }\n")
+    sb.append("    var counts = [], maxC = 1; DATA.lanes.forEach(function (L) { var n = Math.max(1, L.modules); counts.push(n); if (n > maxC) { maxC = n; } });\n")
+    sb.append("    var aw = innerWidth - 32 - 24, ah = innerHeight - embTop() - (embFoot() + 12) - 24;   // 与 fit() 的留白同一式\n")
+    sb.append("    var best = 1, bestScore = -1;\n")
+    sb.append("    for (var c = 1; c <= maxC; c++) {\n")
+    // 外边距不算进来：bounds() 取的是泳道矩形本身（已含 margin 在内的坐标），不是整张世界
+    sb.append("      var W = g.labelW + c * g.slotW, H = (counts.length - 1) * g.laneGap;\n")
+    sb.append("      counts.forEach(function (n) { var r = Math.ceil(n / c); H += r * (g.cardH + g.padV * 2) + (r - 1) * g.laneGap; });\n")
+    sb.append("      var kx = aw / W, ky = ah / H, k = Math.min(kx, ky, 1.35);\n")
+    sb.append("      var score = k - 0.0001 * Math.abs(Math.log(kx / ky));\n")
+    sb.append("      if (score > bestScore + 1e-9) { bestScore = score; best = c; }\n")
+    sb.append("    }\n")
+    sb.append("    return best;\n")
+    sb.append("  }\n")
+    sb.append("  function embReflow(c) {\n")
+    sb.append("    var g = DATA.geo; if (!g || !c || !DATA.lanes || !DATA.lanes.length) { return; }\n")
+    sb.append("    var rowH = g.cardH + g.padV * 2, y = g.margin, maxN = 1;\n")
+    sb.append("    DATA.lanes.forEach(function (L) { if (L.modules > maxN) { maxN = L.modules; } });\n")
+    sb.append("    var laneW = g.labelW + Math.min(c, maxN) * g.slotW;\n")
+    sb.append("    // 阅读序（行主序）保持不变：先按现位置的 y、再按 x 排，折几次行次序都不乱\n")
+    sb.append("    DATA.lanes.forEach(function (L) {\n")
+    sb.append("      var mods = DATA.modules.filter(function (m) { return m.layer === L.layer; }).sort(function (a, b) { return (a.y - b.y) || (a.x - b.x) || (a.id < b.id ? -1 : 1); });\n")
+    sb.append("      var cols = Math.max(1, Math.min(c, mods.length)), rows = Math.max(1, Math.ceil(mods.length / cols));\n")
+    sb.append("      var sp = (Math.min(c, maxN) * g.slotW) / cols;\n")
+    sb.append("      L.x = g.margin; L.y = y; L.w = laneW; L.h = rows * rowH + (rows - 1) * g.laneGap;\n")
+    sb.append("      mods.forEach(function (m, i) { m.x = g.margin + g.labelW + (i % cols) * sp + (sp - g.cardW) / 2; m.y = y + g.padV + Math.floor(i / cols) * (rowH + g.laneGap); });\n")
+    sb.append("      y += L.h + g.laneGap;\n")
+    sb.append("    });\n")
+    sb.append("  }\n")
+    sb.append("  function keepInView() { var b = bounds(); var x0 = w2sx(b.x0), x1 = w2sx(b.x1), y0 = w2sy(b.y0), y1 = w2sy(b.y1); if (x1 < 0 || x0 > innerWidth || y1 < 0 || y0 > innerHeight) { view.x = innerWidth / 2 - (b.x0 + b.x1) / 2 * view.k; view.y = innerHeight / 2 - (b.y0 + b.y1) / 2 * view.k; } }\n")
     sb.append("  function langColor(l) { var L = P().langs; return L[l] || L.module; }\n")
     sb.append("  function ease(t) { if (t < 0) return 0; if (t > 1) return 1; return 1 - Math.pow(1 - t, 3); }\n")
     sb.append("  var START = performance.now(); var LEVEL_T = START;\n")
@@ -363,16 +404,21 @@ func renderJs(en: Bool): String {
     // 场景侧是仓颉整数除法（截断），round 在 weight≡3,4 (mod 5) 时会多出
     // 一颗粒子——同一个量两个答案（复审 L7 残留）。
     sb.append("  function buildParts() { PARTS = []; cur().edges.forEach(function (e) { var n = Math.min(1 + Math.floor(e.weight / 5), 6); for (var i = 0; i < n; i++) { var o = (i + 1) / (n + 1); PARTS.push({ e: e, o: o, sp: 0.00012 }); } }); }\n")
+    // 连线取相向的两条边：起点在终点左边 = 起点右缘 → 终点左缘；在右边就反过来。
+    // 原来恒取「右缘 → 左缘」，起点在右边时线要从起点卡片身上穿过去再绕回来（泳道折行后更明显）
+    sb.append("  function ends(a, b) { var l = a.x <= b.x; return { x1: l ? a.x + a.w : a.x, y1: a.y + a.h / 2, x2: l ? b.x : b.x + b.w, y2: b.y + b.h / 2 }; }\n")
     sb.append("  function bez(a, b, t) {\n")
-    sb.append("    var x1 = a.x + a.w; var y1 = a.y + a.h / 2; var x2 = b.x; var y2 = b.y + b.h / 2; var mx = (x1 + x2) / 2;\n")
+    sb.append("    var en = ends(a, b); var x1 = en.x1, y1 = en.y1, x2 = en.x2, y2 = en.y2; var mx = (x1 + x2) / 2;\n")
     sb.append("    var u = 1 - t;\n")
     sb.append("    return { x: u*u*u*x1 + 3*u*u*t*mx + 3*u*t*t*mx + t*t*t*x2, y: u*u*u*y1 + 3*u*u*t*y1 + 3*u*t*t*y2 + t*t*t*y2 };\n")
     sb.append("  }\n")
     sb.append("  function resize() { var d = window.devicePixelRatio || 1; cv.width = innerWidth * d; cv.height = innerHeight * d; cv.style.width = innerWidth + 'px'; cv.style.height = innerHeight + 'px'; ctx.setTransform(d, 0, 0, d, 0, 0); }\n")
     sb.append("  function w2sx(x) { return x * view.k + view.x; }\n")
     sb.append("  function w2sy(y) { return y * view.k + view.y; }\n")
-    sb.append("  function bounds() { var d = cur(); var b = { x0: 1e9, y0: 1e9, x1: -1e9, y1: -1e9 }; d.nodes.forEach(function (m) { if (m.x < b.x0) b.x0 = m.x; if (m.y < b.y0) b.y0 = m.y; if (m.x + m.w > b.x1) b.x1 = m.x + m.w; if (m.y + m.h > b.y1) b.y1 = m.y + m.h; }); if (isArch() && DATA.lanes) { DATA.lanes.forEach(function (L) { if (L.x < b.x0) b.x0 = L.x; if (L.y < b.y0) b.y0 = L.y; if (L.x + L.w > b.x1) b.x1 = L.x + L.w; if (L.y + L.h > b.y1) b.y1 = L.y + L.h; }); } b.x0 -= 60; b.y0 -= 90; b.x1 += 60; b.y1 += 60; return b; }\n")
-    sb.append("  function fit() { var b = bounds(); var pl = EMB_ON ? 24 : 0, pt = embTop(), pr = EMB_ON ? 24 : 0, pb = EMB_ON ? 44 : 0; var aw = innerWidth - pl - pr, ah = innerHeight - pt - pb; var kx = aw / (b.x1 - b.x0); var ky = ah / (b.y1 - b.y0); var target = Math.min(kx, ky, 1.35); if (target < 0.18) target = 0.18; view.k = target; view.x = pl + (aw - (b.x0 + b.x1) * view.k) / 2; view.y = pt + (ah - (b.y0 + b.y1) * view.k) / 2; }\n")
+    // 取景留白：独立版四周 60（顶 90）；嵌入时宿主的页面已经留了白，这里只留一点呼吸——
+    // 多留的每一像素都是画布缩小、卡片上的字变小。
+    sb.append("  function bounds() { var d = cur(); var b = { x0: 1e9, y0: 1e9, x1: -1e9, y1: -1e9 }; d.nodes.forEach(function (m) { if (m.x < b.x0) b.x0 = m.x; if (m.y < b.y0) b.y0 = m.y; if (m.x + m.w > b.x1) b.x1 = m.x + m.w; if (m.y + m.h > b.y1) b.y1 = m.y + m.h; }); if (isArch() && DATA.lanes) { DATA.lanes.forEach(function (L) { if (L.x < b.x0) b.x0 = L.x; if (L.y < b.y0) b.y0 = L.y; if (L.x + L.w > b.x1) b.x1 = L.x + L.w; if (L.y + L.h > b.y1) b.y1 = L.y + L.h; }); } var pd = EMB_ON ? 12 : 60, ptop = EMB_ON ? 12 : 90; b.x0 -= pd; b.y0 -= ptop; b.x1 += pd; b.y1 += pd; return b; }\n")
+    sb.append("  function fit() { if (EMB_ON && isArch()) { embReflow(embLaneCols()); } var b = bounds(); var pl = EMB_ON ? 16 : 0, pt = embTop(), pr = EMB_ON ? 16 : 0, pb = EMB_ON ? embFoot() + 12 : 0; var aw = innerWidth - pl - pr, ah = innerHeight - pt - pb; var kx = aw / (b.x1 - b.x0); var ky = ah / (b.y1 - b.y0); var target = Math.min(kx, ky, 1.35); if (target < 0.18) target = 0.18; view.k = target; view.x = pl + (aw - (b.x0 + b.x1) * view.k) / 2; view.y = pt + (ah - (b.y0 + b.y1) * view.k) / 2; viewFit = true; }\n")
     sb.append("  function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }\n")
     sb.append("  function nodeColor(m) { return isArch() ? P().cols[m.layer] : (m.external ? P().langs.module : langColor(m.lang)); }\n")
     // 面包屑
@@ -423,7 +469,7 @@ func renderJs(en: Bool): String {
     // hover/选中高亮邻接边，其余压暗——邻接判据 sel 与 hover 同权
     sb.append("      var adj = (sel === a.id || sel === b.id || hover === a.id || hover === b.id);\n")
     sb.append("      var hot = (sel || hover) && adj; var dim = (sel || hover) && !adj;\n")
-    sb.append("      var x1 = w2sx(a.x + a.w); var y1 = w2sy(a.y + a.h / 2); var x2 = w2sx(b.x); var y2 = w2sy(b.y + b.h / 2); var mx = (x1 + x2) / 2;\n")
+    sb.append("      var en = ends(a, b); var x1 = w2sx(en.x1); var y1 = w2sy(en.y1); var x2 = w2sx(en.x2); var y2 = w2sy(en.y2); var mx = (x1 + x2) / 2;\n")
     sb.append("      var grad = ctx.createLinearGradient(x1, y1, x2, y2); grad.addColorStop(0, nodeColor(a)); grad.addColorStop(1, nodeColor(b));\n")
     sb.append("      ctx.strokeStyle = grad; ctx.globalAlpha = dim ? 0.05 : (hot ? 0.9 : Math.min(0.13 + e.weight * 0.05, 0.5)) * ap;\n")
     // 宽度 ∝ weight：min(3.5, 1 + weight*0.15)——与场景出口 archEdgeStroke 同式
@@ -509,7 +555,7 @@ func renderJs(en: Bool): String {
     // 大仓库（>8 模块）平移/缩放定位才需要它
     sb.append("    var MW = 176, MH = 118, MP = 10;\n")
     sb.append("    var showMini = DATA.modules.length > 8;\n")
-    sb.append("    var mx0 = innerWidth - MW - 14, my0 = innerHeight - MH - 14;\n")
+    sb.append("    var mx0 = innerWidth - MW - 14, my0 = innerHeight - MH - 14 - embFoot();\n")
     sb.append("    if (showMini) {\n")
     sb.append("    ctx.globalAlpha = 0.85; ctx.fillStyle = P().mini;\n")
     sb.append("    roundRect(mx0, my0, MW, MH, 10); ctx.fill(); ctx.strokeStyle = p.border; ctx.lineWidth = 1; ctx.stroke(); ctx.globalAlpha = 1;\n")
@@ -529,7 +575,7 @@ func renderJs(en: Bool): String {
     sb.append("  function loop() { draw(performance.now()); requestAnimationFrame(loop); }\n")
     // 交互
     sb.append("  function hitTest(px, py) { var d = cur(); for (var i = d.nodes.length - 1; i >= 0; i--) { var m = d.nodes[i]; if (isArch() && !layersOn[m.layer]) continue; var x = w2sx(m.x); var y = w2sy(m.y); if (px >= x && px <= x + m.w * view.k && py >= y && py <= y + m.h * view.k) return m; } return null; }\n")
-    sb.append("  function center(m) { view.x = innerWidth / 2 - (m.x + m.w / 2) * view.k; view.y = innerHeight / 2 - (m.y + m.h / 2) * view.k; }\n")
+    sb.append("  function center(m) { viewFit = false; view.x = innerWidth / 2 - (m.x + m.w / 2) * view.k; view.y = innerHeight / 2 - (m.y + m.h / 2) * view.k; }\n")
     // ⚠️ L6：原来只转 `<` `>` —— 而详情面板把名字塞进 data-id="..." 属性，
     // 一个含双引号的目录名就能闭合属性并注入（需恶意命名的仓库目录，故低危，
     // 但修起来是零成本的）。属性上下文必须连引号一起转。
@@ -594,11 +640,11 @@ func renderJs(en: Bool): String {
     sb.append("  function hidePanel() { sel = null; panel.style.display = 'none'; }\n")
     sb.append("  var drag = null; var mmDrag = false;\n")
     sb.append("  cv.addEventListener('mousedown', function (e) {\n")
-    sb.append("    var mm = cv._mm; if (mm && e.clientX >= mm.x0 && e.clientX <= mm.x0 + mm.w && e.clientY >= mm.y0 && e.clientY <= mm.y0 + mm.h) { mmDrag = true; var wx = mm.b.x0 + (e.clientX - mm.x0 - mm.pad) / mm.sc; var wy = mm.b.y0 + (e.clientY - mm.y0 - mm.pad) / mm.sc; view.x = innerWidth / 2 - wx * view.k; view.y = innerHeight / 2 - wy * view.k; return; }\n")
+    sb.append("    var mm = cv._mm; if (mm && e.clientX >= mm.x0 && e.clientX <= mm.x0 + mm.w && e.clientY >= mm.y0 && e.clientY <= mm.y0 + mm.h) { mmDrag = true; viewFit = false; var wx = mm.b.x0 + (e.clientX - mm.x0 - mm.pad) / mm.sc; var wy = mm.b.y0 + (e.clientY - mm.y0 - mm.pad) / mm.sc; view.x = innerWidth / 2 - wx * view.k; view.y = innerHeight / 2 - wy * view.k; return; }\n")
     sb.append("    drag = { x: e.clientX, y: e.clientY, tx: view.x, ty: view.y, moved: false }; cv.className = 'drag'; });\n")
     sb.append("  window.addEventListener('mousemove', function (e) {\n")
-    sb.append("    if (mmDrag) { var mm = cv._mm; if (!mm) return; var wx = mm.b.x0 + (e.clientX - mm.x0 - mm.pad) / mm.sc; var wy = mm.b.y0 + (e.clientY - mm.y0 - mm.pad) / mm.sc; view.x = innerWidth / 2 - wx * view.k; view.y = innerHeight / 2 - wy * view.k; return; }\n")
-    sb.append("    if (drag) { var dx = e.clientX - drag.x; var dy = e.clientY - drag.y; if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true; view.x = drag.tx + dx; view.y = drag.ty + dy; return; }\n")
+    sb.append("    if (mmDrag) { var mm = cv._mm; if (!mm) return; viewFit = false; var wx = mm.b.x0 + (e.clientX - mm.x0 - mm.pad) / mm.sc; var wy = mm.b.y0 + (e.clientY - mm.y0 - mm.pad) / mm.sc; view.x = innerWidth / 2 - wx * view.k; view.y = innerHeight / 2 - wy * view.k; return; }\n")
+    sb.append("    if (drag) { var dx = e.clientX - drag.x; var dy = e.clientY - drag.y; if (Math.abs(dx) + Math.abs(dy) > 4) { drag.moved = true; viewFit = false; } view.x = drag.tx + dx; view.y = drag.ty + dy; return; }\n")
     sb.append("    var m = hitTest(e.clientX, e.clientY); hover = m ? m.id : null; cv.className = m ? 'point' : '';\n")
     sb.append("  });\n")
     sb.append("  window.addEventListener('mouseup', function (e) {\n")
@@ -611,13 +657,15 @@ func renderJs(en: Bool): String {
     sb.append("    if (isArch() && m && DATA.drilldown[m.id]) { setLevel('mod', m.id); return; }\n")
     sb.append("    if (!isArch() && !m) { setLevel('arch', ''); }\n")
     sb.append("  });\n")
-    sb.append("  cv.addEventListener('wheel', function (e) { e.preventDefault(); var f = e.deltaY < 0 ? 1.12 : 1 / 1.12; var nk = Math.max(0.12, Math.min(3.5, view.k * f)); var r = nk / view.k; view.x = e.clientX - (e.clientX - view.x) * r; view.y = e.clientY - (e.clientY - view.y) * r; view.k = nk; }, { passive: false });\n")
+    sb.append("  cv.addEventListener('wheel', function (e) { e.preventDefault(); var f = e.deltaY < 0 ? 1.12 : 1 / 1.12; var nk = Math.max(0.12, Math.min(3.5, view.k * f)); viewFit = false; var r = nk / view.k; view.x = e.clientX - (e.clientX - view.x) * r; view.y = e.clientY - (e.clientY - view.y) * r; view.k = nk; }, { passive: false });\n")
     sb.append("  window.addEventListener('keydown', function (e) { if (e.key === 'Escape') { if (!isArch()) setLevel('arch', ''); else hidePanel(); } });\n")
-    sb.append("  window.addEventListener('resize', resize);\n")
+    // 视口变了（窗口拖大拖小）：还在「适应画布」状态就重新取景——否则缩窄后卡片被裁在视野外；
+    // 用户手动定过视角的不抢，只把内容拉回视野
+    sb.append("  window.addEventListener('resize', function () { resize(); if (viewFit) { fit(); } else { keepInView(); } });\n")
     // 嵌入模式：命令条的高度写进 --e-bar-h（换行时高度会变），面包屑 / 截断警示 / 详情面板按它定位
     sb.append("  if (EMB_ON) {\n")
     sb.append("    var embBar = document.getElementById('bar');\n")
-    sb.append("    var embSyncBar = function () { if (embBar) { document.documentElement.style.setProperty('--e-bar-h', embBar.offsetHeight + 'px'); } };\n")
+    sb.append("    var embSyncBar = function () { if (embBar) { document.documentElement.style.setProperty('--e-bar-h', embBar.offsetHeight + 'px'); } if (viewFit) { fit(); } };\n")
     sb.append("    embSyncBar();\n")
     sb.append("    if (window.ResizeObserver) { new ResizeObserver(embSyncBar).observe(embBar); }\n")
     sb.append("  }\n")
@@ -662,7 +710,7 @@ func renderJs(en: Bool): String {
     sb.append("    var txt = LEGENDW; var other = false;\n")
     sb.append("    DATA.modules.forEach(function (m) { if (m.layer === 4) other = true; });\n")
     sb.append("    if (other) txt += ' · ' + OTHERW;\n")
-    sb.append("    var lg = document.createElement('div'); lg.id = 'legend'; lg.textContent = txt;\n")
+    sb.append("    var lg = document.createElement('div'); lg.id = 'legend'; lg.textContent = txt; lg.title = txt;\n")
     sb.append("    document.body.appendChild(lg);\n")
     sb.append("  }\n")
     // 截断披露：archJson 恒发 truncated，但驱动原先从不读它 —— 键在数据里、
@@ -730,6 +778,7 @@ func jsStr(s: String): String {
 func archEmbedCss(): String {
     return """
 <style id="embed-style">
+/* 尺寸契约（与热力图同一组变量）：--e-ctl-h 控件高 / --e-foot-h 底条高 / --e-r-ctl 控件圆角 / --e-r-card 卡片圆角；没给就回退 */
 html[data-embed="page"] body{background:var(--bg);font-family:var(--sans);font-size:12px}
 html[data-embed="page"] ::selection{background:var(--accent);color:#111}
 html[data-embed="page"] button:focus-visible,html[data-embed="page"] input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
@@ -737,11 +786,11 @@ html[data-embed="page"] #bar{position:absolute;top:0;left:0;right:0;max-width:no
 html[data-embed="page"] #bar .title{display:none}
 html[data-embed="page"] #bar .sub-what{display:none}
 html[data-embed="page"] #bar .sub{font-size:12px;color:var(--muted);white-space:nowrap}
-html[data-embed="page"] #bar input{width:200px;height:28px;padding:0 10px;font-size:12px;background:transparent;border:1px solid var(--border);border-radius:4px;color:var(--text)}
+html[data-embed="page"] #bar input{width:200px;height:var(--e-ctl-h,28px);padding:0 10px;font-size:12px;background:transparent;border:1px solid var(--border);border-radius:var(--e-r-ctl,4px);color:var(--text)}
 html[data-embed="page"] #bar input::placeholder{color:var(--muted)}
-html[data-embed="page"] .chip{font-size:12px;padding:4px 10px;border-radius:4px;background:transparent;border:1px solid var(--border);color:var(--text)}
+html[data-embed="page"] .chip{font-size:12px;height:var(--e-ctl-h,28px);display:inline-flex;align-items:center;padding:0 10px;border-radius:var(--e-r-ctl,4px);background:transparent;border:1px solid var(--border);color:var(--text)}
 html[data-embed="page"] .chip:hover,html[data-embed="page"] .btn:hover{border-color:var(--text);background:var(--e-hover,rgba(255,255,255,.06))}
-html[data-embed="page"] .btn{font-size:12px;height:28px;padding:0 10px;border-radius:4px;background:transparent;border:1px solid var(--border);color:var(--text)}
+html[data-embed="page"] .btn{font-size:12px;height:var(--e-ctl-h,28px);padding:0 10px;border-radius:var(--e-r-ctl,4px);background:transparent;border:1px solid var(--border);color:var(--text)}
 html[data-embed="page"] #th{display:none}
 /* 体检摘要单独一行、左对齐，上面一条 hairline（与命令条分层）；
    第一组是总量（模块 / 文件 / 符号 / 行数），与命令条第一行重复，不显示 */
@@ -750,20 +799,23 @@ html[data-embed="page"] #health .hgroup:first-child{display:none}
 html[data-embed="page"] #health{width:100%;flex:0 0 100%;justify-content:flex-start;gap:4px 16px;border-top:1px solid var(--border);margin-top:6px;padding-top:5px}
 html[data-embed="page"] #bar .hlabel,html[data-embed="page"] #bar .hval,html[data-embed="page"] #bar .hbad,html[data-embed="page"] #bar .hok{font-size:12px}
 /* 面包屑贴在命令条下方（命令条的高度由驱动写进 --e-bar-h），不与左下角的图例抢位置 */
-html[data-embed="page"] #crumbs{top:calc(var(--e-bar-h,44px) + 8px);bottom:auto;left:20px;border-radius:6px;background:var(--e-card,#292929);backdrop-filter:none;font-size:12px;padding:5px 10px}
+html[data-embed="page"] #crumbs{top:calc(var(--e-bar-h,44px) + 8px);bottom:auto;left:20px;border-radius:var(--e-r-card,6px);background:var(--e-card,#292929);backdrop-filter:none;font-size:12px;padding:5px 10px}
 html[data-embed="page"] #crumbs a{color:var(--accent)}
-html[data-embed="page"] #hint{right:20px;bottom:12px;left:auto;transform:none;font-size:12px;color:var(--muted);background:var(--e-card,#292929);border-radius:6px;border:1px solid var(--border);backdrop-filter:none;padding:4px 12px;white-space:nowrap}
-html[data-embed="page"] #legend{bottom:12px;left:20px;max-width:calc(100vw - 300px);font-size:12px;line-height:1.5;color:var(--muted);background:var(--e-card,#292929);border-radius:6px;border:1px solid var(--border);backdrop-filter:none;padding:5px 12px}
+/* 底部图例条：与热力图的面包屑条同一副骨架（一条 hairline + 一行文字），不再浮在画布上压内容。
+   窄了就截断（全文在 title 里），操作提示让位；高度由宿主的 --e-foot-h 定，取景按它留白 */
+html[data-embed="page"] #legend{left:0;right:auto;bottom:0;height:var(--e-foot-h,32px);max-width:calc(100vw - 270px);font-size:12px;line-height:var(--e-foot-h,32px);color:var(--muted);background:none;border:0;border-top:1px solid var(--border);border-radius:0;backdrop-filter:none;padding:0 12px 0 20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+html[data-embed="page"] #hint{right:0;bottom:0;left:auto;transform:none;height:var(--e-foot-h,32px);max-width:45vw;font-size:12px;line-height:var(--e-foot-h,32px);text-align:right;color:var(--muted);background:none;border:0;border-top:1px solid var(--border);border-radius:0;backdrop-filter:none;padding:0 20px 0 12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media(max-width:640px){html[data-embed="page"] #hint{display:none}html[data-embed="page"] #legend{max-width:100vw}}
 html[data-embed="page"] #truncbar{top:calc(var(--e-bar-h,44px) + 8px);right:20px}
-html[data-embed="page"] #panel{top:calc(var(--e-bar-h,44px) + 12px);right:20px;width:300px;max-height:calc(100vh - 72px);background:var(--e-card,#292929);border:1px solid var(--border);border-radius:8px;backdrop-filter:none;padding:14px 16px;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+html[data-embed="page"] #panel{top:calc(var(--e-bar-h,44px) + 12px);right:20px;width:300px;max-height:calc(100vh - 72px);background:var(--e-card,#292929);border:1px solid var(--border);border-radius:var(--e-r-card,8px);backdrop-filter:none;padding:14px 16px;box-shadow:0 8px 24px rgba(0,0,0,.4)}
 html[data-embed="page"] #panel h2{font-size:14px}
 html[data-embed="page"] #panel .meta{font-size:12px}
 html[data-embed="page"] #panel h3{font-size:11px;letter-spacing:.02em;text-transform:none;color:var(--muted)}
-html[data-embed="page"] .dep{border-radius:4px;padding:4px 8px;font-size:12px}
+html[data-embed="page"] .dep{border-radius:var(--e-r-ctl,4px);padding:4px 8px;font-size:12px}
 html[data-embed="page"] .dep:hover{background:var(--e-hover,rgba(255,255,255,.06))}
-html[data-embed="page"] .langtag{font-size:11px;border-radius:4px;padding:1px 6px;color:var(--muted)}
-html[data-embed="page"] .modpath code{font-size:11px;border-radius:4px;padding:4px 8px}
-html[data-embed="page"] .copybtn{font-size:12px;height:26px;padding:0 10px;border-radius:4px}
+html[data-embed="page"] .langtag{font-size:11px;border-radius:var(--e-r-ctl,4px);padding:1px 6px;color:var(--muted)}
+html[data-embed="page"] .modpath code{font-size:11px;border-radius:var(--e-r-ctl,4px);padding:4px 8px}
+html[data-embed="page"] .copybtn{font-size:12px;height:calc(var(--e-ctl-h,28px) - 2px);padding:0 10px;border-radius:var(--e-r-ctl,4px)}
 html[data-embed="page"] .copybtn:hover{border-color:var(--text);background:var(--e-hover,rgba(255,255,255,.06))}
 </style>
 """

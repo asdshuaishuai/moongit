@@ -722,7 +722,8 @@ public func renderIndexEmbeddedGeneratedAt(html: String): String {
 /// 渲染模板的版本号：外壳、样式或驱动变了就 +1。
 /// 产物以注释行自报（renderTemplateTag），复用判定比对它——否则引擎升级后旧产物会被当成
 /// 「输入没变」一直复用，用户永远看不到新外壳（v0.3.0 加嵌入模式时实测抓到）。
-public let RENDER_TEMPLATE: Int64 = 2
+/// 3 = 嵌入尺寸融合：泳道折行、按区域选列、色带包住卡片、图例进底条、尺寸契约变量。
+public let RENDER_TEMPLATE: Int64 = 3
 
 /// 产物里自报模板版本的注释行（两份产物同一格式）。
 public func renderTemplateTag(): String {
@@ -938,6 +939,9 @@ func codegraphDriverJs(en: Bool): String {
 // ── 嵌入模式：宿主页面内嵌时（window.MOONGIT_EMBED.chrome === 'page'），画在 canvas 上的颜色、
 //    圆角也从宿主令牌取；独立打开产物时一律用 cv 的第二个参数（原值）──
 var EMB = window.MOONGIT_EMBED, EMB_ON = !!(EMB && EMB.chrome === 'page'), CAN = (EMB_ON && EMB.canvas) || {};
+// 适应画布的放大上限：嵌入时宿主的页面已经留了白，小项目可以再放大一些——卡片上的元信息
+// 从 10px 到 12px（外壳的最小字级）；独立版沿用 1.16（定稿）。
+var EMB_FIT_CAP = EMB_ON ? 1.3 : 1.16;
 function cv(k, fallback) { return (k in CAN) ? CAN[k] : fallback; }
 var D = window.__CODEGRAPH__;
 var NL = String.fromCharCode(10);
@@ -1190,6 +1194,12 @@ if (EMB_ON) {
   // 说明链接不带箭头字形（applyTexts 只管英文面；中文面是标记里的默认文字，在这里去）
   var mb0 = document.getElementById('modelBtn');
   if (mb0) { mb0.textContent = mb0.textContent.split(' ↗').join(''); }
+  // 图例挪进底部面包屑条：原是浮在画布左下角的一块卡片，白占画布 42px 高，窄窗口下还折成两行
+  var lg0 = document.querySelector('.canvas-legend'), ft0 = document.querySelector('.canvas-foot');
+  if (lg0 && ft0) { ft0.appendChild(lg0); ft0.title = lg0.textContent; }
+  // 操作按钮（关系路径 / 适应画布 / 呼吸）挪到同一条的右端：底条因此横贯整宽
+  var gh0 = document.querySelector('.graph-head');
+  if (gh0 && ft0) { ft0.appendChild(gh0); }
 }
 var animationTime = 0, lastAnimationFrame = 0, animationRequest = 0;
 var relationType = 'all', threshold = 0, pathMode = false;
@@ -1359,9 +1369,22 @@ function layoutGraph() {
     });
   });
   var cellW = maxCellW + GAPX, cellH = maxCellH + GAPY;
+  // 嵌入模式：列数按可用区域挑。sqrt(n×1.7) 的定稿形状是按独立版的宽画布定的；嵌在页面里
+  // 画布又窄又高时，4 张卡摆成 3+1 只能整体缩到 0.69 倍——卡片上的字缩到 6px。
+  // 这里让每条带分到 (画布高 - 取景留白) / 带数 的高度，逐个列数算取景倍率，取最大的那个。
+  // 独立版沿用定稿形状，画面不变。
+  var laneAvailH = EMB_ON ? Math.max(120, (cssH - 48 - 58 * (groups.length - 1)) / groups.length) : 0;
   var layout = groups.map(function (g) {
     var n = g.nodes.length;
     var cols = Math.max(1, Math.min(n, Math.ceil(Math.sqrt(n * 1.7))));
+    if (EMB_ON) {
+      var bestK = -1;
+      for (var c = 1; c <= n; c++) {
+        var lw = left * 2 + c * cellW - GAPX, lh = 40 + Math.ceil(n / c) * cellH - GAPY + 70;
+        var lk = Math.min(EMB_FIT_CAP, (cssW - 48) / lw, laneAvailH / lh);
+        if (lk > bestK + 1e-9) { bestK = lk; cols = c; }
+      }
+    }
     var rows = Math.ceil(n / cols);
     return { cols: cols, rows: rows, w: left * 2 + cols * cellW - GAPX, h: 40 + rows * cellH - GAPY + 70 };
   });
@@ -1875,18 +1898,30 @@ function meterBar(x, y, w, score, col, pulse) {
   ctx.fillStyle = col;
   ctx.fill();
 }
+// 色带矩形。独立版：铺满整张世界（定稿）。嵌入模式：包住自己带里的卡片——
+// 后者在放大后必然比可视区宽，两端被裁、带名被宿主侧栏挡住（1680 宽实拍抓到）。
+// 绘制与取景（graphBounds）共用这一个函数，色带不会再比可视区高出一截。
+function bandRect(i) {
+  var b = layerBands[i], bx = 18, bw = worldWidth - 36;
+  if (EMB_ON) {
+    var hx0 = 1e18, hx1 = -1e18;
+    worldNodes.forEach(function (n) { if (n.layerIndex === i) { if (n.x < hx0) { hx0 = n.x; } if (n.x + n.w > hx1) { hx1 = n.x + n.w; } } });
+    if (hx1 >= hx0) { bx = hx0 - 20; bw = hx1 - hx0 + 40; }
+  }
+  return { x: bx, y: b.y, w: bw, h: b.h };
+}
 function drawLayerBands() {
   for (var i = 0; i < layerBands.length; i++) {
-    var b = layerBands[i];
+    var b = layerBands[i], r = bandRect(i);
     ctx.globalAlpha = 1;
     ctx.fillStyle = i % 2 === 0 ? cv('bandA', 'rgba(26,43,63,.16)') : cv('bandB', 'rgba(17,29,45,.10)');
-    roundedRect(ctx, 18, b.y, worldWidth - 36, b.h, 12); ctx.fill();
+    roundedRect(ctx, r.x, r.y, r.w, r.h, 12); ctx.fill();
     ctx.strokeStyle = cv('bandLine', 'rgba(83,119,151,.17)'); ctx.lineWidth = 1;
     ctx.setLineDash([3, 8]);
-    ctx.beginPath(); ctx.moveTo(31, b.y + b.h); ctx.lineTo(worldWidth - 31, b.y + b.h); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(r.x + 13, r.y + r.h); ctx.lineTo(r.x + r.w - 13, r.y + r.h); ctx.stroke();
     ctx.setLineDash([]);
     ctx.font = '9px ' + MONO; ctx.fillStyle = cv('text3', '#6f879f'); ctx.textAlign = 'left';
-    ctx.fillText(b.label, 35, b.y + 15);
+    ctx.fillText(b.label, r.x + 17, r.y + 15);
   }
 }
 function draw() {
@@ -1985,19 +2020,38 @@ function graphBounds() {
       if (p.y < minY) { minY = p.y; } if (p.y > maxY) { maxY = p.y; }
     });
   });
+  if (EMB_ON && worldNodes.length) {
+    // 嵌入时把色带收进取景范围：带名（卡上 32）与左右各 20 的包边要看得见；
+    // 最后一条带的底部走线通道（卡下 78）只保 26——全收进来卡片要小两成，不值
+    var nMaxY = -1e18;
+    worldNodes.forEach(function (n) { if (n.y + n.h > nMaxY) { nMaxY = n.y + n.h; } });
+    for (var bi = 0; bi < layerBands.length; bi++) {
+      var br = bandRect(bi);
+      var by1 = bi === layerBands.length - 1 ? Math.min(br.y + br.h, nMaxY + 26) : br.y + br.h;
+      if (br.x < minX) { minX = br.x; } if (br.x + br.w > maxX) { maxX = br.x + br.w; }
+      if (br.y < minY) { minY = br.y; } if (by1 > maxY) { maxY = by1; }
+    }
+  }
   if (!worldNodes.length) { return { minX: 0, maxX: cssW, minY: 0, maxY: cssH }; }
   return { minX: minX, maxX: maxX, minY: minY, maxY: maxY };
+}
+function keepInView() {
+  var b = graphBounds();
+  var x0 = b.minX * zoom + panX, x1 = b.maxX * zoom + panX, y0 = b.minY * zoom + panY, y1 = b.maxY * zoom + panY;
+  if (x1 < 0 || x0 > cssW || y1 < 0 || y0 > cssH) {
+    panX = cssW / 2 - (b.minX + b.maxX) / 2 * zoom; panY = cssH / 2 - (b.minY + b.maxY) / 2 * zoom; draw();
+  }
 }
 function fitView() {
   if (!worldNodes.length) { return; }
   var b = graphBounds();
-  var pad = 36;
+  var pad = EMB_ON ? 24 : 36;
   var w = Math.max(1, b.maxX - b.minX), h = Math.max(1, b.maxY - b.minY);
-  zoom = Math.min(1.16, (cssW - pad * 2) / w, (cssH - pad * 2) / h);
+  zoom = Math.min(EMB_FIT_CAP, (cssW - pad * 2) / w, (cssH - pad * 2) / h);
   zoom = Math.max(0.22, zoom);
   panX = (cssW - w * zoom) / 2 - b.minX * zoom;
   panY = (cssH - h * zoom) / 2 - b.minY * zoom;
-  hasFit = true;
+  hasFit = true; userView = false;
   draw();
 }
 function nodeAt(sx, sy) {
@@ -2023,12 +2077,14 @@ canvas.addEventListener('pointermove', function (ev) {
   if (dragging && clickStart) {
     if (Math.sqrt((p.x - clickStart.x) * (p.x - clickStart.x) + (p.y - clickStart.y) * (p.y - clickStart.y)) > 3) { dragging.moved = true; }
     if (dragging.moved) {
+      userView = true;
       worldNodes.forEach(function (n) {
         if (n.id === dragging.id) { n.x = (p.x - panX) / zoom - dragging.offsetX; n.y = (p.y - panY) / zoom - dragging.offsetY; }
       });
       routeWorldEdges(true); draw();
     }
   } else if (panning && lastPointer) {
+    userView = true;
     panX += p.x - lastPointer.x; panY += p.y - lastPointer.y; draw();
   } else {
     var n = nodeAt(p.x, p.y);
@@ -2062,6 +2118,7 @@ canvas.addEventListener('pointerleave', function () {
 canvas.addEventListener('wheel', function (ev) {
   ev.preventDefault();
   var p = pointerPos(ev), before = zoom;
+  userView = true;
   var factor = ev.deltaY < 0 ? 1.1 : 0.91;
   zoom = Math.max(0.35, Math.min(2.4, zoom * factor));
   panX = p.x - (p.x - panX) * (zoom / before);
@@ -2079,6 +2136,7 @@ mini.addEventListener('click', function (ev) {
   var ox = (w - (b.maxX - b.minX) * sc) / 2 - b.minX * sc;
   var oy = (h - (b.maxY - b.minY) * sc) / 2 - b.minY * sc;
   var wx = (x - ox) / sc, wy = (y - oy) / sc;
+  userView = true;
   panX = cssW / 2 - wx * zoom; panY = cssH / 2 - wy * zoom;
   draw();
 });
@@ -2588,7 +2646,8 @@ function init() {
 var resizeTimer;
 window.addEventListener('resize', function () {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(function () { hasFit = false; resize(); fitView(); }, 80);
+  // 视口变了（窗口拖大拖小）：还在「适应画布」状态就重新取景；用户手动定过视角的不抢，只把内容拉回视野
+  resizeTimer = setTimeout(function () { if (!userView) { hasFit = false; resize(); fitView(); } else { resize(); keepInView(); } }, 80);
 });
 init();
 if (EMB_ON && window.ResizeObserver) {
@@ -2598,7 +2657,7 @@ if (EMB_ON && window.ResizeObserver) {
     if (Math.abs(r.width - embW) < 1 && Math.abs(r.height - embH) < 1) { return; }
     embW = r.width; embH = r.height;
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(function () { hasFit = false; resize(); fitView(); }, 80);
+    resizeTimer = setTimeout(function () { if (!userView) { hasFit = false; resize(); fitView(); } else { resize(); keepInView(); } }, 80);
   }).observe(wrap);
 }
 window.MoongitCodeGraph = {
@@ -2638,6 +2697,8 @@ func embedBootstrapTag(): String {
 func indexEmbedCss(): String {
     return """
 <style id="embed-style">
+/* 尺寸契约：宿主经嵌入配置给 --e-ctl-h（控件高）/ --e-foot-h（底条高）/ --e-r-ctl（控件圆角）/ --e-r-card（卡片圆角），
+   单位是宿主的 dp（与 CSS px 同值）；没给就回退到下面的定稿值——旧宿主不受影响 */
 html[data-embed="page"] body{background:var(--bg);font-family:var(--sans)}
 html[data-embed="page"] ::selection{background:var(--cyan);color:#111}
 html[data-embed="page"] button:focus-visible,html[data-embed="page"] input:focus-visible,html[data-embed="page"] select:focus-visible{outline:2px solid var(--cyan);outline-offset:1px}
@@ -2661,15 +2722,15 @@ html[data-embed="page"] .toolbar #lblRel{display:none}
 html[data-embed="page"] .toolbar .threshold + .separator{display:none}
 html[data-embed="page"] .toolbar .mode-toggle{display:none}
 html[data-embed="page"] .tool-label{font-size:12px;color:var(--muted2)}
-html[data-embed="page"] .search-wrap{width:auto;flex:1 1 150px;max-width:240px;min-width:140px;height:30px;padding:0 8px;background:none;border:1px solid var(--line2);border-radius:4px}
+html[data-embed="page"] .search-wrap{width:auto;flex:1 1 150px;max-width:240px;min-width:140px;height:var(--e-ctl-h,30px);padding:0 8px;background:none;border:1px solid var(--line2);border-radius:var(--e-r-ctl,4px)}
 html[data-embed="page"] .search-wrap:focus-within{border-color:var(--cyan)}
 html[data-embed="page"] .search-wrap svg{color:var(--muted2)}
 html[data-embed="page"] .search-wrap input{font-size:12px;color:var(--text)}
 html[data-embed="page"] .search-wrap input::placeholder{color:var(--muted2)}
-html[data-embed="page"] .search-results{background:var(--e-card,#292929);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.45);top:34px}
+html[data-embed="page"] .search-results{background:var(--e-card,#292929);border:1px solid var(--line);border-radius:var(--e-r-card,8px);box-shadow:0 8px 24px rgba(0,0,0,.45);top:calc(var(--e-ctl-h,30px) + 4px)}
 html[data-embed="page"] .search-results button{color:var(--text);font-size:12px;padding:8px 10px}
 html[data-embed="page"] .search-results button:hover{background:var(--e-hover,rgba(255,255,255,.06))}
-html[data-embed="page"] .select{height:30px;background:none;color:var(--text);border:1px solid var(--line2);border-radius:4px;padding:0 8px;font-size:12px;max-width:170px}
+html[data-embed="page"] .select{height:var(--e-ctl-h,30px);background:none;color:var(--text);border:1px solid var(--line2);border-radius:var(--e-r-ctl,4px);padding:0 8px;font-size:12px;max-width:170px}
 html[data-embed="page"] .select option{background:#1f1f1f;color:#fff}
 html[data-embed="page"] .threshold{width:auto;gap:8px}
 html[data-embed="page"] .threshold input{width:84px;accent-color:var(--cyan)}
@@ -2677,42 +2738,55 @@ html[data-embed="page"] .threshold .num{font:12px var(--mono);color:var(--text)}
 html[data-embed="page"] .view-label{font-size:12px;color:var(--muted2);white-space:nowrap}
 html[data-embed="page"] .toolbar .status-dot{margin-right:6px}
 html[data-embed="page"] .status-dot{background:var(--green);box-shadow:none;animation:none}
-html[data-embed="page"] .icon-btn,html[data-embed="page"] .ghost-btn,html[data-embed="page"] .tiny-btn{height:28px;min-width:28px;padding:0 8px;background:none;border:1px solid var(--line2);border-radius:4px;color:var(--text);font-size:12px}
-html[data-embed="page"] .icon-btn{width:28px;padding:0}
+html[data-embed="page"] .icon-btn,html[data-embed="page"] .ghost-btn,html[data-embed="page"] .tiny-btn{height:var(--e-ctl-h,28px);min-width:var(--e-ctl-h,28px);padding:0 8px;background:none;border:1px solid var(--line2);border-radius:var(--e-r-ctl,4px);color:var(--text);font-size:12px}
+html[data-embed="page"] .icon-btn{width:var(--e-ctl-h,28px);padding:0}
+/* 底条里的按钮比条矮 6px（条高是宿主的令牌，按钮跟着条走，不跟着命令条的控件高） */
+html[data-embed="page"] .graph-head .icon-btn,html[data-embed="page"] .graph-head .ghost-btn,html[data-embed="page"] .graph-head .tiny-btn,html[data-embed="page"] .graph-head .breath-toggle{height:calc(var(--e-foot-h,32px) - 6px);min-width:calc(var(--e-foot-h,32px) - 6px)}
 html[data-embed="page"] .ghost-btn:hover,html[data-embed="page"] .icon-btn:hover,html[data-embed="page"] .tiny-btn:hover{border-color:var(--line);background:var(--e-hover,rgba(255,255,255,.06))}
 html[data-embed="page"] .tiny-btn.active,html[data-embed="page"] .breath-toggle.active{color:var(--cyan);border-color:var(--cyan);background:var(--e-active,rgba(96,205,255,.10))}
-html[data-embed="page"] .main{grid-area:2/1/3/3;grid-template-columns:minmax(0,1fr) 340px}
-html[data-embed="page"] .graph-area{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:minmax(0,1fr) 32px;border-right:0}
-html[data-embed="page"] .canvas-wrap{grid-area:1/1/2/3;position:relative;min-height:0;background-color:var(--bg);background-image:radial-gradient(var(--e-dot,rgba(255,255,255,.07)) 1px,transparent 1.2px);background-size:24px 24px;background-position:0 0}
+/* 底条横贯整宽：.graph-area 不再自己成格（display:contents），画布 / 侧栏 / 底条直接排进 .main 的网格——
+   面包屑、图例、操作按钮同在一条上，与顶部命令条一样通栏（驱动在嵌入初始化时把操作按钮挪进 .canvas-foot）。
+   原先底条只占画布那一列：700px 里要放面包屑、图例和三个按钮，图例被挤掉半句 */
+html[data-embed="page"] .main{grid-area:2/1/3/3;display:grid;grid-template-columns:minmax(0,1fr) 340px;grid-template-rows:minmax(0,1fr) var(--e-foot-h,32px)}
+html[data-embed="page"] .graph-area{display:contents}
+html[data-embed="page"] .canvas-wrap{grid-area:1/1/2/2;position:relative;min-height:0;background-color:var(--bg);background-image:radial-gradient(var(--e-dot,rgba(255,255,255,.07)) 1px,transparent 1.2px);background-size:24px 24px;background-position:0 0}
 html[data-embed="page"] .canvas-wrap::before,html[data-embed="page"] .canvas-wrap:after{display:none}
 html[data-embed="page"] .graph-overlay{display:none}
-html[data-embed="page"] .graph-head{grid-area:2/2/3/3;display:flex;align-items:center;height:32px;padding:0 20px 0 0;gap:6px;border:0;border-top:1px solid var(--line2);background:none}
+html[data-embed="page"] .graph-head{display:flex;align-items:center;flex:0 0 auto;margin-left:auto;padding:0;gap:6px;border:0;background:none}
 html[data-embed="page"] .graph-head > .eyebrow,html[data-embed="page"] .graph-head > .graph-title,html[data-embed="page"] .graph-head > .head-count{display:none}
 html[data-embed="page"] .graph-actions{margin-left:0;gap:6px}
 html[data-embed="page"] .btn-glyph{display:none}
 /* 外壳不是正文：在画布上双击不该选中提示条里的字 */
 html[data-embed="page"] .topbar,html[data-embed="page"] .toolbar,html[data-embed="page"] .graph-head,html[data-embed="page"] .canvas-foot,html[data-embed="page"] .canvas-legend,html[data-embed="page"] .canvas-msg,html[data-embed="page"] .sidebar{-webkit-user-select:none;user-select:none}
-html[data-embed="page"] .canvas-foot{grid-area:2/1/3/2;height:32px;min-width:0;padding:0 8px 0 20px;gap:8px;border-top:1px solid var(--line2);background:none}
+html[data-embed="page"] .sidebar{grid-area:1/2/2/3;min-height:0}
+html[data-embed="page"] .canvas-foot{grid-area:2/1/3/3;height:var(--e-foot-h,32px);min-width:0;padding:0 20px;gap:8px;border-top:1px solid var(--line2);background:none}
 html[data-embed="page"] .canvas-foot .crumb{font-size:12px;color:var(--muted2);gap:6px;min-width:0;overflow:hidden}
-html[data-embed="page"] .crumb button{font-size:12px;color:var(--text);padding:3px 6px;border-radius:4px}
+html[data-embed="page"] .crumb button{font-size:12px;color:var(--text);padding:3px 6px;border-radius:var(--e-r-ctl,4px)}
 html[data-embed="page"] .crumb button:hover{color:var(--text);background:var(--e-hover,rgba(255,255,255,.06))}
 html[data-embed="page"] .crumb button.current{color:var(--text);font-weight:600}
 html[data-embed="page"] .crumb .arr{color:var(--muted2)}
 html[data-embed="page"] .current-path{display:none}
 html[data-embed="page"] .bottom-status{display:none}
-html[data-embed="page"] .canvas-legend{background:var(--e-card,#292929);border:1px solid var(--line2);border-radius:6px;backdrop-filter:none;box-shadow:none;padding:6px 10px;gap:10px}
+/* 图例并进底部条（驱动在嵌入初始化时把节点挪进 .canvas-foot）：面包屑之后、操作按钮之前，
+   与色带同宽的一条 hairline 分隔；窄了先收起说明句，再窄整块让位 */
+html[data-embed="page"] .canvas-legend{position:static;z-index:auto;flex:0 100 auto;min-width:0;max-width:none;margin-left:8px;padding:0 0 0 14px;gap:12px;background:none;border:0;border-left:1px solid var(--line2);border-radius:0;backdrop-filter:none;box-shadow:none;flex-wrap:nowrap;white-space:nowrap;overflow:hidden}
+html[data-embed="page"] .canvas-legend .legend-title{display:none}
+html[data-embed="page"] .canvas-legend > span[style]{background:var(--line2)!important}
+html[data-embed="page"] .canvas-foot .crumb{flex:0 1 auto}
+@media(max-width:980px){html[data-embed="page"] .canvas-legend .heat-key:has(#lgSrc){display:none}}
+@media(max-width:760px){html[data-embed="page"] .canvas-legend{display:none}}
 html[data-embed="page"] .legend-title{font-size:11px;color:var(--muted2);letter-spacing:0}
 html[data-embed="page"] .heat-key{font-size:11px;color:var(--text)}
 html[data-embed="page"] .heat-dot{animation:none;box-shadow:none}
-html[data-embed="page"] .minimap{background:var(--e-card,#292929);border:1px solid var(--line2);border-radius:6px;backdrop-filter:none}
+html[data-embed="page"] .minimap{background:var(--e-card,#292929);border:1px solid var(--line2);border-radius:var(--e-r-card,6px);backdrop-filter:none}
 html[data-embed="page"] .minimap-label{font:10px var(--mono);color:var(--muted2);letter-spacing:0}
-html[data-embed="page"] .hover-card{background:var(--e-card,#292929);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.4);padding:10px 12px}
+html[data-embed="page"] .hover-card{background:var(--e-card,#292929);border:1px solid var(--line);border-radius:var(--e-r-card,8px);box-shadow:0 8px 24px rgba(0,0,0,.4);padding:10px 12px}
 html[data-embed="page"] .hover-title{font-size:12px}
 html[data-embed="page"] .hover-sub,html[data-embed="page"] .hover-row{font:11px var(--mono);color:var(--muted2)}
-html[data-embed="page"] .canvas-msg{background:var(--e-card,#292929);border:1px solid var(--line2);color:var(--text);font-size:11px;border-radius:4px}
+html[data-embed="page"] .canvas-msg{background:var(--e-card,#292929);border:1px solid var(--line2);color:var(--text);font-size:11px;border-radius:var(--e-r-ctl,4px)}
 html[data-embed="page"] .sidebar{background:var(--e-surface,#191919);border-left:1px solid var(--line2)}
 html[data-embed="page"] .side-head{height:52px;padding:8px 12px 8px 14px;border-bottom:1px solid var(--line2);background:none}
-html[data-embed="page"] .side-icon{width:28px;height:28px;border-radius:4px;background:var(--e-active,rgba(96,205,255,.10));border:0;color:var(--cyan);box-shadow:none}
+html[data-embed="page"] .side-icon{width:28px;height:28px;border-radius:var(--e-r-ctl,4px);background:var(--e-active,rgba(96,205,255,.10));border:0;color:var(--cyan);box-shadow:none}
 html[data-embed="page"] .side-title{font-size:14px;font-weight:600}
 html[data-embed="page"] .side-sub{font:11px var(--mono);color:var(--muted2);margin-top:2px}
 html[data-embed="page"] .side-head .icon-btn{background:none;border:0}
@@ -2722,21 +2796,21 @@ html[data-embed="page"] .tab-btn:hover{color:var(--text)}
 html[data-embed="page"] .tab-btn.active{border-bottom-color:var(--cyan);color:var(--text)}
 html[data-embed="page"] .side-body{padding:14px;scrollbar-width:thin;scrollbar-color:var(--line) transparent}
 html[data-embed="page"] .side-body::-webkit-scrollbar{width:8px}
-html[data-embed="page"] .side-body::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
+html[data-embed="page"] .side-body::-webkit-scrollbar-thumb{background:var(--line);border-radius:var(--e-r-ctl,4px)}
 html[data-embed="page"] .section-head{border-bottom-color:var(--line2);margin-bottom:10px}
 html[data-embed="page"] .section-title{font-size:12px;font-weight:600;letter-spacing:0;color:var(--text)}
 html[data-embed="page"] .section-meta{font:11px var(--mono);color:var(--muted2)}
-html[data-embed="page"] .confidence-card{padding:14px;background:var(--e-card,#292929);border:1px solid var(--line2);border-radius:8px;box-shadow:none}
+html[data-embed="page"] .confidence-card{padding:14px;background:var(--e-card,#292929);border:1px solid var(--line2);border-radius:var(--e-r-card,8px);box-shadow:none}
 html[data-embed="page"] .confidence-card:after{display:none}
 html[data-embed="page"] .confidence-label{font-size:12px;color:var(--text)}
 html[data-embed="page"] .confidence-value{font:600 28px var(--mono);letter-spacing:-.02em;margin-top:4px}
 html[data-embed="page"] .confidence-value small{font-size:12px;color:var(--muted2)}
-html[data-embed="page"] .conf-state{font-size:11px;border-radius:4px;padding:3px 8px}
+html[data-embed="page"] .conf-state{font-size:11px;border-radius:var(--e-r-ctl,4px);padding:3px 8px}
 html[data-embed="page"] .meter{background:var(--e-track,#303030);margin:12px 0 8px}
 html[data-embed="page"] .meter span{filter:none}
 html[data-embed="page"] .meter-labels{font:11px var(--mono);color:var(--muted2)}
 html[data-embed="page"] .metric-grid{gap:8px}
-html[data-embed="page"] .metric-box{border:1px solid var(--line2);border-radius:6px;background:none;padding:10px}
+html[data-embed="page"] .metric-box{border:1px solid var(--line2);border-radius:var(--e-r-card,6px);background:none;padding:10px}
 html[data-embed="page"] .metric-box .label{font-size:11px;color:var(--muted2)}
 html[data-embed="page"] .metric-box strong{font:600 16px var(--mono);color:var(--text)}
 html[data-embed="page"] .metric-box small{font-size:11px;color:var(--muted2)}
@@ -2748,17 +2822,17 @@ html[data-embed="page"] .bar-row label{font-size:11px;color:var(--text)}
 html[data-embed="page"] .bar-track{background:var(--e-track,#303030)}
 html[data-embed="page"] .bar-track span{filter:none}
 html[data-embed="page"] .bar-row strong{font:11px var(--mono);color:var(--text)}
-html[data-embed="page"] .note{border:1px solid var(--line2);background:var(--e-card,#292929);border-radius:6px;padding:10px 12px;font-size:12px;line-height:1.6;color:var(--text)}
+html[data-embed="page"] .note{border:1px solid var(--line2);background:var(--e-card,#292929);border-radius:var(--e-r-card,6px);padding:10px 12px;font-size:12px;line-height:1.6;color:var(--text)}
 html[data-embed="page"] .note strong{color:var(--yellow)}
-html[data-embed="page"] .pill{font-size:11px;color:var(--text);background:none;border:1px solid var(--line2);border-radius:4px;padding:3px 8px}
+html[data-embed="page"] .pill{font-size:11px;color:var(--text);background:none;border:1px solid var(--line2);border-radius:var(--e-r-ctl,4px);padding:3px 8px}
 html[data-embed="page"] .list{gap:6px}
-html[data-embed="page"] .list-row{border:1px solid var(--line2);border-radius:6px;background:none;padding:8px 10px}
+html[data-embed="page"] .list-row{border:1px solid var(--line2);border-radius:var(--e-r-card,6px);background:none;padding:8px 10px}
 html[data-embed="page"] .list-row:hover{border-color:var(--line);background:var(--e-hover,rgba(255,255,255,.06))}
 html[data-embed="page"] .list-row strong{font-size:12px;color:var(--text)}
 html[data-embed="page"] .list-row small{font:11px var(--mono);color:var(--muted2);margin-top:3px}
 html[data-embed="page"] .list-row .list-score{font:600 12px var(--mono)}
 html[data-embed="page"] .evidence-item{border-bottom-color:var(--line2);padding:10px 0}
-html[data-embed="page"] .evi-icon{width:26px;height:26px;border:1px solid var(--line2);border-radius:4px;background:none;color:var(--text);font-size:11px}
+html[data-embed="page"] .evi-icon{width:26px;height:26px;border:1px solid var(--line2);border-radius:var(--e-r-ctl,4px);background:none;color:var(--text);font-size:11px}
 html[data-embed="page"] .evi-main strong{font-size:12px;color:var(--text)}
 html[data-embed="page"] .evi-main p{font-size:11px;line-height:1.6;color:var(--text)}
 html[data-embed="page"] .evi-score{font:12px var(--mono)}
@@ -2766,17 +2840,17 @@ html[data-embed="page"] .mini-table{font-size:11px}
 html[data-embed="page"] .mini-table th{color:var(--muted2)}
 html[data-embed="page"] .mini-table td{color:var(--text);border-bottom-color:var(--line2)}
 html[data-embed="page"] .mini-table .score-cell{font:600 12px var(--mono)}
-html[data-embed="page"] .empty{color:var(--muted2);font-size:12px;border-color:var(--line2);border-radius:8px}
+html[data-embed="page"] .empty{color:var(--muted2);font-size:12px;border-color:var(--line2);border-radius:var(--e-r-card,8px)}
 html[data-embed="page"] .empty strong{color:var(--text);font-size:12px}
 html[data-embed="page"] .stat-row{border-bottom-color:var(--line2);font-size:12px;color:var(--text)}
 html[data-embed="page"] .stat-row strong{font:11px var(--mono);color:var(--text)}
 html[data-embed="page"] .primary-btn{background:var(--cyan);border-color:transparent;color:#111;font-size:12px;font-weight:600;padding:6px 12px}
 html[data-embed="page"] .primary-btn:hover{background:var(--cyan);filter:brightness(1.08)}
 html[data-embed="page"] .loc-label{font-size:11px;color:var(--muted2)}
-html[data-embed="page"] .loc-val{font:11px var(--mono);color:var(--text);background:var(--e-field,#1b1b1b);border:1px solid var(--line2);border-radius:4px;padding:6px 8px}
+html[data-embed="page"] .loc-val{font:11px var(--mono);color:var(--text);background:var(--e-field,#1b1b1b);border:1px solid var(--line2);border-radius:var(--e-r-ctl,4px);padding:6px 8px}
 html[data-embed="page"] .sig-block{font:11px var(--mono);color:var(--text)}
-html[data-embed="page"] .toast{bottom:44px;border-radius:8px;border:1px solid var(--line);background:var(--e-card,#292929);color:var(--text);font-size:12px}
-html[data-embed="page"] .modal{border-radius:8px;background:var(--e-surface,#191919);border:1px solid var(--line)}
+html[data-embed="page"] .toast{bottom:44px;border-radius:var(--e-r-card,8px);border:1px solid var(--line);background:var(--e-card,#292929);color:var(--text);font-size:12px}
+html[data-embed="page"] .modal{border-radius:var(--e-r-card,8px);background:var(--e-surface,#191919);border:1px solid var(--line)}
 html[data-embed="page"] .modal p{color:var(--text);font-size:12px}
 html[data-embed="page"] .formula{background:var(--bg);border-color:var(--line2);color:var(--text)}
 html[data-embed="page"] .weights{font-size:12px}
@@ -2791,7 +2865,7 @@ html[data-embed="page"] .app{height:100vh;min-height:0;display:grid;grid-templat
 html[data-embed="page"] .topbar{grid-area:1/1/2/2;height:44px;min-height:44px;flex-wrap:nowrap;padding:0 4px 0 12px}
 html[data-embed="page"] .toolbar{grid-area:1/2/2/3;height:44px;min-height:44px;flex-wrap:nowrap;padding:0 12px 0 4px}
 html[data-embed="page"] .toolbar-spacer{display:block}
-html[data-embed="page"] .main{grid-area:2/1/3/3;display:grid;grid-template-columns:minmax(0,1fr) 280px;grid-template-rows:minmax(0,1fr)}
+html[data-embed="page"] .main{grid-area:2/1/3/3;display:grid;grid-template-columns:minmax(0,1fr) 280px;grid-template-rows:minmax(0,1fr) var(--e-foot-h,32px)}
 html[data-embed="page"] .graph-area{height:auto;min-height:0;border-right:0}
 html[data-embed="page"] .sidebar{min-height:0;border-top:0}
 html[data-embed="page"] .side-body{max-height:none}
@@ -2804,8 +2878,10 @@ html[data-embed="page"] .toolbar .tool-group + .separator{display:none}
 html[data-embed="page"] .app{grid-template-columns:minmax(0,1fr);grid-template-rows:44px 44px minmax(0,1fr)}
 html[data-embed="page"] .topbar{grid-area:1/1/2/2}
 html[data-embed="page"] .toolbar{grid-area:2/1/3/2}
-html[data-embed="page"] .main{grid-area:3/1/4/2;grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1.35fr) minmax(0,1fr)}
-html[data-embed="page"] .graph-area{border-bottom:1px solid var(--line2)}
+html[data-embed="page"] .main{grid-area:3/1/4/2;grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1.3fr) minmax(0,0.9fr) var(--e-foot-h,32px)}
+html[data-embed="page"] .canvas-wrap{border-bottom:1px solid var(--line2)}
+html[data-embed="page"] .sidebar{grid-area:2/1/3/2}
+html[data-embed="page"] .canvas-foot{grid-area:3/1/4/2}
 }
 </style>
 """

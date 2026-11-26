@@ -1690,16 +1690,23 @@ func archCurrentCount(p: ProjectEntry): Int64 {
     }
 }
 
-/// 探针新鲜度判定：arch.json 里有**可解析**的探针且与 sourceProbeNow 一致才算新鲜
-///（与 indexProbeFresh 同一判据形状；持久化位置不同——arch 的主产物就是
-/// arch.json，没有第二份 db 元数据可对账）。缺记录 / 探针畸形 / 不一致 → 过期。
+/// arch.json 的数据形状也是新鲜度的一部分（与索引的 payload_shape 同一纪律：探针一致 ≠ 形状一致）：
+/// 带 `geo`（槽位几何）的才是当前形状；更早的构建写出的 arch.json 没有它，
+/// 页面嵌入时的泳道折行无从算起——探针一致也按过期重建，自愈一次就换上新形状。
+func archPayloadShapeCurrent(j: JsonValue): Bool {
+    return Json.has(j, "geo")
+}
+
+/// 探针新鲜度判定：arch.json 里有**可解析**的探针且与 sourceProbeNow 一致、数据形状也是当前的，
+/// 才算新鲜（与 indexProbeFresh 同一判据形状；持久化位置不同——arch 的主产物就是
+/// arch.json，没有第二份 db 元数据可对账）。缺记录 / 探针畸形 / 不一致 / 形状旧 → 过期。
 func archProbeFresh(p: ProjectEntry): (Bool, Option<SourceProbe>, Option<SourceProbe>) {
     let now = sourceProbeNow(p.path)
     match (archStoreRead(p)) {
         case Some(j) =>
             match (sourceProbeFromJson(Json.getOr(j, "probe"))) {
                 case Some(old) =>
-                    if (probeMatches(old, now)) {
+                    if (probeMatches(old, now) && archPayloadShapeCurrent(j)) {
                         return (true, Some(old), Some(now))
                     }
                     return (false, Some(old), Some(now))
