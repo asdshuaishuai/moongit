@@ -140,6 +140,15 @@ func testArchEmbedSpreadsLanesAndRoutesEdges(): Unit {
         @Assert(html.contains("function roleText(role) { var t = P().roleTextCols; return t ? t[role % t.length] : roleColor(role); }"))
         @Assert(html.contains("ctx.globalAlpha = ap; ctx.fillStyle = roleText(L.role);"))
         @Assert(!html.contains("ctx.globalAlpha = ap; ctx.fillStyle = rc;"))   // 角色名不许再拿填充色当文字色
+        // ⑧ 职责视图的台阶式（2026-11-28 第二轮，用户实拍指出连线堆积）：单卡行按行序依次右挪——
+        //    全部居中 = 上下卡片同轴，每条跨行线都挤在同一条走廊里。行表收平 + 行序位移
+        @Assert(html.contains("var allRows = [];"))
+        @Assert(html.contains("if (isRole() && row.length === 1) {"))
+        @Assert(html.contains("var f = allRows.length > 1 ? rowIdx / (allRows.length - 1) : 0.5;"))
+        @Assert(html.contains("row[0].x = g.margin + g.labelW + (laneW - g.labelW - geo.cardW) * f;"))
+        @Assert(html.contains("y += L.h + geo.laneGap;"))
+        // 同走廊的线按端点对散开：a→b 与 b→a 的哈希不同，双向线不再叠成一条
+        @Assert(html.contains("want += (h01(a.id + '>' + b.id) - 0.5) * 36;"))
     } finally {
         removeTree(root)
     }

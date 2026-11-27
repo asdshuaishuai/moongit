@@ -442,16 +442,37 @@ func renderJs(en: Bool): String {
     sb.append("    var geo = embGeo(), av = embAvail(), m = embLay(geo, P, c, 1), k = Math.min(av.aw / m.W, av.ah / m.H, 1.35);\n")
       // 高度是瓶颈时泳道往两侧铺开，最宽到卡槽名义宽的 spread 倍——再宽一张图就散成两半
     sb.append("    var laneW = Math.min(Math.max(av.aw / k, m.W), embLay(geo, P, c, geo.spread).W) - 24;\n")
-    sb.append("    var rowH = geo.cardH + geo.padV * 2, y = g.margin;\n")
+    sb.append("    var rowH = geo.cardH + geo.padV * 2;\n")
     sb.append("    SPREAD = true;\n")
-      // 阅读序（行主序）保持不变：先按现位置的 y、再按 x 排，折几次行次序都不乱
+      // 阅读序（行主序）保持不变：先按现位置的 y、再按 x 排，折几次行次序都不乱。
+      // 先把每条泳道折出的行收进一张平铺的行表（行序 = 旧实现的摆卡序），下面统一摆
+    sb.append("    var allRows = [];\n")
     sb.append("    P.lanes.forEach(function (L) {\n")
     sb.append("      var mods = P.nodes.filter(function (m) { return m[P.key] === L[P.key]; }).sort(function (a, b) { return (a.y - b.y) || (a.x - b.x) || (a.id < b.id ? -1 : 1); });\n")
     sb.append("      var cols = Math.max(1, Math.min(c, mods.length)), rows = Math.max(1, Math.ceil(mods.length / cols));\n")
-    sb.append("      L.x = g.margin; L.y = y; L.w = laneW; L.h = rows * rowH + (rows - 1) * geo.laneGap;\n")
-    sb.append("      for (var r = 0; r < rows; r++) { embPlaceRow(mods.slice(r * cols, Math.min(mods.length, (r + 1) * cols)), g.margin + g.labelW, laneW - g.labelW, y + geo.padV + r * (rowH + geo.laneGap), geo); }\n")
-    sb.append("      y += L.h + geo.laneGap;\n")
+    sb.append("      for (var r = 0; r < rows; r++) { allRows.push({ L: L, mods: mods.slice(r * cols, Math.min(mods.length, (r + 1) * cols)) }); }\n")
     sb.append("    });\n")
+    sb.append("    var y = g.margin, rowIdx = 0, i = 0;\n")
+    sb.append("    while (i < allRows.length) {\n")
+    sb.append("      var L = allRows[i].L, laneRows = 0;\n")
+    sb.append("      while (i + laneRows < allRows.length && allRows[i + laneRows].L === L) { laneRows += 1; }\n")
+    sb.append("      L.x = g.margin; L.y = y; L.w = laneW; L.h = laneRows * rowH + (laneRows - 1) * geo.laneGap;\n")
+    sb.append("      for (var r = 0; r < laneRows; r++) {\n")
+    sb.append("        var row = allRows[i + r].mods, yy = y + geo.padV + r * (rowH + geo.laneGap);\n")
+      // 台阶式（职责视图的单卡行）：按行序在泳道的卡片区里从左到右依次挪——相邻两行错开，
+      // 连线两端天然不同 x，走廊各走各的；架构级保持对称铺开（分层语义要竖轴）
+    sb.append("        if (isRole() && row.length === 1) {\n")
+    sb.append("          var f = allRows.length > 1 ? rowIdx / (allRows.length - 1) : 0.5;\n")
+    sb.append("          row[0].x = g.margin + g.labelW + (laneW - g.labelW - geo.cardW) * f;\n")
+    sb.append("          row[0].y = yy;\n")
+    sb.append("        } else {\n")
+    sb.append("          embPlaceRow(row, g.margin + g.labelW, laneW - g.labelW, yy, geo);\n")
+    sb.append("        }\n")
+    sb.append("        rowIdx += 1;\n")
+    sb.append("      }\n")
+    sb.append("      y += L.h + geo.laneGap;\n")
+    sb.append("      i += laneRows;\n")
+    sb.append("    }\n")
     sb.append("  }\n")
     // 铺开布局里的卡片行。跨行连线按「行」找空档而不是按泳道：泳道折成多行时，同一泳道的下一行同样是障碍。
     sb.append("  function embRows() {\n")
@@ -487,16 +508,21 @@ func renderJs(en: Bool): String {
     sb.append("    var lo = 0, hi = 0;\n")
     sb.append("    P.lanes.forEach(function (L) { if (L[P.key] === up[P.key]) { lo = L.x + geo.labelW; hi = L.x + L.w; } });\n")
     sb.append("    EMB_ROWS.forEach(function (r) { if (r.y > up.y && r.y < dn.y) { mid.push(r); } });\n")
-    sb.append("    var cu = up.x + up.w / 2, cd = dn.x + dn.w / 2, want = (cu + cd) / 2, xc = want, bd = 1e9, bi = -1;\n")
+    sb.append("    var cu = up.x + up.w / 2, cd = dn.x + dn.w / 2, want = (cu + cd) / 2;\n")
+      // 同一条走廊上的几条线按端点对散开：a→b 与 b→a 的哈希不同（±18），双向线不再叠成一条；
+      // 不同端点对的线也别全挤在正中。确定性哈希，同一份产物两次打开逐像素一致
+    sb.append("    want += (h01(a.id + '>' + b.id) - 0.5) * 36;\n")
+    sb.append("    var xc = want, bd = 1e9, bi = -1;\n")
     sb.append("    if (mid.length) {\n")
     sb.append("      ivs = [[lo, hi]];\n")
     sb.append("      mid.forEach(function (r) { var nxt = []; ivs.forEach(function (iv) { embFreeCols(r, iv[0], iv[1], pad).forEach(function (f) { nxt.push(f); }); }); ivs = nxt; });\n")
     sb.append("      ivs.forEach(function (iv, i) { var x = Math.max(iv[0], Math.min(iv[1], want)), dd = Math.abs(x - want); if (dd < bd - 1e-9) { bd = dd; bi = i; } });\n")
     sb.append("      if (bd >= 1e9) { mid = []; }\n")
     sb.append("      else {\n")
-    sb.append("        var iv = ivs[bi], base = Math.max(iv[0], Math.min(iv[1], want));\n")
-          // 被卡片挡开、只能贴着空档边缘走的线再往空档里散一散：不然全叠在同一条竖线上，标签摞成一列
-    sb.append("        xc = (base === want) ? want : Math.max(iv[0], Math.min(iv[1], base + (h01(a.id + '|' + b.id) - 0.5) * Math.min(iv[1] - iv[0], 140)));\n")
+    sb.append("        var iv = ivs[bi];\n")
+      // 通道里的落点以 want 为中心按端点对散开（通道宽 140 封顶）：台阶排开后长距离的边
+      // 往往只剩同一条贯穿通道，不散的话它们还是叠成一根竖线、标签摞成一列
+    sb.append("        xc = Math.max(iv[0], Math.min(iv[1], want + (h01(a.id + '|' + b.id) - 0.5) * Math.min(iv[1] - iv[0], 140)));\n")
     sb.append("      }\n")
     sb.append("    }\n")
       // 上下对齐的两张卡：锚点按端点对散在卡宽 60% 内（与职责视图独立版同式），双向的几条线才分得开
