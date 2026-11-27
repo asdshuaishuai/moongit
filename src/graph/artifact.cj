@@ -19,7 +19,8 @@ import cambium.util.*
 ///     卡片之间的空档绕行（架构级与职责视图）；职责泳道行号与卡片对齐；geo 带嵌入间距（2026-11-27）。
 /// 7 = 职责视图的角色色读宿主调色板（roleCols / roleTextCols），角色名用文字级（2026-11-27）。
 /// 8 = 职责视图单卡行台阶式排列（行序依次右移），同走廊连线按端点对散开（2026-11-28）。
-public let RENDER_TEMPLATE: Int64 = 8
+/// 9 = 台阶式的线路分两侧：下行边靠右、上行边靠左（2026-11-28）。
+public let RENDER_TEMPLATE: Int64 = 9
 
 /// 产物里自报模板版本的注释行（两份产物同一格式）。
 public func renderTemplateTag(): String {

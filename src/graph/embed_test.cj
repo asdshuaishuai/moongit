@@ -149,6 +149,9 @@ func testArchEmbedSpreadsLanesAndRoutesEdges(): Unit {
         @Assert(html.contains("y += L.h + geo.laneGap;"))
         // 同走廊的线按端点对散开：a→b 与 b→a 的哈希不同，双向线不再叠成一条
         @Assert(html.contains("want += (h01(a.id + '>' + b.id) - 0.5) * 36;"))
+        // ⑨ 线路分两侧（用户第三轮）：自上而下的边靠右、自下而上的边靠左——台阶右移后
+        //    右侧上宽下窄、左侧下宽上窄，两股流向各自贴住自己的侧走廊
+        @Assert(html.contains("if (isRole()) { want += (d ? 1 : -1) * 0.45 * ((hi - lo) - geo.cardW); }"))
     } finally {
         removeTree(root)
     }

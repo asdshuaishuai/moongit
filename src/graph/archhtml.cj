@@ -512,6 +512,10 @@ func renderJs(en: Bool): String {
       // 同一条走廊上的几条线按端点对散开：a→b 与 b→a 的哈希不同（±18），双向线不再叠成一条；
       // 不同端点对的线也别全挤在正中。确定性哈希，同一份产物两次打开逐像素一致
     sb.append("    want += (h01(a.id + '>' + b.id) - 0.5) * 36;\n")
+      // 线路分两侧（用户 2026-11-28）：自上而下的边靠右、自下而上的边靠左。台阶右移后
+      // 右侧空间上宽下窄、左侧下宽上窄，两股流向各自贴着自己的侧走廊走，不再全堆在一束里。
+      // 幅度取台阶幅值的一半；落到哪个空档仍由空档选取决定，出不了泳道
+    sb.append("    if (isRole()) { want += (d ? 1 : -1) * 0.45 * ((hi - lo) - geo.cardW); }\n")
     sb.append("    var xc = want, bd = 1e9, bi = -1;\n")
     sb.append("    if (mid.length) {\n")
     sb.append("      ivs = [[lo, hi]];\n")
@@ -519,10 +523,9 @@ func renderJs(en: Bool): String {
     sb.append("      ivs.forEach(function (iv, i) { var x = Math.max(iv[0], Math.min(iv[1], want)), dd = Math.abs(x - want); if (dd < bd - 1e-9) { bd = dd; bi = i; } });\n")
     sb.append("      if (bd >= 1e9) { mid = []; }\n")
     sb.append("      else {\n")
-    sb.append("        var iv = ivs[bi];\n")
-      // 通道里的落点以 want 为中心按端点对散开（通道宽 140 封顶）：台阶排开后长距离的边
-      // 往往只剩同一条贯穿通道，不散的话它们还是叠成一根竖线、标签摞成一列
-    sb.append("        xc = Math.max(iv[0], Math.min(iv[1], want + (h01(a.id + '|' + b.id) - 0.5) * Math.min(iv[1] - iv[0], 140)));\n")
+    sb.append("        var iv = ivs[bi], base = Math.max(iv[0], Math.min(iv[1], want));\n")
+          // 被卡片挡开、只能贴着空档边缘走的线再往空档里散一散：不然全叠在同一条竖线上，标签摞成一列
+    sb.append("        xc = (base === want) ? want : Math.max(iv[0], Math.min(iv[1], base + (h01(a.id + '|' + b.id) - 0.5) * Math.min(iv[1] - iv[0], 140)));\n")
     sb.append("      }\n")
     sb.append("    }\n")
       // 上下对齐的两张卡：锚点按端点对散在卡宽 60% 内（与职责视图独立版同式），双向的几条线才分得开
