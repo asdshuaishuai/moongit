@@ -389,40 +389,134 @@ func renderJs(en: Bool): String {
     // 用户是否手动缩放/平移过：取景（fit）之后为 true；滚轮、拖拽、小地图定位之后为 false。
     // 视口变了（窗口拖大拖小）时，还在「适应画布」状态就重新取景；用户定好的视角不动，只保证内容不出视野。
     sb.append("  var viewFit = true;\n")
-    // 泳道折行（嵌入模式·架构级）：引擎给的泳道是「一层一行、各层同宽」的定稿布局，
-    // 页面里嵌着时画布又宽又矮或又窄又高，整行硬塞进去只能整体缩小——卡片上的字缩到 6px。
-    // 这里按可用区域的宽高比选「每行几张卡」：选让取景倍率最大的那个（同倍率取形状更贴合的），
-    // 泳道随之变高变窄。几何常量取自 DATA.geo（与引擎 layoutArch 同源）；
-    // 独立打开时不折行，画面与定稿一致。
+    // ── 嵌入铺开（嵌入模式·架构级与职责视图）──
+    // 引擎给的泳道是「一类一行、各行同宽」的定稿布局。页面里的画布又宽又矮，整叠泳道按定稿宽度
+    // 只占中间一列：卡片贴着标签列挤成一团，连线从卡片之间硬穿，大半压在卡片后面。这里把泳道
+    // 横向铺到可用宽度——卡片在泳道里对称分布，连线从卡片底边出、顶边入，跨行的线沿卡片之间的
+    // 空档走。间距取自 DATA.geo 的 emb* 键（引擎 ARCH_EMB_* 常量，与定稿几何同一个出处）。
+    sb.append("  var SPREAD = false;\n")
+    sb.append("  var EMB_ROWS = [];\n")
+    sb.append("  function spreadEdges() { return SPREAD && (isArch() || isRole()); }\n")
+    sb.append("  function embGeo() {\n")
+    sb.append("    var g = DATA.geo;\n")
+    sb.append("    return { cardW: g.cardW, cardH: g.cardH, labelW: g.labelW, margin: g.margin, slotW: g.embSlotW || g.slotW, padV: g.embPadV || g.padV, laneGap: g.embLaneGap || g.laneGap, spread: g.embSpread || 1 };\n")
+    sb.append("  }\n")
+    // 本级的泳道、卡片与分组键：架构级按层，职责视图按角色
+    sb.append("  function embParts() { return isRole() ? { lanes: DATA.roleLanes, nodes: DATA.roles, key: 'role', cnt: 'groups' } : { lanes: DATA.lanes, nodes: DATA.modules, key: 'layer', cnt: 'modules' }; }\n")
+    // 可用区域：与 fit() 同一组留白（左右各 16；顶部让开命令条，底部让开图例条）
+    sb.append("  function embAvail() { return { aw: innerWidth - 32, ah: innerHeight - embTop() - embFoot() - 12 }; }\n")
+    // 每行 c 列时整叠泳道的宽（标签列 + 列数 × 卡槽宽，再加 bounds() 左右的 24）与高（同样加上下的 24）
+    sb.append("  function embLay(g, P, c, wide) {\n")
+    sb.append("    var maxN = 1, H = (P.lanes.length - 1) * g.laneGap;\n")
+    sb.append("    P.lanes.forEach(function (L) { var n = Math.max(1, L[P.cnt]), r = Math.max(1, Math.ceil(n / c)); if (n > maxN) { maxN = n; } H += r * (g.cardH + g.padV * 2) + (r - 1) * g.laneGap; });\n")
+    sb.append("    return { W: g.labelW + Math.min(c, maxN) * g.slotW * wide + 24, H: H + 24 };\n")
+    sb.append("  }\n")
+    // 泳道折行（嵌入模式）：按可用区域的宽高比选「每行几张卡」——取景倍率最大的那个
+    // （同倍率取形状更贴合的）。独立打开时不折行，画面与定稿一致。
     sb.append("  function embLaneCols() {\n")
-    sb.append("    var g = DATA.geo; if (!g || !DATA.lanes || !DATA.lanes.length) { return 0; }\n")
-    sb.append("    var counts = [], maxC = 1; DATA.lanes.forEach(function (L) { var n = Math.max(1, L.modules); counts.push(n); if (n > maxC) { maxC = n; } });\n")
-    sb.append("    var aw = innerWidth - 32 - 24, ah = innerHeight - embTop() - (embFoot() + 12) - 24;   // 与 fit() 的留白同一式\n")
-    sb.append("    var best = 1, bestScore = -1;\n")
+    sb.append("    var g = DATA.geo, P = embParts(); if (!g || !P.lanes || !P.lanes.length) { return 0; }\n")
+    sb.append("    var geo = embGeo(), av = embAvail(), maxC = 1, best = 1, bestScore = -1;\n")
+    sb.append("    P.lanes.forEach(function (L) { if (L[P.cnt] > maxC) { maxC = L[P.cnt]; } });\n")
     sb.append("    for (var c = 1; c <= maxC; c++) {\n")
-    // 外边距不算进来：bounds() 取的是泳道矩形本身（已含 margin 在内的坐标），不是整张世界
-    sb.append("      var W = g.labelW + c * g.slotW, H = (counts.length - 1) * g.laneGap;\n")
-    sb.append("      counts.forEach(function (n) { var r = Math.ceil(n / c); H += r * (g.cardH + g.padV * 2) + (r - 1) * g.laneGap; });\n")
-    sb.append("      var kx = aw / W, ky = ah / H, k = Math.min(kx, ky, 1.35);\n")
+    sb.append("      var m = embLay(geo, P, c, 1), kx = av.aw / m.W, ky = av.ah / m.H, k = Math.min(kx, ky, 1.35);\n")
     sb.append("      var score = k - 0.0001 * Math.abs(Math.log(kx / ky));\n")
     sb.append("      if (score > bestScore + 1e-9) { bestScore = score; best = c; }\n")
     sb.append("    }\n")
     sb.append("    return best;\n")
     sb.append("  }\n")
-    sb.append("  function embReflow(c) {\n")
-    sb.append("    var g = DATA.geo; if (!g || !c || !DATA.lanes || !DATA.lanes.length) { return; }\n")
-    sb.append("    var rowH = g.cardH + g.padV * 2, y = g.margin, maxN = 1;\n")
-    sb.append("    DATA.lanes.forEach(function (L) { if (L.modules > maxN) { maxN = L.modules; } });\n")
-    sb.append("    var laneW = g.labelW + Math.min(c, maxN) * g.slotW;\n")
-    sb.append("    // 阅读序（行主序）保持不变：先按现位置的 y、再按 x 排，折几次行次序都不乱\n")
-    sb.append("    DATA.lanes.forEach(function (L) {\n")
-    sb.append("      var mods = DATA.modules.filter(function (m) { return m.layer === L.layer; }).sort(function (a, b) { return (a.y - b.y) || (a.x - b.x) || (a.id < b.id ? -1 : 1); });\n")
-    sb.append("      var cols = Math.max(1, Math.min(c, mods.length)), rows = Math.max(1, Math.ceil(mods.length / cols));\n")
-    sb.append("      var sp = (Math.min(c, maxN) * g.slotW) / cols;\n")
-    sb.append("      L.x = g.margin; L.y = y; L.w = laneW; L.h = rows * rowH + (rows - 1) * g.laneGap;\n")
-    sb.append("      mods.forEach(function (m, i) { m.x = g.margin + g.labelW + (i % cols) * sp + (sp - g.cardW) / 2; m.y = y + g.padV + Math.floor(i / cols) * (rowH + g.laneGap); });\n")
-    sb.append("      y += L.h + g.laneGap;\n")
+    // 一行卡片在卡片区 [x0, x0 + w] 里对称铺开，间隙一律 g。偶数张时正中再让出一张卡的宽度：
+    // 别的行落在中线上的卡片（单卡居中）两侧才有连线走的水道；两张卡贴着中线摆，跨行的线只能从卡片后面穿。
+    sb.append("  function embPlaceRow(row, x0, w, y, geo) {\n")
+    sb.append("    var n = row.length, cw = geo.cardW, odd = n % 2, gap = Math.max(0, (w - (n + (odd ? 0 : 1)) * cw) / (n + (odd ? 1 : 2)));\n")
+    sb.append("    row.forEach(function (m, i) {\n")
+    sb.append("      m.x = (odd || i < n / 2) ? x0 + gap + i * (cw + gap) : x0 + w - gap - cw - (n - 1 - i) * (cw + gap);\n")
+    sb.append("      m.y = y;\n")
     sb.append("    });\n")
+    sb.append("  }\n")
+    sb.append("  function embReflow(c) {\n")
+    sb.append("    var g = DATA.geo, P = embParts(); if (!g || !c || !P.lanes || !P.lanes.length) { return; }\n")
+    sb.append("    var geo = embGeo(), av = embAvail(), m = embLay(geo, P, c, 1), k = Math.min(av.aw / m.W, av.ah / m.H, 1.35);\n")
+      // 高度是瓶颈时泳道往两侧铺开，最宽到卡槽名义宽的 spread 倍——再宽一张图就散成两半
+    sb.append("    var laneW = Math.min(Math.max(av.aw / k, m.W), embLay(geo, P, c, geo.spread).W) - 24;\n")
+    sb.append("    var rowH = geo.cardH + geo.padV * 2, y = g.margin;\n")
+    sb.append("    SPREAD = true;\n")
+      // 阅读序（行主序）保持不变：先按现位置的 y、再按 x 排，折几次行次序都不乱
+    sb.append("    P.lanes.forEach(function (L) {\n")
+    sb.append("      var mods = P.nodes.filter(function (m) { return m[P.key] === L[P.key]; }).sort(function (a, b) { return (a.y - b.y) || (a.x - b.x) || (a.id < b.id ? -1 : 1); });\n")
+    sb.append("      var cols = Math.max(1, Math.min(c, mods.length)), rows = Math.max(1, Math.ceil(mods.length / cols));\n")
+    sb.append("      L.x = g.margin; L.y = y; L.w = laneW; L.h = rows * rowH + (rows - 1) * geo.laneGap;\n")
+    sb.append("      for (var r = 0; r < rows; r++) { embPlaceRow(mods.slice(r * cols, Math.min(mods.length, (r + 1) * cols)), g.margin + g.labelW, laneW - g.labelW, y + geo.padV + r * (rowH + geo.laneGap), geo); }\n")
+    sb.append("      y += L.h + geo.laneGap;\n")
+    sb.append("    });\n")
+    sb.append("  }\n")
+    // 铺开布局里的卡片行。跨行连线按「行」找空档而不是按泳道：泳道折成多行时，同一泳道的下一行同样是障碍。
+    sb.append("  function embRows() {\n")
+    sb.append("    var P = embParts(), rows = [];\n")
+    sb.append("    P.nodes.forEach(function (m) {\n")
+    sb.append("      if (isArch() && !layersOn[m.layer]) { return; }\n")
+    sb.append("      var hit = null;\n")
+    sb.append("      rows.forEach(function (r) { if (r.key === m[P.key] && r.y === m.y) { hit = r; } });\n")
+    sb.append("      if (hit) { hit.mods.push(m); } else { rows.push({ key: m[P.key], y: m.y, mods: [m] }); }\n")
+    sb.append("    });\n")
+    sb.append("    return rows.sort(function (a, b) { return a.y - b.y; });\n")
+    sb.append("  }\n")
+    // 一行卡片之间的空档（两端到卡片区的边缘也算），各让开 pad 的余量；只取落在 [lo, hi] 里的部分
+    sb.append("  function embFreeCols(row, lo, hi, pad) {\n")
+    sb.append("    var out = [], cur = lo;\n")
+    sb.append("    row.mods.slice().sort(function (a, b) { return a.x - b.x; }).forEach(function (m) {\n")
+    sb.append("      if (m.x - pad > cur) { out.push([cur, Math.min(hi, m.x - pad)]); }\n")
+    sb.append("      cur = Math.max(cur, m.x + m.w + pad);\n")
+    sb.append("    });\n")
+    sb.append("    if (hi > cur) { out.push([cur, hi]); }\n")
+    sb.append("    return out.filter(function (iv) { return iv[1] > iv[0]; });\n")
+    sb.append("  }\n")
+    // 锚点朝对侧偏一点（最多卡宽的 30%）：同一张卡片发出的几条线在起点附近就分开，不必全挤在中点
+    sb.append("  function aim(c, at, w) { return c + Math.max(-w * 0.3, Math.min(w * 0.3, at - c)); }\n")
+    // 字符串 → [0, 1)：给边标签在走廊里的落点用。确定性，不用随机（同一份产物两次打开逐像素一致）
+    sb.append("  function h01(s) { var h = 0; for (var i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) % 997; } return (h % 997) / 997; }\n")
+    // 铺开布局里一条边的路线（从 a 指向 b）。两端各一段竖向 S 形；中间夹着别的卡片行时，
+    // 在那些行的卡片之间找一条贯穿的空档（离两端中点最近的）竖直走。各行卡片错开把路堵死，
+    // 就只剩一段 S 形（从卡片后面穿过——卡片画在连线之上）。同一行的两张卡不归这里管，返回 null。
+    sb.append("  function vRoute(a, b) {\n")
+    sb.append("    if (a.y === b.y) { return null; }\n")
+    sb.append("    var geo = embGeo(), P = embParts(), d = a.y <= b.y, up = d ? a : b, dn = d ? b : a, pad = 18, mid = [], ivs = [];\n")
+    sb.append("    var lo = 0, hi = 0;\n")
+    sb.append("    P.lanes.forEach(function (L) { if (L[P.key] === up[P.key]) { lo = L.x + geo.labelW; hi = L.x + L.w; } });\n")
+    sb.append("    EMB_ROWS.forEach(function (r) { if (r.y > up.y && r.y < dn.y) { mid.push(r); } });\n")
+    sb.append("    var cu = up.x + up.w / 2, cd = dn.x + dn.w / 2, want = (cu + cd) / 2, xc = want, bd = 1e9, bi = -1;\n")
+    sb.append("    if (mid.length) {\n")
+    sb.append("      ivs = [[lo, hi]];\n")
+    sb.append("      mid.forEach(function (r) { var nxt = []; ivs.forEach(function (iv) { embFreeCols(r, iv[0], iv[1], pad).forEach(function (f) { nxt.push(f); }); }); ivs = nxt; });\n")
+    sb.append("      ivs.forEach(function (iv, i) { var x = Math.max(iv[0], Math.min(iv[1], want)), dd = Math.abs(x - want); if (dd < bd - 1e-9) { bd = dd; bi = i; } });\n")
+    sb.append("      if (bd >= 1e9) { mid = []; }\n")
+    sb.append("      else {\n")
+    sb.append("        var iv = ivs[bi], base = Math.max(iv[0], Math.min(iv[1], want));\n")
+          // 被卡片挡开、只能贴着空档边缘走的线再往空档里散一散：不然全叠在同一条竖线上，标签摞成一列
+    sb.append("        xc = (base === want) ? want : Math.max(iv[0], Math.min(iv[1], base + (h01(a.id + '|' + b.id) - 0.5) * Math.min(iv[1] - iv[0], 140)));\n")
+    sb.append("      }\n")
+    sb.append("    }\n")
+      // 上下对齐的两张卡：锚点按端点对散在卡宽 60% 内（与职责视图独立版同式），双向的几条线才分得开
+    sb.append("    var ali = cu === cd ? 0.6 : 0;\n")
+    sb.append("    var x1 = ali ? cu + (h01(a.id + '>' + b.id) - 0.5) * up.w * ali : aim(cu, xc, up.w);\n")
+    sb.append("    var x2 = ali ? cd + (h01(b.id + '>' + a.id) - 0.5) * dn.w * ali : aim(cd, xc, dn.w);\n")
+    sb.append("    var y1 = up.y + up.h, y2 = dn.y, segs, lt = 0.5;\n")
+    sb.append("    if (mid.length) {\n")
+    sb.append("      var ya = mid[0].y, yb = mid[mid.length - 1].y + up.h;\n")
+    sb.append("      segs = [{ x1: x1, y1: y1, x2: xc, y2: ya }, { x1: xc, y1: ya, x2: xc, y2: yb }, { x1: xc, y1: yb, x2: x2, y2: y2 }];\n")
+        // 标签落在走廊段里，按端点散开：同一条走廊里的几条线不把标签摞在同一个点上
+    sb.append("      lt = (Math.hypot(xc - x1, ya - y1) + (yb - ya) * (0.2 + 0.6 * h01(a.id + '>' + b.id))) / (Math.hypot(xc - x1, ya - y1) + (yb - ya) + Math.hypot(x2 - xc, y2 - yb));\n")
+    sb.append("    } else { segs = [{ x1: x1, y1: y1, x2: x2, y2: y2 }]; }\n")
+    sb.append("    if (!d) { segs = segs.reverse().map(function (s) { return { x1: s.x2, y1: s.y2, x2: s.x1, y2: s.y1 }; }); lt = 1 - lt; }\n")
+    sb.append("    var cum = [0];\n")
+    sb.append("    segs.forEach(function (s, i) { cum.push(cum[i] + Math.hypot(s.x2 - s.x1, s.y2 - s.y1)); });\n")
+    sb.append("    return { segs: segs, cum: cum, len: cum[cum.length - 1], lt: lt, d: d };\n")
+    sb.append("  }\n")
+    // 路线上按长度取 t∈[0,1] 处的点（粒子与边标签用）。每一段都是竖向 S 形，中段退化成竖线
+    sb.append("  function vPoint(r, t) {\n")
+    sb.append("    var s = r.len * t, i = 0;\n")
+    sb.append("    while (i < r.segs.length - 1 && s > r.cum[i + 1]) { i += 1; }\n")
+    sb.append("    var g = r.segs[i], u = Math.max(0, Math.min(1, (s - r.cum[i]) / Math.max(1e-6, r.cum[i + 1] - r.cum[i]))), v = 1 - u, m = (g.y1 + g.y2) / 2;\n")
+    sb.append("    return { x: v * v * v * g.x1 + 3 * v * v * u * g.x1 + 3 * v * u * u * g.x2 + u * u * u * g.x2, y: v * v * v * g.y1 + 3 * v * v * u * m + 3 * v * u * u * m + u * u * u * g.y2 };\n")
     sb.append("  }\n")
     sb.append("  function keepInView() { var b = bounds(); var x0 = w2sx(b.x0), x1 = w2sx(b.x1), y0 = w2sy(b.y0), y1 = w2sy(b.y1); if (x1 < 0 || x0 > innerWidth || y1 < 0 || y0 > innerHeight) { view.x = innerWidth / 2 - (b.x0 + b.x1) / 2 * view.k; view.y = innerHeight / 2 - (b.y0 + b.y1) / 2 * view.k; } }\n")
     sb.append("  function langColor(l) { var L = P().langs; return L[l] || L.module; }\n")
@@ -447,6 +541,7 @@ func renderJs(en: Bool): String {
     sb.append("  function ends(a, b) { var l = a.x <= b.x; return { x1: l ? a.x + a.w : a.x, y1: a.y + a.h / 2, x2: l ? b.x : b.x + b.w, y2: b.y + b.h / 2 }; }\n")
     sb.append("  function bez(a, b, t) {\n")
     sb.append("    var x1, y1, x2, y2, m;\n")
+    sb.append("    if (spreadEdges()) { var vr = vRoute(a, b); if (vr) { return vPoint(vr, t); } }\n")
     sb.append("    if (isRole()) { x1 = a.x + a.w / 2; y1 = a.y + a.h; x2 = b.x + b.w / 2; y2 = b.y; m = (y1 + y2) / 2;\n")
     sb.append("      var u4 = 1 - t;\n")
     sb.append("      return { x: u4*u4*u4*x1 + 3*u4*u4*t*x1 + 3*u4*t*t*x2 + t*t*t*x2, y: u4*u4*u4*y1 + 3*u4*u4*t*m + 3*u4*t*t*m + t*t*t*y2 }; }\n")
@@ -460,7 +555,7 @@ func renderJs(en: Bool): String {
     // 取景留白：独立版四周 60（顶 90）；嵌入时宿主的页面已经留了白，这里只留一点呼吸——
     // 多留的每一像素都是画布缩小、卡片上的字变小。
     sb.append("  function bounds() { var d = cur(); var b = { x0: 1e9, y0: 1e9, x1: -1e9, y1: -1e9 }; d.nodes.forEach(function (m) { if (m.x < b.x0) b.x0 = m.x; if (m.y < b.y0) b.y0 = m.y; if (m.x + m.w > b.x1) b.x1 = m.x + m.w; if (m.y + m.h > b.y1) b.y1 = m.y + m.h; }); if (isArch() && DATA.lanes) { DATA.lanes.forEach(function (L) { if (L.x < b.x0) b.x0 = L.x; if (L.y < b.y0) b.y0 = L.y; if (L.x + L.w > b.x1) b.x1 = L.x + L.w; if (L.y + L.h > b.y1) b.y1 = L.y + L.h; }); } if (isRole() && DATA.roleLanes) { DATA.roleLanes.forEach(function (L) { if (L.x < b.x0) b.x0 = L.x; if (L.y < b.y0) b.y0 = L.y; if (L.x + L.w > b.x1) b.x1 = L.x + L.w; if (L.y + L.h > b.y1) b.y1 = L.y + L.h; }); }  var pd = EMB_ON ? 12 : 60, ptop = EMB_ON ? 12 : 90; b.x0 -= pd; b.y0 -= ptop; b.x1 += pd; b.y1 += pd; return b; }\n")
-    sb.append("  function fit() { if (EMB_ON && isArch()) { embReflow(embLaneCols()); } var b = bounds(); var pl = EMB_ON ? 16 : 0, pt = embTop(), pr = EMB_ON ? 16 : 0, pb = EMB_ON ? embFoot() + 12 : 0; var aw = innerWidth - pl - pr, ah = innerHeight - pt - pb; var kx = aw / (b.x1 - b.x0); var ky = ah / (b.y1 - b.y0); var target = Math.min(kx, ky, 1.35); if (target < 0.18) target = 0.18; view.k = target; view.x = pl + (aw - (b.x0 + b.x1) * view.k) / 2; view.y = pt + (ah - (b.y0 + b.y1) * view.k) / 2; viewFit = true; }\n")
+    sb.append("  function fit() { if (EMB_ON && (isArch() || isRole())) { embReflow(embLaneCols()); } var b = bounds(); var pl = EMB_ON ? 16 : 0, pt = embTop(), pr = EMB_ON ? 16 : 0, pb = EMB_ON ? embFoot() + 12 : 0; var aw = innerWidth - pl - pr, ah = innerHeight - pt - pb; var kx = aw / (b.x1 - b.x0); var ky = ah / (b.y1 - b.y0); var target = Math.min(kx, ky, 1.35); if (target < 0.18) target = 0.18; view.k = target; view.x = pl + (aw - (b.x0 + b.x1) * view.k) / 2; view.y = pt + (ah - (b.y0 + b.y1) * view.k) / 2; viewFit = true; }\n")
     sb.append("  function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }\n")
     sb.append("  function nodeColor(m) { if (isRole()) return roleColor(m.role); return isArch() ? P().cols[m.layer] : (m.external ? P().langs.module : langColor(m.lang)); }\n")
     // 面包屑
@@ -486,7 +581,7 @@ func renderJs(en: Bool): String {
     sb.append("      var gx = view.x % step; while (gx < 0) gx += step; for (var x = gx; x < innerWidth; x += step) { ctx.moveTo(x, 0); ctx.lineTo(x, innerHeight); }\n")
     sb.append("      var gy = view.y % step; while (gy < 0) gy += step; for (var y = gy; y < innerHeight; y += step) { ctx.moveTo(0, y); ctx.lineTo(innerWidth, y); }\n")
     sb.append("      ctx.stroke(); ctx.globalAlpha = 1; }\n")
-    sb.append("    var d = cur();\n")
+    sb.append("    var d = cur(); if (spreadEdges()) { EMB_ROWS = embRows(); }\n")
     // 分层泳道（仅架构级）：实色淡底（按层配色低透明度）+ 左端层标签。
     // 几何来自 DATA.lanes（引擎算好的泳道矩形，archLaneRects 唯一来源）——
     // 不从模块坐标反推，反推就是驱动里的第二份布局。
@@ -526,8 +621,9 @@ func renderJs(en: Bool): String {
     // hover/选中高亮邻接边，其余压暗——邻接判据 sel 与 hover 同权
     sb.append("      var adj = (sel === a.id || sel === b.id || hover === a.id || hover === b.id);\n")
     sb.append("      var hot = (sel || hover) && adj; var dim = (sel || hover) && !adj;\n")
-    sb.append("      var x1, y1, x2, y2;\n")
-    sb.append("      if (isRole()) {\n")
+    sb.append("      var x1, y1, x2, y2, RT = null;\n")
+    sb.append("      if (spreadEdges() && (RT = vRoute(a, b))) { x1 = w2sx(RT.segs[0].x1); y1 = w2sy(RT.segs[0].y1); x2 = w2sx(RT.segs[RT.segs.length - 1].x2); y2 = w2sy(RT.segs[RT.segs.length - 1].y2); }\n")
+    sb.append("      else if (isRole()) {\n")
     sb.append("        // 同列布局下所有边共享一条垂直走廊——锚点按端点对散布在卡宽 60% 内\n")
     sb.append("        // （确定性哈希，零随机），多条依赖才分得开。\n")
     sb.append("        var sp1 = (((parseInt(e.from, 10) || 0) * 7 + (parseInt(e.to, 10) || 0) * 13) % 100) / 100 - 0.5;\n")
@@ -546,15 +642,17 @@ func renderJs(en: Bool): String {
     // 违规边保持红虚线（入场生长动画只给实线边——原实现生长 dash 会把
     // [7,5] 覆盖掉，动画结束后违规边悄悄变成实线，红色虚线名存实亡）
     sb.append("      if (e.viol) { ctx.lineDashOffset = 0; }\n")
-    sb.append("      else { var approx = (Math.abs(x2 - x1) + Math.abs(y2 - y1)) * 1.25 * ap; ctx.setLineDash([Math.max(approx, 1)]); ctx.lineDashOffset = Math.max(approx, 1) * (1 - ap); }\n")
-    sb.append("      if (isRole()) { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.bezierCurveTo(x1, my2, x2, my2, x2, y2); }\n")
+    sb.append("      else { var approx = (RT ? RT.len * view.k : Math.abs(x2 - x1) + Math.abs(y2 - y1)) * 1.25 * ap; ctx.setLineDash([Math.max(approx, 1)]); ctx.lineDashOffset = Math.max(approx, 1) * (1 - ap); }\n")
+    sb.append("      if (RT) { ctx.beginPath(); RT.segs.forEach(function (g) { var gm = w2sy((g.y1 + g.y2) / 2); ctx.moveTo(w2sx(g.x1), w2sy(g.y1)); ctx.bezierCurveTo(w2sx(g.x1), gm, w2sx(g.x2), gm, w2sx(g.x2), w2sy(g.y2)); }); }\n")
+    sb.append("      else if (isRole()) { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.bezierCurveTo(x1, my2, x2, my2, x2, y2); }\n")
     sb.append("      else { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.bezierCurveTo(mx, y1, mx, y2, x2, y2); }\n")
     sb.append("      ctx.stroke(); ctx.setLineDash([]);\n")
-    sb.append("      var ang = isRole() ? Math.atan2(y2 - my2, 0.001) : Math.atan2(y2 - my2, x2 - mx);\n")
+    sb.append("      var ang = (isRole() || RT) ? Math.atan2(y2 - my2, 0.001) : Math.atan2(y2 - my2, x2 - mx);\n")
     sb.append("      ctx.globalAlpha = (dim ? 0.05 : (hot ? 0.95 : 0.6)) * ap; ctx.fillStyle = p.arrow;\n")
     sb.append("      ctx.beginPath(); ctx.moveTo(x2, y2); ctx.lineTo(x2 - 9 * Math.cos(ang - 0.42), y2 - 9 * Math.sin(ang - 0.42)); ctx.lineTo(x2 - 9 * Math.cos(ang + 0.42), y2 - 9 * Math.sin(ang + 0.42)); ctx.closePath(); ctx.fill();\n")
     // 边中点标签：weight ≥ 30 常驻「×N」小字，hover/选中时全部边都显示；
     // 违规边中点上方常驻「违规」红字小标
+    sb.append("      if (RT) { var lp = vPoint(RT, RT.lt); mx = w2sx(lp.x); my2 = w2sy(lp.y); }\n")
     sb.append("      if (!dim) { ctx.font = '9px -apple-system, sans-serif'; ctx.textAlign = 'center';\n")
     sb.append("        ctx.globalAlpha = (hot ? 0.95 : 0.78) * ap;\n")
     sb.append("        if (e.viol) { ctx.fillStyle = '#f87171'; ctx.fillText(VIOLW, mx, my2 - 6); }\n")

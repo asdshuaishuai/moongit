@@ -1776,8 +1776,15 @@ func archCurrentCount(p: ProjectEntry): Int64 {
 /// arch.json 的数据形状也是新鲜度的一部分（与索引的 payload_shape 同一纪律：探针一致 ≠ 形状一致）：
 /// 带 `geo`（槽位几何）的才是当前形状；更早的构建写出的 arch.json 没有它，
 /// 页面嵌入时的泳道折行无从算起——探针一致也按过期重建，自愈一次就换上新形状。
+/// 2026-11-27 铺开批起，`geo` 还要带嵌入铺开的四个间距键（embSlotW / embPadV / embLaneGap / embSpread）：
+/// 没有它们的是铺开批之前的引擎写的，页面里的架构图铺不开（驱动回落到定稿间距 = 定宽泳道），
+/// 而引擎升级不会让已登记项目的 arch.json 过期——不在这里认形状，升级后要等到下一次深更新才见效。
 func archPayloadShapeCurrent(j: JsonValue): Bool {
-    return Json.has(j, "geo")
+    match (Json.get(j, "geo")) {
+        case Some(g) =>
+            return Json.has(g, "embSlotW") && Json.has(g, "embPadV") && Json.has(g, "embLaneGap") && Json.has(g, "embSpread")
+        case None => return false
+    }
 }
 
 /// 探针新鲜度判定：arch.json 里有**可解析**的探针且与 sourceProbeNow 一致、数据形状也是当前的，

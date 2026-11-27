@@ -36,6 +36,16 @@ public let ARCH_LANE_LABEL_W: Float64 = 150.0  // 泳道左端层标签区
 public let ARCH_LANE_PAD_V: Float64 = 30.0     // 泳道上下留白（卡片上下各 30）
 public let ARCH_LANE_GAP: Float64 = 16.0       // 相邻泳道间距
 public let ARCH_MARGIN: Float64 = 36.0         // 画布外边距
+// 嵌入铺开（客户端页面里的架构图）专用的间距。定稿布局是给独立页面的：画布不受限，
+// 纵向留白宽一点无所谓。页面里的画布又宽又矮，纵向是瓶颈——卡片上下留白收到 20、
+// 泳道之间放宽到 28（层与层之间给连线留水道），泳道横向铺到可用宽度。
+// 卡槽名义宽 400：一行两张卡时正中还要让出一张卡的宽度给跨层连线走（见 archhtml.cj embPlaceRow），
+// 名义宽不够，铺到最小宽度时两张卡就贴着泳道两边。铺开时最宽到名义宽的 1.6 倍。
+// 驱动只认 DATA.geo 里的对应键（archJson 出口），不在这里再抄一份。
+public let ARCH_EMB_SLOT_W: Float64 = 400.0      // 嵌入铺开：卡槽名义宽（决定每行放得下几列、泳道最窄多少）
+public let ARCH_EMB_PAD_V: Float64 = 20.0        // 嵌入铺开：泳道上下留白
+public let ARCH_EMB_LANE_GAP: Float64 = 28.0     // 嵌入铺开：相邻泳道间距
+public let ARCH_EMB_SPREAD: Float64 = 1.6        // 嵌入铺开：卡槽最宽到名义宽的几倍
 
 public func layerName(layer: Int64, en: Bool): String {
     if (en) {
@@ -1055,7 +1065,8 @@ public func layoutRoles(roles: ArrayList<RoleGroup>): Unit {
     }
 }
 
-/// 职责泳道矩形（archJson 的 roleLanes 唯一来源；与 archLaneRects 同式）。
+/// 职责泳道矩形（archJson 的 roleLanes 唯一来源）。行号与 layoutRoles 同式：按 roleLaneOrder 自上而下，
+/// 只有带卡片的角色占一行（层泳道不同：五层各占固定的一行，空层不留框）。
 public func archRoleLaneRects(data: ArchData, en: Bool): ArrayList<JsonValue> {
     let order = roleLaneOrder()
     var maxSlots: Int64 = 1
@@ -1086,8 +1097,11 @@ public func archRoleLaneRects(data: ArchData, en: Bool): ArrayList<JsonValue> {
             Json.set(o, "h", Json.of(laneH))
             Json.set(o, "groups", Json.of(count))
             out.add(o)
+            // 只有非空角色占行——与 layoutRoles 同式。原先这一句在 if 外面，空角色也占一行：
+            // 角色不全的仓库里泳道框与卡片错位（引擎仓自己：框在第 0/3/4/7 行，卡在第 0–3 行），
+            // 编译期发现不了，画出来才是「标签压在别的卡片上」
+            row += 1
         }
-        row += 1
     }
     return out
 }
@@ -1226,6 +1240,11 @@ public func archJson(data: ArchData, en: Bool): JsonValue {
     Json.set(geo, "padV", Json.of(ARCH_LANE_PAD_V))
     Json.set(geo, "laneGap", Json.of(ARCH_LANE_GAP))
     Json.set(geo, "margin", Json.of(ARCH_MARGIN))
+    // 嵌入铺开的间距（恒发）：驱动把泳道横向铺开时只认这一组，旧产物没带这些键时回落到上面的定稿值
+    Json.set(geo, "embSlotW", Json.of(ARCH_EMB_SLOT_W))
+    Json.set(geo, "embPadV", Json.of(ARCH_EMB_PAD_V))
+    Json.set(geo, "embLaneGap", Json.of(ARCH_EMB_LANE_GAP))
+    Json.set(geo, "embSpread", Json.of(ARCH_EMB_SPREAD))
     Json.set(o, "geo", geo)
     // ── 职责视图（技术深度）：角色卡 / 角色泳道 / 角色边 / 职责违规数。
     // 恒发（空仓库给空数组）——驱动按数据画，缺席键会被读成旧版本。

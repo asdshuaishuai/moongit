@@ -3322,6 +3322,54 @@ public func start(t: Text): Int64 {
     return p
 }
 
+/// 升级自愈：铺开批之前落盘的 arch.json（geo 里没有嵌入间距四个键）探针虽然一致，也按过期重建。
+/// 不然引擎升级后已登记的项目一直复用旧载荷——模板升了、页面重绘了，图却还是定宽的一列
+/// （实测抓到：隔离库里登记过的仓库升级后 render arch 仍读旧载荷，geo 没有 emb* 键）。
+@Test
+func testArchRenderRebuildsPayloadLackingEmbedGeometry(): Unit {
+    let base = "/tmp/deepgit-archshape-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    try {
+        let p = archCliFixtureProject(base, "arch-shape-demo")
+        let ctx = CliContext(ArrayList<String>(["arch"]))
+        let rctx = CliContext(ArrayList<String>(["render"]))
+        let store = deepgitPath(["store", p.id])
+        let jsonPath = store + "/arch.json"
+        let htmlPath = store + "/render/arch.html"
+        @Assert(cmdArch(ArrayList<String>(["gen", "arch-shape-demo"]), ctx) == 0)
+        // 把载荷改回铺开批之前的形状：geo 去掉四个 emb* 键，探针与其余内容原样
+        let pl = Json.parse(readFileTextOr(jsonPath, "")).getOrThrow()
+        let geo = Json.getOr(pl, "geo")
+        for (k in ["embSlotW", "embPadV", "embLaneGap", "embSpread"]) {
+            @Assert(Json.has(geo, k))          // 前提：新引擎写的载荷带嵌入间距
+            Json.remove(geo, k)
+        }
+        writeFileAtomic(jsonPath, Json.pretty(pl))
+        @Assert(Json.has(pl, "geo"))           // 旧形状：有 geo、没有嵌入间距
+        @Assert(!archPayloadShapeCurrent(pl))
+        @Assert(Json.has(Json.parse(readFileTextOr(jsonPath, "")).getOrThrow(), "probe"))   // 落盘的仍是合法 JSON，探针原样
+        @Assert(cmdRender(ArrayList<String>(["arch", "arch-shape-demo"]), rctx) == 0)
+        // 自愈重建：载荷换回当前形状，版本 +1；产物里带上嵌入间距
+        let pl2 = Json.parse(readFileTextOr(jsonPath, "")).getOrThrow()
+        @Assert(archPayloadShapeCurrent(pl2))
+        @Assert(Json.intAt(pl2, "updateCount", -1) == 1)
+        @Assert(Json.numAt(Json.getOr(pl2, "geo"), "embSlotW", -1.0) == ARCH_EMB_SLOT_W)
+        @Assert(Json.numAt(Json.getOr(pl2, "geo"), "embSpread", -1.0) == ARCH_EMB_SPREAD)
+        let html = readFileTextOr(htmlPath, "")
+        @Assert(html.contains("\"embSlotW\"") && html.contains("\"embSpread\""))
+        // 形状已是当前：再渲染不再重建（版本不动）
+        @Assert(cmdRender(ArrayList<String>(["arch", "arch-shape-demo"]), rctx) == 0)
+        @Assert(Json.intAt(Json.parse(readFileTextOr(jsonPath, "")).getOrThrow(), "updateCount", -1) == 1)
+    } finally {
+        exitTestHome()
+        removePathIfExists(base + "/repo")
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
 /// arch gen / update / query / render 全链路：
 /// gen 首版 = 0（meta 包装 + 布局坐标落盘）；update 新鲜跳过（逐字节未变）；
 /// --force 重建 +1；render arch 首绘内嵌复用标记 → 改脏复用（不重写）→

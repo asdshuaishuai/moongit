@@ -1023,6 +1023,47 @@ func testArchJsonCarriesRoleView(): Unit {
     }
 }
 
+/// 职责泳道框与角色卡片对得上：行号只数带卡片的角色（与 layoutRoles 同式），
+/// 每张卡片落在自己角色的泳道框里。原先 archRoleLaneRects 给空角色也留一行——角色不全的仓库里
+/// 框与卡片错位（引擎仓自己：框在第 0/3/4/7 行，卡在第 0–3 行），标签压在别的卡片上。
+/// 夹具故意让入口与其他之间空着五个角色：行号按全角色数的话两张卡与两个框立刻对不上。
+@Test
+func testRoleLanesAlignWithRoleCards(): Unit {
+    let entry = RoleGroup(ROLE_ENTRY)
+    entry.files = 2
+    let other = RoleGroup(ROLE_OTHER)
+    other.files = 3
+    let roles = ArrayList<RoleGroup>()
+    roles.add(entry)
+    roles.add(other)
+    let data = ArchData(ArrayList<ArchModule>(), ArrayList<ArchEdge>(), 0, 0, 0, false,
+        ArrayList<DrillGraph>(), 0, 0, ArrayList<(String, String)>(), ArrayList<String>(),
+        roles, ArrayList<ArchEdge>(), 0)
+    layoutRoles(roles)
+    let lanes = archRoleLaneRects(data, false)
+    @Assert(Int64(lanes.size) == 2)                       // 空角色不出框
+    // 两行紧挨着：第 0 行与第 1 行（原先第 0 行与第 6 行）
+    @Assert(Json.numAt(lanes[0], "y", -1.0) == ARCH_MARGIN)
+    @Assert(Json.numAt(lanes[1], "y", -1.0) == ARCH_MARGIN + (ARCH_CARD_H + ARCH_LANE_PAD_V * 2.0) + ARCH_LANE_GAP)
+    @Assert(Json.intAt(lanes[0], "role", -1) == ROLE_ENTRY)
+    @Assert(Json.intAt(lanes[1], "role", -1) == ROLE_OTHER)
+    // 每张卡片落在自己角色的框里：上留白 = ARCH_LANE_PAD_V，且不出框
+    for (g in roles) {
+        var found = false
+        for (lane in lanes) {
+            if (Json.intAt(lane, "role", -1) == g.role) {
+                found = true
+                let ly = Json.numAt(lane, "y", -1.0)
+                @Assert(ly + ARCH_LANE_PAD_V == g.y)
+                @Assert(ly <= g.y && g.y + g.h <= ly + Json.numAt(lane, "h", 0.0))
+            }
+        }
+        @Assert(found)
+    }
+    // 前提：两张卡确实不在同一行（同一行的话上面的「不出框」空转）
+    @Assert(other.y - entry.y > ARCH_CARD_H)
+}
+
 /// 驱动消费半边：交互 HTML 必须真的读职责数据——视图切换 chips、
 /// 角色泳道（roleLanes）、角色边、边信号规范化（violation → viol）。
 /// 键在数据里、页面不读 = 数据显示没算（不变量 17 的教训）。
