@@ -64,7 +64,8 @@ func testIndexHtmlEmbedModeHooks(): Unit {
         @Assert(html.contains("var pad = EMB_ON ? 24 : 36;"))
         @Assert(html.contains("if (lg0 && ft0) { ft0.appendChild(lg0); ft0.title = lg0.textContent; }"))
         // 底条横贯整宽：画布 / 侧栏 / 底条直接排进 .main 的网格，操作按钮挪到同一条的右端
-        @Assert(html.contains(".main{grid-area:2/1/3/3;display:grid;grid-template-columns:minmax(0,1fr) 340px;grid-template-rows:minmax(0,1fr) var(--e-foot-h,32px)}"))
+        // 侧栏宽度跟视口走（--e-side-w：340 / 304 / 272，860 以下成抽屉），不再是定宽 340——见 testGraphEmbedPanelIsFluidAndCollapsible
+        @Assert(html.contains(".main{grid-area:2/1/3/3;position:relative;display:grid;grid-template-columns:minmax(0,1fr) var(--e-side-w,340px);grid-template-rows:minmax(0,1fr) var(--e-foot-h,32px)}"))
         @Assert(html.contains(".graph-area{display:contents}"))
         @Assert(html.contains(".canvas-foot{grid-area:2/1/3/3;height:var(--e-foot-h,32px)"))
         @Assert(html.contains("if (gh0 && ft0) { ft0.appendChild(gh0); }"))

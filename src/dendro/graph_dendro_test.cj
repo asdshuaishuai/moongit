@@ -2799,3 +2799,56 @@ func __lintFindingJsonHasOneProducer(): Unit {
     @Assert(producers.size == 1)
     @Assert(producers[0] == "confidence.cj")
 }
+
+
+/// 图谱两页的嵌入布局（2026-11-27，用户：「右侧的 tab 太大占位，需要让整张图和窗口大小进行动态调整」）。
+/// 浏览器行为在仓颉测试里没有执行路径——按样式契约测试的先例，对**完整生成路径的产物**做结构断言：
+/// 每条断言对应一个真实截图里看到的毛病。
+@Test
+func testGraphEmbedPanelIsFluidAndCollapsible(): Unit {
+    let root = writeTree()
+    try {
+        let g = buildGraph(root)
+        let html = treeCanvasHtml(g, 8, false, analyzeConfidence(g, false))
+        // ① 报告面板的宽度跟视口走（原先定宽 340，再窄也占 280）：三档宽度 + 860 以下不占一列
+        @Assert(html.contains("grid-template-columns:minmax(0,1fr) var(--e-side-w,340px)"))
+        @Assert(html.contains("@media(max-width:1440px){html[data-embed=\"page\"]{--e-side-w:304px}"))
+        @Assert(html.contains("@media(max-width:1120px){html[data-embed=\"page\"]{--e-side-w:272px}"))
+        @Assert(!html.contains("grid-template-columns:minmax(0,1fr) 340px"))
+        @Assert(!html.contains("grid-template-columns:minmax(0,1fr) 280px"))
+        @Assert(!html.contains("minmax(0,1.3fr) minmax(0,0.9fr)"))   // 上下排：画布只剩两百来像素高
+        // ② 可收起：收起态画布占满、底条横贯；窄视口下面板是盖在画布上的抽屉
+        @Assert(html.contains("html[data-embed=\"page\"].side-off .sidebar{display:none}"))
+        @Assert(html.contains("html[data-embed=\"page\"].side-off .main{grid-template-columns:minmax(0,1fr)}"))
+        @Assert(html.contains(".sidebar{position:absolute;top:0;right:0;bottom:var(--e-foot-h,32px);width:min(320px,88vw)"))
+        // ③ 驱动：按视口定默认（窄 = 收起）、手动开合记进 localStorage、点节点即展开
+        @Assert(html.contains("function embSideDrawer() { return window.innerWidth < 861; }"))
+        @Assert(html.contains("embSetSide(embSideWanted ? embSideWanted === 'off' : embSideDrawer(), false)"))
+        @Assert(html.contains("localStorage.setItem(EMB_SIDE_KEY, embSideWanted)"))
+        @Assert(html.contains("if (EMB_ON && embSideOff()) { embSetSide(false, false); }"))
+        @Assert(html.contains("if (EMB_ON && embSideDrawer()) { embSetSide(true, false); }"))
+        // ④ 画布上的操作提示停几秒后淡出；tab 条放不下时横向滚动 + 右缘渐隐
+        @Assert(html.contains("html[data-embed=\"page\"] .canvas-msg{animation:embMsgFade .6s ease 7s forwards}"))
+        @Assert(html.contains("mask-image:linear-gradient(90deg,#000 calc(100% - 18px),transparent)"))
+        // ⑤ 读数与分数同一个口径：项目级疑点数取引擎的全量；截断的披露只用引擎带确切数字的那一句
+        @Assert(html.contains("if (typeof CONF.findingsTotal === 'number') { NODES.project.rollN = CONF.findingsTotal; }"))
+        @Assert(html.contains("if (typeof CONF.penaltyTotal === 'number') { totalPen = CONF.penaltyTotal; }"))
+        @Assert(html.contains("typeof CONF.findingsTotal !== 'number') { notes.push(T.capNote); }"))
+        // 部分文件降级时 astUsed 仍为 true：说明照常进披露（原先只在完全没语法树时才展示）
+        @Assert(html.contains("/降级|失败|剔除|丢弃|截断|degrad|failed|dropped|truncat/i.test(CONF.astNote)"))
+
+        // 架构图：卡内文字跟着卡片缩放；放不下就逐行让位；窄视口命令条收成一行
+        let arch = archCanvasHtml(buildArch(g), false)
+        @Assert(arch.contains("var ts = Math.max(0.72, Math.min(1.2, h / ch)); var tiny = h < 44;"))
+        @Assert(arch.contains("y + (tiny ? h / 2 + 4 : 22 * ts)"))
+        @Assert(arch.contains("if ((isArch() || isRole()) && !tiny) {"))
+        @Assert(arch.contains("if (isArch() && m.roleMix && h >= 60) {"))
+        // 泳道标签是文字：用宿主给的文字级颜色
+        @Assert(arch.contains("(p.textCols && p.textCols[L.layer]) ? p.textCols[L.layer] : p.cols[L.layer]"))
+        @Assert(arch.contains("@media(max-width:1180px){"))
+        @Assert(arch.contains("html[data-embed=\"page\"] #bar .sub{display:none}"))
+        @Assert(arch.contains("html[data-embed=\"page\"] #health{flex-wrap:nowrap;white-space:nowrap;overflow-x:auto"))
+    } finally {
+        removeTree(root)
+    }
+}

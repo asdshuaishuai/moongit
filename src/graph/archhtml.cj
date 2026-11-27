@@ -497,7 +497,8 @@ func renderJs(en: Bool): String {
     sb.append("      ctx.globalAlpha = ap * 0.9; ctx.fillStyle = p.fills[L.layer];\n")
     sb.append("      roundRect(lx, ly, lw, lh, 14); ctx.fill();\n")
     sb.append("      ctx.strokeStyle = p.border; ctx.lineWidth = 1; ctx.stroke();\n")
-    sb.append("      ctx.globalAlpha = ap; ctx.fillStyle = p.cols[L.layer];\n")
+    sb.append("      // 泳道标签是文字：宿主给了文字级颜色（textCols）就用它——cols 是填充色，浅色皮肤下黄色 / 浅绿压在浅色泳道上读不出来\n")
+    sb.append("      ctx.globalAlpha = ap; ctx.fillStyle = (p.textCols && p.textCols[L.layer]) ? p.textCols[L.layer] : p.cols[L.layer];\n")
     sb.append("      ctx.font = '700 12px -apple-system, sans-serif'; ctx.textAlign = 'left';\n")
     sb.append("      ctx.fillText('L' + L.layer + ' ' + L.name, lx + 14, ly + lh / 2 - 6);\n")
     sb.append("      ctx.fillStyle = p.muted; ctx.font = '11px -apple-system, sans-serif';\n")
@@ -588,38 +589,47 @@ func renderJs(en: Bool): String {
     sb.append("      ctx.lineWidth = isSel ? 2.4 : 1.2; ctx.strokeStyle = c; ctx.stroke(); ctx.setLineDash([]); ctx.shadowBlur = 0;\n")
     sb.append("      ctx.fillStyle = c; ctx.globalAlpha = m._a * (dim ? 0.28 : 0.95); ctx.fillRect(x, y + 9, 3.2, h - 18);\n")
     sb.append("      ctx.globalAlpha = m._a * (dim ? 0.28 : 1);\n")
-    sb.append("      ctx.fillStyle = p.text; ctx.font = (isSel || isHot ? '700 ' : '600 ') + Math.max(11, Math.min(14, 14 * view.k)) + 'px -apple-system, sans-serif'; ctx.textAlign = 'left';\n")
+    sb.append("      // 卡内文字按卡片的实际缩放排（ts）：原先字号与行位是定死的像素（22 / 39 / 59），视图缩小后\n")
+    sb.append("      // 三行字挤进 50px 的卡片、副行还被 maxWidth 横向压成一条线（实拍：字叠字、像被划掉）。\n")
+    sb.append("      // 卡片矮到 44px 以下只留模块名\n")
+    sb.append("      var ch = (DATA.geo && DATA.geo.cardH) || 74; var ts = Math.max(0.72, Math.min(1.2, h / ch)); var tiny = h < 44;\n")
+    sb.append("      ctx.fillStyle = p.text; ctx.font = (isSel || isHot ? '700 ' : '600 ') + Math.max(10.5, Math.min(14, 14 * ts)) + 'px -apple-system, sans-serif'; ctx.textAlign = 'left';\n")
     // 架构级卡片三行：模块名 / F文件·S符号·L行 / 入出徽标+不稳定度条；
     // 下钻级标签追加「·行数」（点进子图一眼看到每个文件的体量）
     sb.append("      var label = isRole() ? (RNAMES[String(m.role)] || m.role) : (isArch() ? m.id : (m.external ? '@ ' + m.label : m.label + ' · ' + m.lines));\n")
-    sb.append("      ctx.fillText(label, x + 12, y + 22, w - 22);\n")
-    sb.append("      ctx.fillStyle = p.muted; ctx.font = '10px -apple-system, sans-serif';\n")
+    sb.append("      ctx.fillText(label, x + 12, y + (tiny ? h / 2 + 4 : 22 * ts), w - 22);\n")
+    sb.append("      ctx.fillStyle = p.muted; ctx.font = Math.max(9, 10 * ts) + 'px -apple-system, sans-serif';\n")
     sb.append("      var sub;\n")
     sb.append("      if (isArch() || isRole()) sub = m.files + ' ' + FILES + ' · ' + m.symbols + ' ' + SYMS + ' · ' + m.lines + ' ' + LINES;\n")
     sb.append("      else if (m.external) sub = MODULEW;\n")
     sb.append("      else sub = m.lang + ' · ' + m.symbols + ' ' + SYMS + ' · ' + m.lines + ' ' + LINES;\n")
-    sb.append("      ctx.fillText(sub, x + 12, y + ((isArch() || isRole()) ? 39 : h - 12), w - 22);\n")
+    sb.append("      // 副行放不下就逐段让：先去掉行数、再去掉符号数（maxWidth 是横向压缩——宁可少一段，不把字挤成一条线）\n")
+    sb.append("      var maxW = w - 22;\n")
+    sb.append("      if (ctx.measureText(sub).width > maxW && sub.lastIndexOf(' · ') > 0) { sub = sub.slice(0, sub.lastIndexOf(' · ')); }\n")
+    sb.append("      if (ctx.measureText(sub).width > maxW && sub.lastIndexOf(' · ') > 0) { sub = sub.slice(0, sub.lastIndexOf(' · ')); }\n")
+    sb.append("      if (!tiny) { ctx.fillText(sub, x + 12, y + ((isArch() || isRole()) ? 39 * ts : h - 12), maxW); }\n")
     // 入 N / 出 M 徽标 + 不稳定度小条（60px，按 instability% 填充；三档色：
     // >66 红 / 33..66 黄 / <33 绿——与场景出口的 token 阈值同式，只此一处语义）
-    sb.append("      if (isArch() || isRole()) {\n")
-    sb.append("        ctx.fillText(INW + ' ' + (m.fanIn || 0) + ' / ' + OUTW + ' ' + (m.fanOut || 0), x + 12, y + 59);\n")
+    sb.append("      if ((isArch() || isRole()) && !tiny) {\n")
+    sb.append("        ctx.fillText(INW + ' ' + (m.fanIn || 0) + ' / ' + OUTW + ' ' + (m.fanOut || 0), x + 12, y + 59 * ts);\n")
     sb.append("        var inst = m.instability || 0;\n")
-    sb.append("        var bw = 60; var bx = x + 96; var by = y + 52;\n")
+    sb.append("        var bw = 60 * ts; var bx = x + 96 * ts; var by = y + 52 * ts;\n")
     sb.append("        var savedA = ctx.globalAlpha;\n")
     sb.append("        ctx.globalAlpha = savedA * 0.35; ctx.fillStyle = p.arrow; ctx.fillRect(bx, by, bw, 5);\n")
     sb.append("        ctx.globalAlpha = savedA;\n")
     sb.append("        var ic = inst > 66 ? '#f87171' : (inst >= 33 ? '#fbbf24' : '#34d399');\n")
     sb.append("        ctx.fillStyle = ic; ctx.fillRect(bx, by, bw * inst / 100, 5);\n")
-    sb.append("        ctx.font = '9px -apple-system, sans-serif'; ctx.fillText(inst + '%', bx + bw + 6, by + 7);\n")
+    sb.append("        ctx.font = Math.max(8, 9 * ts) + 'px -apple-system, sans-serif'; ctx.fillText(inst + '%', bx + bw + 6, by + 7);\n")
     sb.append("      }\n")
     // 职责构成条（架构级模块卡独有）：roleMix 7 桶按占比水平铺一条 4px
     // 迷你堆叠条——模块卡从「有多少文件」升级为「是一些什么文件」。
-    sb.append("      if (isArch() && m.roleMix) { var mt = 0; var mi;\n")
+    sb.append("      // 职责构成条贴着卡片下沿（原先 y + h − 14：卡片矮时正好压在副行上）；卡片放不下三行时整条不画\n")
+    sb.append("      if (isArch() && m.roleMix && h >= 60) { var mt = 0; var mi;\n")
     sb.append("        for (mi = 0; mi < m.roleMix.length; mi++) mt += m.roleMix[mi];\n")
     sb.append("        if (mt > 0) { var mo = 0; var mw = w - 24;\n")
     sb.append("          for (mi = 0; mi < m.roleMix.length; mi++) { var mf = m.roleMix[mi] / mt; if (mf <= 0) continue;\n")
     sb.append("            ctx.fillStyle = roleColor(mi); ctx.globalAlpha = m._a * (dim ? 0.28 : 0.8);\n")
-    sb.append("            ctx.fillRect(x + 12 + mo * mw, y + h - 14, Math.max(1, mf * mw - 1), 4); mo += mf; }\n")
+    sb.append("            ctx.fillRect(x + 12 + mo * mw, y + h - 9, Math.max(1, mf * mw - 1), 3); mo += mf; }\n")
     sb.append("          ctx.globalAlpha = m._a * (dim ? 0.28 : 1); } }\n")
     // 语言色点（文件级）
     sb.append("      if (!isArch() && !m.external) { ctx.fillStyle = langColor(m.lang); ctx.beginPath(); ctx.arc(x + w - 14, y + 15, 3.4, 0, 6.2832); ctx.fill(); }\n")
@@ -897,6 +907,17 @@ html[data-embed="page"] #crumbs a{color:var(--accent)}
    窄了就截断（全文在 title 里），操作提示让位；高度由宿主的 --e-foot-h 定，取景按它留白 */
 html[data-embed="page"] #legend{left:0;right:auto;bottom:0;height:var(--e-foot-h,32px);max-width:calc(100vw - 270px);font-size:12px;line-height:var(--e-foot-h,32px);color:var(--muted);background:none;border:0;border-top:1px solid var(--border);border-radius:0;backdrop-filter:none;padding:0 12px 0 20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 html[data-embed="page"] #hint{right:0;bottom:0;left:auto;transform:none;height:var(--e-foot-h,32px);max-width:45vw;font-size:12px;line-height:var(--e-foot-h,32px);text-align:right;color:var(--muted);background:none;border:0;border-top:1px solid var(--border);border-radius:0;backdrop-filter:none;padding:0 20px 0 12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 窄视口（≈ 客户端窗口 1410px 以下）：命令条收成一行——规模注记让位（它在图谱页的命令条上）、
+   搜索框收成一个图标、聚焦时再展开；治理信号一行不折行（可横向滚动）。
+   原先三样加起来折成三行，≈150px，画布只剩两百多像素高（实拍 960×640） */
+@media(max-width:1180px){
+html[data-embed="page"] #bar .sub{display:none}
+html[data-embed="page"] #bar input{width:28px;padding:0;text-indent:0;transition:width .18s ease;background:transparent}
+html[data-embed="page"] #bar input:focus,html[data-embed="page"] #bar input:not(:placeholder-shown){width:150px;padding:0 10px}
+html[data-embed="page"] #bar .chip{padding:0 8px}
+html[data-embed="page"] #health{flex-wrap:nowrap;white-space:nowrap;overflow-x:auto;scrollbar-width:none}
+html[data-embed="page"] #health::-webkit-scrollbar{display:none}
+}
 @media(max-width:640px){html[data-embed="page"] #hint{display:none}html[data-embed="page"] #legend{max-width:100vw}}
 html[data-embed="page"] #truncbar{top:calc(var(--e-bar-h,44px) + 8px);right:20px}
 html[data-embed="page"] #panel{top:calc(var(--e-bar-h,44px) + 12px);right:20px;width:300px;max-height:calc(100vh - 72px);background:var(--e-card,#292929);border:1px solid var(--border);border-radius:var(--e-r-card,8px);backdrop-filter:none;padding:14px 16px;box-shadow:0 8px 24px rgba(0,0,0,.4)}

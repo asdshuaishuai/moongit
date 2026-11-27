@@ -13,7 +13,9 @@ import cambium.util.*
 /// 「输入没变」一直复用，用户永远看不到新外壳（v0.3.0 加嵌入模式时实测抓到）。
 /// 3 = 嵌入尺寸融合：泳道折行、按区域选列、色带包住卡片、图例进底条、尺寸契约变量。
 /// 4 = 品牌升级：嵌入声明改读 window.CAMBIUM_EMBED（旧名 MOONGIT_EMBED 兜底）、驱动入口全局改 CambiumCodeGraph。
-public let RENDER_TEMPLATE: Int64 = 4
+/// 5 = 报告面板跟视口走且可收起（窄视口成抽屉）、项目级疑点数取引擎全量、架构图卡内文字随卡片缩放、
+///     泳道标签用文字级颜色、窄视口命令条收成一行（2026-11-27）。
+public let RENDER_TEMPLATE: Int64 = 5
 
 /// 产物里自报模板版本的注释行（两份产物同一格式）。
 public func renderTemplateTag(): String {

@@ -1036,11 +1036,17 @@ FILES.forEach(function (fe) {
 var totalPen = 0; var totalFindings = 0;
 FILES.forEach(function (fe) { totalPen += (HEAT[fe.path] || 0); });
 (CONF.findings || []).forEach(function () { totalFindings += 1; });
+// 引擎 2026-11-27 起给全量（findingsTotal / penaltyTotal）：findings 只是列出的那一部分（≤ 400 条），
+// 分数与罚分按全部检出的条目算——项目节点的读数要和分数同一个口径
+if (typeof CONF.findingsTotal === 'number') { totalFindings = CONF.findingsTotal; }
+if (typeof CONF.penaltyTotal === 'number') { totalPen = CONF.penaltyTotal; }
 NODES.project = { id: 'project', name: D.project || 'project', type: 'project', parent: null,
   confidence: CONF.score, penalty: totalPen, findings: totalFindings, fileFindings: [],
   children: GM.map(function (m) { return 'm:' + m.id; }), cov: (totalFindings ? 55 : 100) };
 // roll-up 容器疑点计数（徽标/侧栏同口径：project 递归整棵树）
 rollUp(NODES.project);
+// 项目级的疑点数以引擎的全量为准：子树逐个文件数上来，只数得到列出的那 ≤ 400 条
+if (typeof CONF.findingsTotal === 'number') { NODES.project.rollN = CONF.findingsTotal; }
 // 身份色相：每个节点一个确定性格位色（边颜色 = 来源节点色相，卡的左色条
 // 同色）——「谁和谁有关系」靠颜色直接读，不用逐条追线
 var HUE_OF = {};
@@ -1181,6 +1187,46 @@ if (EMB_ON) {
   // 操作按钮（关系路径 / 适应画布 / 呼吸）挪到同一条的右端：底条因此横贯整宽
   var gh0 = document.querySelector('.graph-head');
   if (gh0 && ft0) { ft0.appendChild(gh0); }
+}
+// ── 报告面板（右侧带 tab 的那一栏）可收起 ──
+// 用户 2026-11-27：「右侧的 tab 太大占位，需要让整张图和窗口大小进行动态调整」。
+// 原先它是定宽 340px 的一列，再窄也占 280px：默认窗口下画布只剩三分之二，最小窗口下只剩一半。
+// 现在：宽度跟视口走（见嵌入样式 --e-side-w），随时可收起让画布占满；
+// 视口窄于 860px（≈ 客户端窗口 1090px 以下）时它不再占一列，默认收起、点节点或按钮时从右边滑出盖在画布上。
+// 记不记状态由调用方定：用户手动开合记进 localStorage；按视口自动切换的不记。
+var EMB_SIDE_KEY = 'cambium.embed.side';
+var embSideWanted = null;   // null = 用户没表过态，按视口定
+try { embSideWanted = localStorage.getItem(EMB_SIDE_KEY); } catch (e) {}
+var embSideIsOff = false;
+function embSideDrawer() { return window.innerWidth < 861; }
+function embSideOff() { return embSideIsOff; }
+function embSetSide(off, remember) {
+  embSideIsOff = off;
+  document.documentElement.classList.toggle('side-off', off);
+  if (remember) { embSideWanted = off ? 'off' : 'on'; try { localStorage.setItem(EMB_SIDE_KEY, embSideWanted); } catch (e) {} }
+}
+function embSideByViewport() { embSetSide(embSideWanted ? embSideWanted === 'off' : embSideDrawer(), false); }
+function embSideBtn(cls, title, path) {
+  var b = document.createElement('button'); b.type = 'button'; b.className = cls; b.title = title; b.setAttribute('aria-label', title);
+  b.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="' + path + '"/></svg>';
+  return b;
+}
+if (EMB_ON) {
+  var sh1 = document.querySelector('.side-head');
+  if (sh1) {
+    var cb1 = embSideBtn('side-toggle', en0() ? 'Hide report panel' : '收起报告面板', 'M6 3l5 5-5 5');
+    cb1.addEventListener('click', function () { embSetSide(true, true); });
+    var cs1 = document.getElementById('clearSelection');
+    sh1.insertBefore(cb1, cs1 || null);
+  }
+  var tb1 = document.querySelector('.toolbar');
+  if (tb1) {
+    var ob1 = embSideBtn('side-toggle side-open', en0() ? 'Show report panel' : '展开报告面板', 'M10 3L5 8l5 5');
+    ob1.addEventListener('click', function () { embSetSide(false, true); });
+    tb1.appendChild(ob1);
+  }
+  embSideByViewport();
+  window.addEventListener('resize', function () { if (!embSideWanted) { embSideByViewport(); } });
 }
 var animationTime = 0, lastAnimationFrame = 0, animationRequest = 0;
 var relationType = 'all', threshold = 0, pathMode = false;
@@ -2143,6 +2189,8 @@ function moveHover(p) {
 }
 function handleNodeClick(n) {
   selectedId = n.data.id;
+  // 报告面板收起时点节点 = 要看它的详情：展开（窄视口的抽屉同理）
+  if (EMB_ON && embSideOff()) { embSetSide(false, false); }
   renderSidebar();
   draw();
 }
@@ -2302,8 +2350,13 @@ function integrityNotes() {
   var notes = [];
   if (D.confMissing) { notes.push(T.confMissingNote || 'no confidence data'); }
   if (D.confStale) { notes.push(D.confStaleNote || T.confStaleNote || 'stale confidence snapshot'); }
-  if (!CONF.astUsed && CONF.astNote) { notes.push(CONF.astNote); }
-  if (CONF.cappedTotal || CONF.cappedKind) { notes.push(T.capNote); }
+  // 部分文件降级 / 批失败 / 被剔除的节点：astUsed 仍是 true，但说明里带着「降级」「失败」——照常展示
+  // 部分文件降级 / 批失败 / 被剔除的节点 / 上限截断：astUsed 仍是 true，但说明里带着这些词——照常展示
+  if (CONF.astNote && (!CONF.astUsed || /降级|失败|剔除|丢弃|截断|degrad|failed|dropped|truncat/i.test(CONF.astNote))) { notes.push(CONF.astNote); }
+  // 引擎给了全量（findingsTotal）时，截断与每文件上限的**确切条数与罚分**已经在 astNote 那句里
+  // （「共检出 N 条，另有 M 条未列出…每文件每类上限丢弃 K 条」）；再叠一句泛泛的「超出已汇总」
+  // 是同一件事说三遍、数字还对不上（实拍：205 / 449 / 汇总）。老产物没有总量时仍靠这一句。
+  if ((CONF.cappedTotal || CONF.cappedKind) && typeof CONF.findingsTotal !== 'number') { notes.push(T.capNote); }
   if (D.truncated) { notes.push(T.noteTrunc || 'file cap reached'); }
   if (D.oversizeSkipped > 0) { notes.push(D.oversizeSkipped + (T.noteOver || ' oversize excluded')); }
   if (D.depthOmitted > 0) { notes.push(D.depthOmitted + (T.noteDepth || ' omitted by depth')); }
@@ -2505,7 +2558,7 @@ $('#pathBtn').onclick = function () {
   draw();
   toast(pathMode ? T.toastPathOn : T.toastPathOff);
 };
-$('#clearSelection').onclick = function () { selectedId = scopeId; activeTab = 'overview'; updateTabs(); renderSidebar(); draw(); };
+$('#clearSelection').onclick = function () { selectedId = scopeId; activeTab = 'overview'; updateTabs(); renderSidebar(); draw(); if (EMB_ON && embSideDrawer()) { embSetSide(true, false); } };
 document.querySelectorAll('.tab-btn').forEach(function (b) {
   b.addEventListener('click', function () { activeTab = b.getAttribute('data-tab'); updateTabs(); renderSidebar(); });
 });
@@ -2707,7 +2760,7 @@ html[data-embed="page"] .tiny-btn.active,html[data-embed="page"] .breath-toggle.
 /* 底条横贯整宽：.graph-area 不再自己成格（display:contents），画布 / 侧栏 / 底条直接排进 .main 的网格——
    面包屑、图例、操作按钮同在一条上，与顶部命令条一样通栏（驱动在嵌入初始化时把操作按钮挪进 .canvas-foot）。
    原先底条只占画布那一列：700px 里要放面包屑、图例和三个按钮，图例被挤掉半句 */
-html[data-embed="page"] .main{grid-area:2/1/3/3;display:grid;grid-template-columns:minmax(0,1fr) 340px;grid-template-rows:minmax(0,1fr) var(--e-foot-h,32px)}
+html[data-embed="page"] .main{grid-area:2/1/3/3;position:relative;display:grid;grid-template-columns:minmax(0,1fr) var(--e-side-w,340px);grid-template-rows:minmax(0,1fr) var(--e-foot-h,32px)}
 html[data-embed="page"] .graph-area{display:contents}
 html[data-embed="page"] .canvas-wrap{grid-area:1/1/2/2;position:relative;min-height:0;background-color:var(--bg);background-image:radial-gradient(var(--e-dot,rgba(255,255,255,.07)) 1px,transparent 1.2px);background-size:24px 24px;background-position:0 0}
 html[data-embed="page"] .canvas-wrap::before,html[data-embed="page"] .canvas-wrap:after{display:none}
@@ -2816,32 +2869,46 @@ html[data-embed="page"] .formula{background:var(--bg);border-color:var(--line2);
 html[data-embed="page"] .weights{font-size:12px}
 html[data-embed="page"] .weights td,html[data-embed="page"] .weights th{border-bottom-color:var(--line2)}
 html[data-embed="page"] .brandmark,html[data-embed="page"] .score-donut,html[data-embed="page"] .heat-dot,html[data-embed="page"] .status-dot,html[data-embed="page"] .canvas-wrap::before{animation:none!important}
-@media(max-width:1120px){html[data-embed="page"] .main{grid-template-columns:minmax(0,1fr) 340px}}
+/* 侧栏宽度跟着视口走：1440 以下 304，1120 以下 272（tab 条放不下就横向滚动，右缘渐隐提示）；
+   860 以下不占一列（见下方窄窗口规则） */
+@media(max-width:1440px){html[data-embed="page"]{--e-side-w:304px}html[data-embed="page"] .tabs{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 18px),transparent);mask-image:linear-gradient(90deg,#000 calc(100% - 18px),transparent)}}
+@media(max-width:1120px){html[data-embed="page"]{--e-side-w:272px}}
+/* 收起（用户点过「收起」）：画布占满；「展开」按钮出现在命令条右端 */
+html[data-embed="page"].side-off .main{grid-template-columns:minmax(0,1fr)}
+html[data-embed="page"].side-off .sidebar{display:none}
+html[data-embed="page"].side-off .canvas-foot{grid-area:2/1/3/2}
+html[data-embed="page"] .side-toggle{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;flex:0 0 auto;border:0;border-radius:var(--e-r-ctl,4px);background:none;color:var(--muted);cursor:pointer}
+html[data-embed="page"] .side-toggle:hover{color:var(--text);background:var(--e-hover,rgba(255,255,255,.06))}
+html[data-embed="page"] .side-toggle:focus-visible{outline:2px solid var(--cyan);outline-offset:1px}
+html[data-embed="page"] .side-open{display:none}
+html[data-embed="page"].side-off .side-open{display:inline-flex}
+/* 画布上的操作提示（「单击选中 · 双击下钻…」）是给第一次看的人的：停 7 秒后淡出，不再一直压着画布顶部 */
+@keyframes embMsgFade{to{opacity:0;visibility:hidden}}
+html[data-embed="page"] .canvas-msg{animation:embMsgFade .6s ease 7s forwards}
 @media(max-width:850px){
 html[data-embed="page"]{overflow:hidden}
 html[data-embed="page"] body{overflow:hidden}
-/* 窄窗口仍然左右分栏（画布保住高度），侧栏收窄；置信度滑块与多余的分隔线让位 */
+/* 窄窗口：报告面板不再占一列，改成按需弹出的抽屉（默认收起，见 embSideByViewport）；画布保住整个宽度与高度。
+   置信度滑块与多余的分隔线让位 */
 html[data-embed="page"] .app{height:100vh;min-height:0;display:grid;grid-template-columns:auto minmax(0,1fr);grid-template-rows:44px minmax(0,1fr)}
 html[data-embed="page"] .topbar{grid-area:1/1/2/2;height:44px;min-height:44px;flex-wrap:nowrap;padding:0 4px 0 12px}
 html[data-embed="page"] .toolbar{grid-area:1/2/2/3;height:44px;min-height:44px;flex-wrap:nowrap;padding:0 12px 0 4px}
 html[data-embed="page"] .toolbar-spacer{display:block}
-html[data-embed="page"] .main{grid-area:2/1/3/3;display:grid;grid-template-columns:minmax(0,1fr) 280px;grid-template-rows:minmax(0,1fr) var(--e-foot-h,32px)}
+html[data-embed="page"] .main{grid-area:2/1/3/3;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) var(--e-foot-h,32px)}
+html[data-embed="page"] .canvas-foot{grid-area:2/1/3/2}
 html[data-embed="page"] .graph-area{height:auto;min-height:0;border-right:0}
-html[data-embed="page"] .sidebar{min-height:0;border-top:0}
+html[data-embed="page"] .sidebar{position:absolute;top:0;right:0;bottom:var(--e-foot-h,32px);width:min(320px,88vw);min-height:0;border-top:0;border-left:1px solid var(--line2);z-index:6;box-shadow:-10px 0 26px rgba(0,0,0,.16)}
 html[data-embed="page"] .side-body{max-height:none}
 html[data-embed="page"] .minimap{width:130px;height:86px;bottom:12px}
 html[data-embed="page"] .toolbar .threshold{display:none}
 html[data-embed="page"] .toolbar .tool-group + .separator{display:none}
 }
 @media(max-width:640px){
-/* 再窄就上下排：命令条两行 + 画布在上、侧栏在下 */
+/* 再窄：命令条两行；报告面板仍是抽屉（原先上下排——画布只剩两百来像素高） */
 html[data-embed="page"] .app{grid-template-columns:minmax(0,1fr);grid-template-rows:44px 44px minmax(0,1fr)}
 html[data-embed="page"] .topbar{grid-area:1/1/2/2}
 html[data-embed="page"] .toolbar{grid-area:2/1/3/2}
-html[data-embed="page"] .main{grid-area:3/1/4/2;grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1.3fr) minmax(0,0.9fr) var(--e-foot-h,32px)}
-html[data-embed="page"] .canvas-wrap{border-bottom:1px solid var(--line2)}
-html[data-embed="page"] .sidebar{grid-area:2/1/3/2}
-html[data-embed="page"] .canvas-foot{grid-area:3/1/4/2}
+html[data-embed="page"] .main{grid-area:3/1/4/2}
 }
 </style>
 """
