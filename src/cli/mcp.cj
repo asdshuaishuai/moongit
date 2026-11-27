@@ -140,7 +140,7 @@ public func mcpToolList(): JsonValue {
     arr.add(mcpTool("dendro_query", "置信度快照查询：只读持久化 confidence.json，绝不重算（报告缺席报错，提示先 dendro_gen）。无过滤出总览（分数/维度/罚分 Top/限流披露）；file/symbol/kind/weight/top 过滤 findings；回执恒带快照元信息（generatedAt + 依据的索引版本）。每条 finding 带 id / qual——挂靠符号的稳定 id 与限定名，与 codegraph.db 的 nodes.sid 同一个键，可直接交给 index_refs / index_query（定位不到为空串）。structuredContent 与文本是同一份 JSON", dendroQuerySchema))
     // 旧名别名（品牌升级：置信度模块 → Dendro）：同一份 schema、同一套 handler，只换名字 + 废弃标记
     arr.add(mcpToolDeprecated("confidence_query", "置信度快照查询（旧名别名，将移除 → dendro_query）", dendroQuerySchema, "dendro_query"))
-    arr.add(mcpTool("render", "渲染交付物：持久化 payload → 单文件交互 HTML（落盘到项目库，回执只带路径与复用/新绘判定，不内塞 HTML 全文）。target=arch|index；confidence=true 时 index 叠加 confidence.json——快照缺席则纯结构渲染并注明；快照依据的 indexUpdateCount 与当前索引版本不一致则不叠加旧快照，回执 confidence=stale、staleConfidence=true、confidenceIndexUpdateCount=<快照依据的版本>（先调 dendro_gen）；staleConfidence 恒发；force=true 强制重绘", mcpSchemaObject([("name", "string", "项目名或 ID"), ("target", "string", "arch|index，默认 index"), ("confidence", "boolean", "index 叠加 confidence.json（仅当它与当前索引版本一致）"), ("force", "boolean", "强制重绘")], ["name"])))
+    arr.add(mcpTool("render", "渲染交付物：持久化 payload → 单文件交互 HTML（落盘到项目库，回执只带路径与复用/新绘判定，不内塞 HTML 全文）。target=arch|index|check；confidence=true 时 index 叠加 confidence.json——快照缺席则纯结构渲染并注明；快照依据的 indexUpdateCount 与当前索引版本不一致则不叠加旧快照，回执 confidence=stale、staleConfidence=true、confidenceIndexUpdateCount=<快照依据的版本>（先调 dendro_gen）；staleConfidence 恒发；target=check 时只探测产物存在性（**绝不自愈重建**），需同时给 artifact=arch|index——图谱生成工作流（skill graph）用它验证产物；force=true 强制重绘", mcpSchemaObject([("name", "string", "项目名或 ID"), ("target", "string", "arch|index|check，默认 index"), ("artifact", "string", "target=check 时必填：arch|index"), ("confidence", "boolean", "index 叠加 confidence.json（仅当它与当前索引版本一致）"), ("force", "boolean", "强制重绘")], ["name"])))
     // ── CodeGraph：代码图谱（仓颉引擎的确定性词法分析，零依赖）──
     // ⚠️ 改名期兼容：旧 codegraph_*（patch 两工具除外）保留为**别名**——
     //    执行仍走各自原有的 handler（行为不变，已配好的客户端不断），
@@ -149,7 +149,7 @@ public func mcpToolList(): JsonValue {
     arr.add(mcpToolDeprecated("codegraph_tree", "索引关系树：目录→文件→符号（JSON 形态为全量图：文件事实 + import 边 + 引用边）（旧名别名，将移除——新面用 index_gen / index_query）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("depth", "integer", "目录深度，默认 6")], ["name"]), "index_query"))
     arr.add(mcpToolDeprecated("codegraph_symbol", "符号定位：定义处 + 词法引用文件（旧名别名，将移除——新面用 index_query）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"]), "index_query"))
     arr.add(mcpToolDeprecated("codegraph_impact", "影响面分析：符号定义 + 引用文件 + 受影响符号（词法文件级粒度，非语义调用图）（旧名别名，将移除）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("symbol", "string", "符号名")], ["name", "symbol"]), "index_query"))
-    arr.add(mcpToolDeprecated("codegraph_arch", "技术架构图：模块聚合 + 分层判定（治理信号：分层违规/依赖环）。format=scene 出 moongit-graph-scene v1——主题 token/形状/粒子/hits 点击区/panels 详情面板的交互契约，任何 Canvas2D 移植（浏览器/Swift/Skia）按 docs/graph-scene-schema.md 驱动；html=零依赖单文件交互图；另有 mermaid / dot / json（旧名别名，将移除——新面用 arch_gen / render）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "scene|html|mermaid|dot|json，默认 html")], ["name"]), "arch_gen"))
+    arr.add(mcpToolDeprecated("codegraph_arch", "技术架构图：模块聚合 + 分层判定（治理信号：分层违规/依赖环）。format=html 出零依赖单文件交互图（关系连线/模块下钻/搜索/主题全内建），客户端与用户直接渲染该文件；另有 mermaid / dot / json（旧名别名，将移除——新面用 arch_gen / render）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("format", "string", "html|mermaid|dot|json，默认 html")], ["name"]), "arch_gen"))
     let dendroPatchSchema = mcpSchemaObject([("name", "string", "项目名或 ID"), ("patch_path", "string", "unified diff 文件路径")], ["name", "patch_path"])
     arr.add(mcpTool("dendro_patch_confidence", "补丁级置信度 Layer 1（算法层）：S1..S10 信号 + certain/uncertain 分层。uncertain 是给 Agent 的待办清单（配合 --skill 的任务说明）。name=项目名，patch_path=diff 文件路径", dendroPatchSchema))
     // 旧名别名（品牌升级：置信度模块 → Dendro）：同一份 schema、同一套 handler，只换名字 + 废弃标记
@@ -472,12 +472,8 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                     mcpOk(Json.pretty(archJson(arch, false)))
                 } else if (format == "html") {
                     mcpOk(archCanvasHtml(arch, false))
-                } else if (format == "scene") {
-                    // moongit-graph-scene v1：给任意 Canvas2D 移植（含
-                    // Canopy 的 SwiftUI 驱动）的交互契约出口
-                    mcpOk(Json.pretty(buildArchScene(arch, false)))
                 } else {
-                    mcpErr("format accepts scene | html | mermaid | dot | json (got: ${format})")
+                    mcpErr("format accepts html | mermaid | dot | json (got: ${format})")
                 }
             case "get_project_status" =>
                 let p = mcpRequireProject(getStr("name"))
@@ -1039,8 +1035,32 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                 let p = mcpRequireProject(getStr("name"))
                 var target = getStr("target")
                 if (target.isEmpty()) { target = "index" }
+                if (target == "check") {
+                    // 产物存在性探测：与 CLI `render check` 同一事实、同一纪律
+                    // （绝不自愈——自愈可能触发整库重建，探测付不起那个代价）。
+                    // agent 的生成工作流（skill graph）靠它验证产物，
+                    // 而原先只有 arch|index 两个 target，agent 根本调不到。
+                    let artifact = getStr("artifact")
+                    if (artifact != "arch" && artifact != "index") {
+                        return mcpErr("render target=check requires artifact=arch|index (got: ${artifact})")
+                    }
+                    let sp = StorePaths(p.id)
+                    let path = if (artifact == "arch") {
+                        sp.dir + "/render/arch.html"
+                    } else {
+                        sp.dir + "/render/index.html"
+                    }
+                    let exists = fileExists(path)
+                    let o = Json.obj()
+                    Json.set(o, "ok", Json.of(true))
+                    Json.set(o, "artifact", Json.of(artifact))
+                    Json.set(o, "exists", Json.of(exists))
+                    // path 只在存在时给：缺席给空串等于把「没有」说成一个位置
+                    Json.set(o, "path", Json.of(if (exists) { path } else { "" }))
+                    return mcpOk(Json.pretty(o))
+                }
                 if (target != "arch" && target != "index") {
-                    return mcpErr("target accepts arch | index (got: ${target})")
+                    return mcpErr("target accepts arch | index | check (got: ${target})")
                 }
                 let force = boolArg("force")
                 // HTML 落盘到项目库；回执只带路径与复用/新绘判定（不内塞 3MB 全文）
@@ -1310,7 +1330,70 @@ func testMcpUnknownMethod(): Unit {
     @Assert(Json.intAt(err, "code", 0) == -32601)
 }
 
+/// MCP render 工具的 check 目标（不变量 43 同族：schema 与处理器必须成对，
+/// 且能力必须在两个入口都可达）。agent 的生成工作流教了它用 `render check`
+/// 验证产物——CLI 有，工具形态原先没有，等于教了它一件做不到的事。
+/// 三件事：不存在 → exists=false（且不建任何文件）；渲染后 → exists=true；
+/// 缺 artifact → isError（不许静默当成 index）。
 @Test
+func testMcpRenderCheckProbesExistence(): Unit {
+    let base = "/tmp/deepgit-mcpchk-${nowMillis()}"
+    let home = "${base}-home"
+    ensureDir(base)
+    ensureDir(home)
+    gitRun(base, ["init", "-b", "main"], false)
+    writeFileAtomic(base + "/a.cj", "1")
+    gitRun(base, ["add", "."], false)
+    gitRun(base, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"], false)
+    enterTestHome(home)
+    try {
+        let (p, created) = addProject(base, "mcpchk-demo", ArrayList<String>(), "")
+        @Assert(created)
+        let htmlPath = deepgitPath(["store", p.id]) + "/render/index.html"
+
+        func callRender(args: JsonValue): JsonValue {
+            let req = Json.obj()
+            Json.set(req, "id", Json.of(21))
+            Json.set(req, "method", Json.of("tools/call"))
+            let params = Json.obj()
+            Json.set(params, "name", Json.of("render"))
+            Json.set(params, "arguments", args)
+            Json.set(req, "params", params)
+            return Json.getOr(mcpHandle(req).getOrThrow(), "result")
+        }
+
+        // 缺席：exists=false，且探测本身不建文件（探针绝不自愈）
+        let a1 = Json.obj()
+        Json.set(a1, "name", Json.of("mcpchk-demo"))
+        Json.set(a1, "target", Json.of("check"))
+        Json.set(a1, "artifact", Json.of("index"))
+        let r1 = callRender(a1)
+        @Assert(Json.boolAt(r1, "isError", true) == false)
+        let t1 = Json.strAt(Json.arrAt(r1, "content")[0], "text", "")
+        @Assert(t1.contains("\"exists\": false"))
+        @Assert(!fileExists(htmlPath))
+
+        // 生成后：exists=true（check 与产物文件是同一事实的两面）
+        let _renderReceipt = renderIndexCore(p, false, true, "")
+        @Assert(Json.has(_renderReceipt, "path"))
+        @Assert(fileExists(htmlPath))
+        let r2 = callRender(a1)
+        let t2 = Json.strAt(Json.arrAt(r2, "content")[0], "text", "")
+        @Assert(t2.contains("\"exists\": true"))
+
+        // 缺 artifact：isError（不许静默吞成 index）
+        let a2 = Json.obj()
+        Json.set(a2, "name", Json.of("mcpchk-demo"))
+        Json.set(a2, "target", Json.of("check"))
+        let r3 = callRender(a2)
+        @Assert(Json.boolAt(r3, "isError", false) == true)
+    } finally {
+        exitTestHome()
+        removePathIfExists(base)
+        removePathIfExists(home)
+    }
+}
+
 func testMcpToolsCallOnTempRepo(): Unit {
     let base = "/tmp/deepgit-mcp-${nowMillis()}"
     ensureDir(base)
@@ -2401,7 +2484,7 @@ func testMcpCodegraphArchScene(): Unit {
         let (p, created) = addProject(base, "cg-demo", ArrayList<String>(), "")
         @Assert(created)
 
-        // scene：契约关键字段必须在
+        // html：零依赖单文件交互图（scene 出口已随原生绘制退役）
         let req = Json.obj()
         Json.set(req, "id", Json.of(11))
         Json.set(req, "method", Json.of("tools/call"))
@@ -2409,18 +2492,17 @@ func testMcpCodegraphArchScene(): Unit {
         Json.set(params, "name", Json.of("codegraph_arch"))
         let args = Json.obj()
         Json.set(args, "name", Json.of("cg-demo"))
-        Json.set(args, "format", Json.of("scene"))
+        Json.set(args, "format", Json.of("html"))
         Json.set(params, "arguments", args)
         Json.set(req, "params", params)
         let resp = mcpHandle(req).getOrThrow()
         let result = Json.getOr(resp, "result")
         @Assert(Json.boolAt(result, "isError", true) == false)
         let text = Json.strAt(Json.arrAt(result, "content")[0], "text", "")
-        @Assert(text.contains("moongit-graph"))
-        @Assert(text.contains("nodeTheme"))
-        @Assert(text.contains("edgesDropped"))
+        @Assert(text.contains("<canvas"))
+        @Assert(text.contains("__ARCH__"))
 
-        // 非法 format 报错必须列出 scene（否则宿主不知道新格式存在）
+        // 非法 format 报错必须列出合法集合（宿主据此纠正调用）
         let bad = Json.obj()
         Json.set(bad, "id", Json.of(12))
         Json.set(bad, "method", Json.of("tools/call"))
@@ -2433,7 +2515,7 @@ func testMcpCodegraphArchScene(): Unit {
         Json.set(bad, "params", bparams)
         let bresp = mcpHandle(bad).getOrThrow()
         let btext = Json.strAt(Json.arrAt(Json.getOr(bresp, "result"), "content")[0], "text", "")
-        @Assert(btext.contains("scene"))
+        @Assert(btext.contains("html"))
     } finally {
         exitTestHome()
         removePathIfExists(base)

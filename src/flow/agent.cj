@@ -604,10 +604,14 @@ public func agentToolsManifest(): JsonValue {
         arr.add(t)
     }
 
-    addTool("get_group_context", "获取整个项目群的总览上下文（活跃度/改动/分支/待合入）", "")
-    addTool("get_project_context", "获取单个项目的深度上下文（分支进度/脉搏/日志/里程碑）。params: name", "name")
+    // ⚠️ budget/limit 与 MCP schema（mcp.cj 的 get_group_context /
+    // get_project_context / get_journal）及处理器（budget/limit 的 strictIntArg
+    // 消费点）三方同步——MCP 宿主可调而 manifest 不声明，客户端环境的模型
+    // 就拿不到预算/条数控制（与 render 的 artifact 同一漂移形状）。
+    addTool("get_group_context", "获取整个项目群的总览上下文（活跃度/改动/分支/待合入）。params: budget（上下文字符预算，默认 12000）", "budget")
+    addTool("get_project_context", "获取单个项目的深度上下文（分支进度/脉搏/日志/里程碑）。params: name, budget（上下文字符预算）", "name,budget")
     addTool("get_project_docs", "读取项目内 README/AGENTS/CLAUDE 原文。params: name", "name")
-    addTool("get_journal", "读取项目的进度日志。params: name", "name")
+    addTool("get_journal", "读取项目的进度日志。params: name, limit（条数，默认 8）", "name,limit")
     addTool("get_milestones", "列出全部里程碑及其 git 感知进度", "")
     addTool("run_shallow_update", "对项目执行浅更新：记录各分支进度并刷新文档托管区域。params: name", "name")
     addTool("run_deep_update", "对项目执行深度更新：重写 overview/architecture/commands/history。params: name", "name")
@@ -633,10 +637,17 @@ public func agentToolsManifest(): JsonValue {
     addTool("dendro_query", "置信度快照查询：只读持久化 confidence.json 绝不重算（缺席报错，提示先 dendro_gen）；过滤 file/symbol/kind/weight/top；回执恒带快照元信息。params: name, file, symbol, kind, weight, top", "name,file,symbol,kind,weight,top")
     addToolDeprecated("confidence_gen", "置信度生成（旧名别名，将移除 → dendro_gen）。params: name, format(text|json|llm), no_ast, db", "name,format,no_ast,db", "dendro_gen")
     addToolDeprecated("confidence_query", "置信度快照查询（旧名别名，将移除 → dendro_query）。params: name, file, symbol, kind, weight, top", "name,file,symbol,kind,weight,top", "dendro_query")
-    addTool("render", "渲染交付物：持久化 payload → 单文件交互 HTML（落盘，回执带路径与复用/新绘判定，不带 HTML 全文）。params: name, target(arch|index), confidence, force", "name,target,confidence,force")
+    // ⚠️ 这一条与 MCP schema（mcp.cj 的 render）共用同一份参数面：
+    // target=check + artifact=arch|index 三处（schema / 处理器 / 本清单）必须同步，
+    // playbook（skill graph 的工具形态映射）教的就是 render(target=check, artifact=…)。
+    // cli_test.cj 的 testToolManifestAndMcpSchemaParamsAgreeOnSharedTools
+    // 把两份清单的同名工具参数集钉住——漏补 artifact 就是那次漂移的形状。
+    addTool("render", "渲染交付物：持久化 payload → 单文件交互 HTML（落盘，回执带路径与复用/新绘判定，不带 HTML 全文）。target=arch|index|check；target=check 时必须同时给 artifact=arch|index（只探测产物存在性，绝不自愈重建——图谱生成工作流靠它验证产物）；confidence=true 时 index 叠加置信度数据；force=true 强制重绘。params: name, target, artifact, confidence, force", "name,target,artifact,confidence,force")
     // ── 改名期兼容：旧 codegraph_*（patch 两工具除外）保留为别名，将移除 ──
     addToolDeprecated("codegraph_overview", "代码图谱概览（文件/符号/引用边统计）（旧名别名，将移除——新面用 index_overview / index_gen）。params: name", "name", "index_overview")
-    addToolDeprecated("codegraph_tree", "索引关系树 / 全量图 JSON（文件+import边+引用边）（旧名别名，将移除——新面用 index_gen / index_query）。params: name", "name", "index_query")
+    // codegraph_tree 的 depth：MCP schema 与处理器（clamp 后真的进入输出，M16）
+    // 都支持「目录深度，默认 6」，manifest 同步声明（cli_test 对账钉住）。
+    addToolDeprecated("codegraph_tree", "索引关系树 / 全量图 JSON（文件+import边+引用边）（旧名别名，将移除——新面用 index_gen / index_query）。params: name, depth（目录深度，默认 6）", "name,depth", "index_query")
     addToolDeprecated("codegraph_symbol", "符号定位：定义处 + 词法引用（旧名别名，将移除——新面用 index_query）。params: name, symbol", "name,symbol", "index_query")
     addToolDeprecated("codegraph_impact", "影响面：改这个符号会波及哪些文件与符号（词法文件级粒度）（旧名别名，将移除）。params: name, symbol", "name,symbol", "index_query")
     addToolDeprecated("codegraph_arch", "技术架构图：模块分层依赖（Canvas 交互 HTML / mermaid / dot / json）（旧名别名，将移除——新面用 arch_gen / render）。params: name, format", "name,format", "arch_gen")

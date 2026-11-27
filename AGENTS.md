@@ -3626,3 +3626,39 @@ home 目录与临时目录。
 （39 处路径 + README 里三处旧工具名、目录树漏了 `src/dendro/`）。
 ⇒ 推广：不变量 128 管的是分母；给分子设上限（条数上限、每文件每类上限）同样会破坏规模不变性。
 以后给任何指标加上限，先问一句「上限之后分子还长不长」，并写一条「上限调到无穷大时读数不变」的判据。
+
+### 不变量 159 · 改名之后的第一次合并：合并基也要套上同一套改名；「两边各在文件尾追加一个函数」不能逐块拼接
+
+用户 2026-11-27：「从当前改名后为最新基线，两个仓库的分支全部并入最新分支」。引擎的最新分支是
+`feat/sylva-brand`（已改名），要并进来的是 `origin/dev` 上的 10 个提交（写在旧名字上）。
+⇒ 三种做法的实测结果：
+1. **直接合并**：8 个文件 27 处冲突，几乎全是「同一行一边改名、一边加功能」。
+2. **只给 dev 套上改名再合并**：冲突反而涨到 27 个文件。**这一步只对「一边改名、另一边没改名」有效。**
+   两边都含改名时，机械改名（`graph confidence` → `cambium graph confidence`）与当时手工定的正名
+   （`dendro check`）不一定是同一个写法，「同一条改名的两种写法」互相冲突。
+3. **正确做法**：把**合并基**也套上同一套机械改名（临时 worktree 检出合并基 → 同一脚本 → `git write-tree`），
+   再做显式合并基的三方合并。纯改名在两边逐字一致 ⇒ 不再冲突；剩下的 7 个文件 20 处才是 dev 真正改过的行，
+   而且里面已经是新名字。dev 的内容先落成一个「只做机械改名」的提交（`7e3897d`，origin/dev 的直接后代），
+   作为合并提交的第二父进入历史——origin/dev 的全部提交仍是祖先。
+   本机 git 2.39 没有 `git merge-tree --merge-base`，用的是低层三件套：
+   `git read-tree -m --aggressive <基'> <ours> <theirs'>` → `git merge-index -o -q git-merge-one-file -a`
+   → `git checkout-index -a -f` → 手写 `MERGE_HEAD` → `git commit`。
+⇒ 这轮踩的坑：
+- **`git merge-index` 遇到第一个冲突就停**：不带 `-q` 后面的文件根本没合并。
+- **`git add -A` 会把被我清掉构建目录连带删掉的已跟踪文件记成删除**（`.build/` 下两个 cjpm 元数据文件一直在
+  版本库里）：合并提交前逐项核对暂存清单，这两条删除撤回。
+- **测试文件尾部两边各追加了一个函数**：两个函数的公共行（`try {` / `} finally {`）被三方合并错位对齐，
+  「ours + theirs」把两个函数各取半截拼在一起（`unclosed delimiter`）。**尾部追加的冲突不能逐块拼接**——
+  改成「以一边的完整文件为底，把另一边相对合并基的补丁往上打（`git apply --reject`），
+  打不上的尾部追加整段接到文件末尾」。
+- **dev 的新测试写进了 `graph` 包的测试，却引用置信度类型**：品牌升级把置信度搬进了独立包 `cambium.dendro`，
+  图谱层（含它的测试）不能引用它（不变量 157，cjpm 直接拒绝）。**并入「改名前」的分支时，测试的归属要重新过一遍**：
+  只依赖图谱的留 `src/graph/`，依赖 Dendro 的归 `src/dendro/*_test.cj`。dev 那批里只有语言色值表那条依赖 Dendro
+  （它在我们这边已搬到 dendro 的测试里，按 dev 的改动去掉 scene 那一路）。
+- **dev 给 agent 的 playbook 与它的新用例都写着旧命令 / 旧工具名**（`confidence gen`、`graph confidence`、
+  `confidence_gen`、`codegraph_*`）：并入后按正名改写（`dendro gen`、`dendro check`、`dendro_gen`、
+  `arch_gen` / `arch_query` / `render`），用例的期望同步改——否则「skill 文本不许教旧名别名」的判据会红。
+- **参数对账的基线要算上别名工具**：旧名别名在 agent 清单里也有一份（带废弃标记），schema 与正名同一份，
+  所以 `json` 这个 MCP-only 参数在 `dendro_query` 与 `confidence_query` 上各算一条。
+- 合并后场景出口（`--format scene`）随 dev 的决定退役：帮助与 skill 文本里的 `|scene` / `format=scene` 一并去掉。
+⇒ 结果：`feat/sylva-brand` 干净构建通过；全量 738 条，除 3 条已知的 Linux 环境红外全绿。

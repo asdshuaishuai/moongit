@@ -240,6 +240,15 @@ public func findProjectIn(reg: Registry, ref: String): Option<ProjectEntry> {
             return Some(p)
         }
     }
+    // 「这里」的引用（当前/父目录简写）必须如实未找到。normalizePath 是纯词法的：
+    // "." 归一化成空串，于是「精确路径」阶段永远匹配不到 cwd，而
+    // 空串 + "/" 让**前缀阶段命中每一个项目**（返回第一个注册项目）、
+    // 子串阶段亦然（几乎所有路径都 contains(".")）。实测 `git commit .`
+    // 在未注册目录会静默对另一个不相干的已注册项目执行写操作（跨项目写入）。
+    // 同族纪律见缺陷 #29：语义不明的引用不许被解释成「某个更大的范围」。
+    if (ref == "." || ref == "./" || ref == ".." || ref == "../") {
+        return None
+    }
     let abs = resolveMacSymlink(normalizePath(expandHome(ref)))
     for (p in reg.projects) {
         if (samePath(p.path, abs)) {
@@ -329,6 +338,21 @@ func testFindProjectByVariousRefs(): Unit {
     @Assert(findProjectIn(reg, "MYPROJ").isSome())
     @Assert(findProjectIn(reg, "/Volumes/x").isSome())
     @Assert(findProjectIn(reg, "nonexistent-xyz").isNone())
+}
+
+@Test
+func testDotRefNeverFallsThroughToSubstringMatch(): Unit {
+    let reg = Registry()
+    // 项目路径里含点号（点目录/扩展名）——"." 是几乎所有路径的子串
+    reg.projects.add(ProjectEntry("p_dot", "dotproj", "/deepgit-dotref-probe.d/proj", "git", "", nowIso(), ArrayList<String>(), false))
+    // 子串模糊对普通片段仍然可用
+    @Assert(findProjectIn(reg, "dot").isSome())
+    // 「这里」简写绝不能靠子串命中：必须如实未找到（否则未注册目录里的
+    // `git commit .` 会对这个不相干项目执行 add -A 级别的写操作）
+    @Assert(findProjectIn(reg, ".").isNone())
+    @Assert(findProjectIn(reg, "./").isNone())
+    @Assert(findProjectIn(reg, "..").isNone())
+    @Assert(findProjectIn(reg, "../").isNone())
 }
 
 @Test

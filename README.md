@@ -267,6 +267,24 @@ cambium index overview <项目>                  # 计数：符号 / 边 / 调�
 - 查不到就是查不到：`index query / refs / file` 对不存在的符号/文件报错、非 0 退出、不编结果；
   `search / grep` 无命中返回空数组。
 
+### 图谱交付物工作流：render check · skill graph · 职责视图
+
+图谱交付物的正身是**单文件交互 HTML**（`cambium render index|arch <项目>`），由客户端与用户直接渲染；
+给原生画布用的场景 JSON（`graph arch --format scene`）已退役（2026-10-27）。这一组能力随 `dev` 并入（2026-11-27）：
+
+- `cambium render check <arch|index> <项目>`：**只探测产物是否存在，绝不自愈重建**——GUI 面板靠它决定
+  「显示打开按钮还是生成按钮」。MCP 形态是 `render(target=check, artifact=arch|index)`。
+  agent 工具清单与 MCP schema 的参数对账由 `testToolManifestAndMcpSchemaParamsAgreeOnSharedTools` 钉住
+  （manifest 少声明一个参数，模型在客户端环境就永远调不到它）。
+- `cambium skill graph`：LLM 驱动图谱生成的 **playbook 独立出口**——两份交付物的步骤、回执语义
+  （复用 / 重绘）、「绝不自愈」红线，以及架构图的五个分析角度（模块分层 / 职责视图 / 依赖治理 / 业务域解读 / 风险与建议）。
+  教学包尾部带同一章节：`skillGraphWorkflow` 是唯一出处。
+- 架构图新增**职责视图**：文件按文件名职责词归入入口 / 界面 / 服务 / 数据 / 存储 / 支撑，产物带
+  `roles` / `roleLanes` / `roleEdges` / `roleViolations`（词法级——转述时要声明）。
+- git 面板：`cambium git status` 的条目出口与 `cambium git commit --paths` 的部分暂存提交，回执统一成
+  `{op, ok, output, project}` 同壳。
+- `scripts/ci-check.sh`：CI 的检查入口（构建 release + 全量测试，串行；自带工具链与隔离数据目录的环境设置）。
+
 ### 红线（三件套共有）
 
 - git 操作白名单（pull/push/commit/stash/unstash/fetch），无 reset/clean/force-push

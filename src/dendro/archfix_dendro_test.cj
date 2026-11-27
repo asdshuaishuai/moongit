@@ -174,21 +174,16 @@ func archHtmlLangPalette(html: String, nth: Int64): HashMap<String, String> {
 }
 
 
-/// R9 回归（行为半边）：三处产物必须携带同一组语言→色值映射 ——
-/// scene 的 themes.{dark,light}.langs、treehtml 产物内嵌 JSON 的
-/// langThemes.{dark,light}、archhtml 产物驱动 JS 的 PAL langs。
-/// 它们输出形态各异（token JSON / 页面 JSON / JS 字面量），值必须同源。
+/// R9 回归（行为半边）：两处产物必须携带同一组语言→色值映射 ——
+/// treehtml 产物内嵌 JSON 的 langThemes.{dark,light}、archhtml 产物
+/// 驱动 JS 的 PAL langs。输出形态各异（页面 JSON / JS 字面量），值必须同源。
+/// （scene 出口已随「图谱产物 = 交互 HTML」整体退役，这一路一并去掉。）
 @Test
-func testLangThemePaletteSharedAcrossSceneTreeHtmlAndArchHtml(): Unit {
+func testLangThemePaletteSharedAcrossTreeHtmlAndArchHtml(): Unit {
     let root = writeTree()
     try {
         let g = buildGraph(root)
-        // ① scene 出口
-        let scene = buildArchScene(buildArch(g), false)
-        let themes = Json.getOr(scene, "themes")
-        assertPaletteMatches(paletteMapOf(Json.getOr(Json.getOr(themes, "dark"), "langs")), true)
-        assertPaletteMatches(paletteMapOf(Json.getOr(Json.getOr(themes, "light"), "langs")), false)
-        // ② treehtml 出口：走真实产物，提取内嵌 JSON 再解 langThemes
+        // ① treehtml 出口：走真实产物，提取内嵌 JSON 再解 langThemes
         let html = treeCanvasHtml(g, 0, false, analyzeConfidence(g, false))
         let marker = "window.__CODEGRAPH__ = "
         match (html.indexOf(marker)) {
@@ -207,7 +202,7 @@ func testLangThemePaletteSharedAcrossSceneTreeHtmlAndArchHtml(): Unit {
                 }
             case None => @Assert(false)
         }
-        // ③ archhtml 出口：驱动 JS 的 PAL langs（dark 第 0 个、light 第 1 个）
+        // ② archhtml 出口：驱动 JS 的 PAL langs（dark 第 0 个、light 第 1 个）
         let ahtml = archCanvasHtml(buildArch(g), false)
         assertPaletteMatches(archHtmlLangPalette(ahtml, 0), true)
         assertPaletteMatches(archHtmlLangPalette(ahtml, 1), false)

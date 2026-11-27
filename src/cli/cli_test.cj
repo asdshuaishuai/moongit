@@ -2381,6 +2381,91 @@ func testEnvLanguageOverrideRejectsUnsupported(): Unit {
 /// skill 教学包必须覆盖全部 AI 能力面：图谱七件套、scene 画布契约、
 /// 置信度 llm 出口、补丁三层工作流、词法级红线。skill 是 agent 的唯一
 /// 入口文档——少写一条能力，agent 就少会一种用法（此前只点名了工具名，
+/// skill graph：LLM 驱动图谱生成的独立 playbook 出口。
+/// 三件事都在：两份交付物的步骤、回执语义（复用/重绘）、render check 的
+/// 「绝不自愈」红线。它是客户端播种 agent 任务的单一来源——缺了任何一件，
+/// LLM 就要靠猜命令形态，猜错一次就是一次全量重建。
+@Test
+func testSkillGraphWorkflowSurface(): Unit {
+    let md = skillGraphWorkflow(false)
+    // 两份交付物各自成章
+    @Assert(md.contains("render/index.html"))
+    @Assert(md.contains("render/arch.html"))
+    // 三个 gen 步骤 + 渲染 + 探测全点名
+    // 品牌升级后置信度的正名是 dendro：playbook 教的是正名，不是别名（skill 文本不许教旧名）
+    for (cmd in ["index gen", "dendro gen", "arch gen",
+                 "render index", "render arch", "render check"]) {
+        @Assert(md.contains(cmd))
+    }
+    // 回执语义与红线
+    @Assert(md.contains("复用"))
+    @Assert(md.contains("重绘"))
+    @Assert(md.contains("绝不自愈"))
+    // 治理信号要报告（职责视图也在内）
+    @Assert(md.contains("roleViolations"))
+    // 架构交付物的多角度结构：五个角度逐一在册（结构/技术/健康/业务/行动）
+    // ——这是 skill 的核心价值：告诉 LLM「从哪些角度做」，缺一个角度
+    // 它就只会照命令跑一遍，交回一张没有解读的图。
+    for (angle in ["模块分层", "职责视图", "依赖治理", "业务域解读", "风险与建议"]) {
+        @Assert(md.contains(angle))
+    }
+    // 业务视角的诚实边界：命名推断必须标注，不许说成引擎算出的分组
+    @Assert(md.contains("命名推断"))
+    // 词法边界声明（两份交付物共用）
+    @Assert(md.contains("词法"))
+    // 英文表同构（en 是独立分支，五角度一一对应）
+    let en = skillGraphWorkflow(true)
+    @Assert(en.contains("render check"))
+    @Assert(en.contains("NEVER heals"))
+    @Assert(en.contains("Business reading"))
+    @Assert(en.contains("Risks & actions"))
+    // skillMarkdown 尾部携带同一章节（同一来源，不许手抄第二份）
+    @Assert(skillMarkdown().contains("LLM 驱动的生成与多角度分析"))
+}
+
+/// playbook 与数据面互钉（同不变量 43 的口径：teaching 面与数据面各留一份
+/// 必然漂移）。上一版实测抓到的真事故：
+///   · 教 `graph arch <项目> --json` —— 而 arch 命令把裸 --json 当 HTML 输出，
+///     LLM 照做会拿到一整页 HTML，五个角度的数据一个都读不到；
+///   · 教 `warnings.cycles` —— 实际键是 `warnings.cycleEdges`。
+/// 两条都是「教了它一件做不到/读不到的事」，而且只要引擎改键名就会复发。
+/// 这里把 playbook 引用的每个键与 archJson 的真实输出逐一对上。
+@Test
+func testSkillGraphWorkflowKeysExistInArchJson(): Unit {
+    let md = skillGraphWorkflow(false)
+    // 建一个最小仓库图（两个文件足够触发模块/角色网）
+    let base = "/tmp/deepgit-skilldrift-${nowMillis()}"
+    ensureDir(base)
+    writeFileAtomic(base + "/ui_view.swift", "play")
+    writeFileAtomic(base + "/svc_service.swift", "play")
+    try {
+        let j = archJson(buildArch(buildGraph(base)), false)
+        // 顶层键：playbook 每个角度都点名了它们
+        for (key in ["modules", "edges", "layers", "lanes",
+                     "roles", "roleLanes", "roleEdges", "roleViolations",
+                     "warnings", "drilldown"]) {
+            @Assert(md.contains(key))                    // playbook 确实教了
+            @Assert(Json.has(j, key))                    // 数据面确实有
+        }
+        // warnings 内部三键（角度 3 逐一点名）
+        let w = Json.getOr(j, "warnings")
+        for (key in ["violations", "cycleEdges", "violationPairs", "cycleModules"]) {
+            @Assert(md.contains(key))
+            @Assert(Json.has(w, key))
+        }
+        // 命令形态：arch 取数据必须 --format json（裸 --json 是 HTML）
+        @Assert(md.contains("--format json"))
+        @Assert(!md.contains("graph arch <项目> --json"))
+        @Assert(!md.contains("graph arch <project> --json"))
+        // 工具形态映射：render check 必须带 artifact（CLI 的参数序不同，
+        // 少了 artifact 的工具调用调不到）
+        @Assert(md.contains("target=check"))
+        @Assert(md.contains("artifact"))
+    } finally {
+        removePathIfExists(base)
+    }
+}
+
 /// 没有任何一条「怎么用」的配方）。
 @Test
 func testSkillMarkdownCoversFullCapabilitySurface(): Unit {
@@ -2389,9 +2474,8 @@ func testSkillMarkdownCoversFullCapabilitySurface(): Unit {
     @Assert(md.contains("dendro_patch_confidence"))
     @Assert(md.contains("dendro_patch_merge"))
     @Assert(md.contains("Layer 2"))
-    // 画布契约：scene 格式 + schema 文档指针
-    @Assert(md.contains("moongit-graph-scene"))
-    @Assert(md.contains("graph-scene-schema.md"))
+    // 架构图出口：零依赖单文件交互图（scene 契约已随原生绘制退役）
+    @Assert(md.contains("format=html"))
     // 置信度 llm 出口
     @Assert(md.contains("format=llm"))
     // 三层的 CLI 入口是 dendro patch（品牌升级后的正名；graph patchconf --patch 是旧名别名）
@@ -3049,6 +3133,53 @@ func testRenderIndexReuseAndRedrawStates(): Unit {
         let outCopy = base + "/copy.html"
         @Assert(renderIndexCmd(ArrayList<String>(["ridx-demo", "--out", outCopy]), ctx) == 0)
         @Assert(readFileTextOr(outCopy, "").size > 0)
+    } finally {
+        exitTestHome()
+        removePathIfExists(base + "/repo")
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
+/// render check：**只探测产物存在性**，绝不触发自愈重建——
+/// GUI 仓库面板用它决定「显示打开按钮还是生成按钮」，调用发生在
+/// 每次进详情页，若它会顺手重建 index，等于浏览界面变成分钟级。
+/// 三件事：缺席 → exists=false；render 后 → exists=true；未知种类 → usage。
+@Test
+func testRenderCheckProbesExistenceWithoutHealing(): Unit {
+    let base = "/tmp/deepgit-rchk-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    try {
+        let p = dbCliFixtureProject(base, "rchk-demo")
+        let ctx = CliContext(ArrayList<String>(["render"]))
+        let store = deepgitPath(["store", p.id])
+        let htmlPath = store + "/render/index.html"
+
+        // 缺席：check 不创建任何东西（路径不作数，文件必须不在）
+        @Assert(cmdRender(ArrayList<String>(["check", "index", "rchk-demo"]), ctx) == 0)
+        @Assert(!fileExists(htmlPath))
+        @Assert(cmdRender(ArrayList<String>(["check", "arch", "rchk-demo"]), ctx) == 0)
+        @Assert(!fileExists(store + "/render/arch.html"))
+
+        // 生成后：exists 翻真（check 与产物文件是同一事实的两面）
+        @Assert(cmdIndex(ArrayList<String>(["gen", "rchk-demo"]), ctx) == 0)
+        @Assert(renderIndexCmd(ArrayList<String>(["rchk-demo"]), ctx) == 0)
+        @Assert(cmdRender(ArrayList<String>(["check", "index", "rchk-demo"]), ctx) == 0)
+        @Assert(fileExists(htmlPath))
+
+        // 未知种类：usage（exit 2），不许静默当「不存在」
+        func exitOf(f: () -> Int64): Int64 {
+            var code: Int64 = -1
+            try {
+                let _ = f()
+            } catch (e: DgError) {
+                code = e.exitCode
+            }
+            return code
+        }
+        @Assert(exitOf({ => cmdRender(ArrayList<String>(["check", "svg", "rchk-demo"]), ctx) }) == 2)
     } finally {
         exitTestHome()
         removePathIfExists(base + "/repo")
@@ -4450,5 +4581,187 @@ func testDendroCommandGroupForwardsToLegacyHandlers(): Unit {
         removePathIfExists(base)
         exitTestHome()
         removePathIfExists(testHome)
+    }
+}
+
+/// 两份能力清单（`tools --json` = agentToolsManifest ⇄ MCP `tools/list` =
+/// mcpToolList）在**同名工具的参数集**上必须对账。#43 已钉住工具集基线与
+/// 改名对，但参数级没有对账 —— render 就漂过一次：MCP schema 与处理器
+/// 早已支持 target=check + artifact=arch|index，playbook 也教了
+/// render(target=check, artifact=…)，而 manifest 没声明 artifact。
+/// 客户端按 manifest 的 params 给模型建工具定义（不变量 21/49），
+/// 模型在客户端环境永远拿不到 artifact 参数 —— playbook 教的调用
+/// 注定缺参失败，而且没有任何一条既有检查会红。
+///
+/// 规则（两份清单服务于不同运行时，工具集本就可以不同；参数差异必须有意识）：
+///   · manifest 声明的每个参数，MCP schema 必须也有（否则 MCP 环境调不到）；
+///   · MCP schema 多出来的参数必须落在 mcpOnly 基线里（MCP 侧默认回 JSON /
+///     默认写库等运行时形态参数，显式声明才许存在 —— 断言基线而不是
+///     「应该相同」，否则会逼着人造假等价，同 #43 的口径）；
+///   · 基线每条必须真实出现在 MCP schema 里（空转的基线等于没钉，不变量 22）。
+@Test
+func testToolManifestAndMcpSchemaParamsAgreeOnSharedTools(): Unit {
+    func paramSetFromManifest(params: String): HashSet<String> {
+        let s = HashSet<String>()
+        if (params.isEmpty()) { return s }
+        for (p in params.split(",")) {
+            let n = p.trimAscii()
+            if (!n.isEmpty()) { s.add(n) }
+        }
+        return s
+    }
+    func paramSetFromMcp(t: JsonValue): HashSet<String> {
+        let s = HashSet<String>()
+        // schema 由 mcpSchemaObject 构造、properties 恒在；
+        // 缺席 = 结构坏了，落到这个分支就必须红
+        match (Json.asObj(Json.getOr(Json.getOr(t, "inputSchema"), "properties"))) {
+            case Some(props) =>
+                for (pair in props) { s.add(pair[0]) }
+            case None => @Assert(false)
+        }
+        return s
+    }
+
+    let mcpNames = HashSet<String>()
+    let mcpSets = HashMap<String, HashSet<String>>()
+    for (t in Json.arrAt(mcpToolList(), "tools")) {
+        let n = Json.strAt(t, "name", "")
+        mcpNames.add(n)
+        mcpSets[n] = paramSetFromMcp(t)
+    }
+    // 前提守卫：MCP 清单抓到 0 个 = 下面对账全空转（不变量 22）
+    @Assert(mcpNames.size >= 20)
+
+    // MCP-only 参数基线：同名工具上 MCP schema 比 manifest 多出的参数。
+    // 每条都是**有意识**的运行时形态差异（MCP 默认回 JSON / 默认写库）；
+    // 新增差异必须在这里声明，而不是让清单静默漂。
+    let mcpOnly: Array<(String, String)> = [
+        ("run_deep_update", "scope"),
+        ("arch_query", "json"),
+        ("dendro_query", "json"),
+        // 旧名别名在 agent 清单里也有一份（带废弃标记），schema 与正名同一份 ⇒ 同样多出 json
+        ("confidence_query", "json"),
+        ("index_gen", "db"),
+    ]
+
+    var shared = 0
+    for (t in Json.arrAt(agentToolsManifest(), "tools")) {
+        let n = Json.strAt(t, "name", "")
+        if (!mcpNames.contains(n)) { continue }
+        shared += 1
+        let cliSet = paramSetFromManifest(Json.strAt(t, "params", ""))
+        match (mcpSets.get(n)) {
+            case Some(mcpSet) =>
+                // 规则①：manifest 承诺的参数，MCP schema 必须也有
+                for (p in cliSet) {
+                    @Assert(mcpSet.contains(p))
+                }
+                // 规则②：MCP 多出的参数必须有意识（render 漂移就是这个方向的红）
+                for (p in mcpSet) {
+                    if (cliSet.contains(p)) { continue }
+                    var allowed = false
+                    for (bp in mcpOnly) {
+                        if (bp[0] == n && bp[1] == p) { allowed = true }
+                    }
+                    @Assert(allowed)
+                }
+            case None => @Assert(false)
+        }
+    }
+    // 前提守卫：交集太小 = 工具集大改（改名/增删），本测试覆盖面变了，
+    // 必须显式面对而不是静默缩水
+    @Assert(shared >= 20)
+
+    // 基线不许空转：每条基线必须真实出现在 MCP schema 里
+    for (bp in mcpOnly) {
+        match (mcpSets.get(bp[0])) {
+            case Some(mcpSet) => @Assert(mcpSet.contains(bp[1]))
+            case None => @Assert(false)
+        }
+    }
+
+    // render 点名（本次漂移的直接钉子）：render 没有 MCP-only 形态参数，
+    // 两份清单的参数集必须**完全相等**（含 artifact）。
+    var sawCliRender = false
+    var sawMcpRender = false
+    var cliRender = HashSet<String>()
+    var mcpRender = HashSet<String>()
+    for (t in Json.arrAt(agentToolsManifest(), "tools")) {
+        if (Json.strAt(t, "name", "") == "render") {
+            cliRender = paramSetFromManifest(Json.strAt(t, "params", ""))
+            sawCliRender = true
+        }
+    }
+    for (t in Json.arrAt(mcpToolList(), "tools")) {
+        if (Json.strAt(t, "name", "") == "render") {
+            mcpRender = paramSetFromMcp(t)
+            sawMcpRender = true
+        }
+    }
+    @Assert(sawCliRender)
+    @Assert(sawMcpRender)
+    @Assert(cliRender.contains("artifact"))
+    @Assert(mcpRender.contains("artifact"))
+    @Assert(cliRender.size == mcpRender.size)
+    for (p in cliRender) { @Assert(mcpRender.contains(p)) }
+    for (p in mcpRender) { @Assert(cliRender.contains(p)) }
+}
+
+/// #196 口径在 `render check` 上的回归：元数固定（check + kind + 项目 = 3），
+/// 多出来的位置参数报 usage（exit 2），绝不静默吞。
+/// 原实现直接按下标读 rest —— `render check arch proj EXTRA --json` 在
+/// 真实二进制上 rc=0、EXTRA 无声蒸发（实测复现）；同族 graph/tools/add
+/// 都有 rejectExtraPositionals，唯独这里漏了。
+///
+/// 拒收发生在 requireProject 之前，所以「多参数」这条不需要注册项目、
+/// 也不需要 store 隔离；合法元数这条走完整路径（注册项目、断言 rc=0）。
+@Test
+func testRenderCheckRejectsExtraPositionals(): Unit {
+    // 多出的位置参数 → usage（exit 2）
+    var threw = false
+    var code: Int64 = -1
+    try {
+        let _ = cmdRender(ArrayList<String>(["check", "arch", "someproj", "EXTRA"]),
+                          CliContext(ArrayList<String>([])))
+    } catch (e: DgError) {
+        threw = true
+        code = e.exitCode
+    }
+    @Assert(threw)
+    @Assert(code == 2)
+
+    // 缺元数（只有 check + kind）→ 同样 usage
+    var threwShort = false
+    try {
+        let _ = cmdRender(ArrayList<String>(["check", "arch"]),
+                          CliContext(ArrayList<String>([])))
+    } catch (e: DgError) {
+        threwShort = true
+        @Assert(e.exitCode == 2)
+    }
+    @Assert(threwShort)
+
+    // 合法元数（3 个位置参数）→ 走完探测路径，rc=0
+    let base = "/tmp/deepgit-rendercheck-${nowMillis()}"
+    let repo = base + "/repo"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    try {
+        ensureDir(repo)
+        gitRun(repo, ["init", "-b", "main"], false)
+        writeFileAtomic(repo + "/a.txt", "1")
+        gitRun(repo, ["add", "."], false)
+        gitRun(repo, ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"], false)
+        let (_, okProj) = addProject(repo, "render-check-demo", ArrayList<String>(), "")
+        @Assert(okProj)
+        let ctx = CliContext(ArrayList<String>([]))
+        let rc = cmdRender(ArrayList<String>(["check", "arch", "render-check-demo"]), ctx)
+        @Assert(rc == 0)
+    } finally {
+        exitTestHome()
+        removePathIfExists(repo)
+        removePathIfExists(testHome)
+        removePathIfExists(base)
     }
 }

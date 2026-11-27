@@ -1,6 +1,6 @@
 // graph/export.cj — 图谱导出的**规范实现**（分派规则的代码级落地）。
 //
-// 【规范是什么】docs/graph-scene-schema.md 的 Canvas 分派规则：
+// 【规范是什么】图谱导出格式的统一枚举与分发（scene 平台契约已随原生绘制退役）：
 //   - 运行时渲染一律走平台 Canvas 实现（macOS=SwiftUI、Linux=仓颉移植、
 //     DDE=Qt/QPainter，Windows/鸿蒙排期）；
 //   - HTML 只是**引擎层交付物**（只有引擎层/被 agent 驱动时消费），
@@ -44,10 +44,9 @@ public func canvasSubsetCompliant(supported: ArrayList<String>): Bool {
 
 /// 图谱命令（arch/tree）的导出格式。**两类语义在类型层面分开**：
 ///   - `Html` = 引擎层交付物（只有引擎层/被 agent 驱动时消费的单文件可视化）
-///   - `Scene` = 平台契约数据（有客户端实现的平台用它喂本平台 Canvas）
 ///   - `Text` / `Json` / `Mermaid` / `Dot` = agent 与脚本的平面出口
 public enum GraphExportFormat {
-    | Scene | Html | Text | Json | Mermaid | Dot
+    | Html | Text | Json | Mermaid | Dot
 }
 
 /// 解析 --format 的原始值。`fallback` = 未传 --format 时的默认
@@ -57,7 +56,6 @@ public func parseGraphFormat(v: String, fallback: GraphExportFormat): Option<Gra
     let t = v.trimAscii()
     if (t.isEmpty()) { return Some(fallback) }
     match (t) {
-        case "scene" => return Some(GraphExportFormat.Scene)
         case "html" => return Some(GraphExportFormat.Html)
         case "text" => return Some(GraphExportFormat.Text)
         case "json" => return Some(GraphExportFormat.Json)
@@ -72,7 +70,6 @@ public func graphFormatList(allowed: ArrayList<GraphExportFormat>): String {
     let names = ArrayList<String>()
     for (f in allowed) {
         match (f) {
-            case Scene => names.add("scene")
             case Html => names.add("html")
             case Text => names.add("text")
             case Json => names.add("json")

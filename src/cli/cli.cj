@@ -234,7 +234,7 @@ let HOOK_KINDS: Array<String> = ["post-commit", "post-merge"]
 let VALUE_FLAGS: Array<String> = [
     "--name", "--depth", "--docs", "--scope", "--branch",
     "--source", "--tag", "--date", "--desc", "--out", "--message", "--budget",
-    "--dir", "--limit", "--note", "--format", "--patch", "--file",
+    "--dir", "--limit", "--note", "--format", "--patch", "--file", "--paths",
     // confidence query 的过滤维度（图能力重设计第二阶段）
     "--symbol", "--kind", "--weight", "--top",
     // index search / grep / impact（成员级索引）：--depth / --limit / --file / --kind 复用上面的
@@ -260,7 +260,7 @@ let KNOWN_FLAGS: Array<String> = [
     // 带值（与 VALUE_FLAGS 一致）
     "--name", "--depth", "--docs", "--scope", "--branch",
     "--source", "--tag", "--date", "--desc", "--out", "--message", "--budget",
-    "--dir", "--limit", "--note", "--format", "--patch", "--file",
+    "--dir", "--limit", "--note", "--format", "--patch", "--file", "--paths",
     // 布尔
     "--dry-run", "--git-only", "--purge",
     // confidence 专用（被动能力开关）
@@ -342,12 +342,22 @@ func validateValueFlags(args: ArrayList<String>): Unit {
 func cmdGit(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let refs = positionalsOnly(rest, VALUE_FLAGS)
     if (refs.size == 0) {
-        throw DgError.usage(T("Usage: cambium git <pull|push|commit|stash|unstash|fetch> [project] [--message M]", "用法：cambium git <pull|push|commit|stash|unstash|fetch> [项目] [--message M]"))
+        throw DgError.usage(T("Usage: cambium git <pull|push|commit|status|stash|unstash|fetch> [project] [--message M] [--paths a,b]", "用法：cambium git <pull|push|commit|status|stash|unstash|fetch> [项目] [--message M] [--paths 路径1,路径2]"))
     }
     let op = refs[0]
     var message = ""
     match (flagValue(rest, "--message")) {
         case Some(v) => message = v
+        case None => ()
+    }
+    // 选文件提交：逗号分隔的路径列表（GUI 提交弹窗消费）
+    var paths = ArrayList<String>()
+    match (flagValue(rest, "--paths")) {
+        case Some(v) =>
+            for (p in v.split(",")) {
+                let t = p.trimAscii()
+                if (!t.isEmpty()) { paths.add(t) }
+            }
         case None => ()
     }
     // 去掉操作词，resolveTargets 只应看到项目引用
@@ -369,7 +379,11 @@ func cmdGit(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let gitResults = ArrayList<JsonValue>()
     for (p in targets) {
         try {
-            let r = runGitOp(p.path, op, message)
+            // ⚠️ status 不做特殊分支：它与 pull/push/commit 走**同一个**信封
+            // {op, ok, output, project}——条目明细装在 output 字符串里。
+            // 曾在这里单独吐裸状态对象，同一命令两种形状，
+            // 契约检查当场抓住（GitOpResponse 解码 keyNotFound: op）。
+            let r = runGitOp(p.path, op, message, paths.toArray())
             if (!r.ok) {
                 // 失败必须体现在退出码上，与是否 --json 无关。
                 // 原实现在 --json 分支只打印结果、不置 failed，于是
@@ -1344,8 +1358,8 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext, legacyNote!: Bool = true
             if (notAllowed) {
                 let got = if (unknown != "") { unknown } else { "text" }
                 throw DgError.usage(T(
-                    "--format accepts html | mermaid | dot | json | scene (got: ${got})",
-                    "--format 只支持 html | mermaid | dot | json | scene（收到：${got}）"))
+                    "--format accepts html | mermaid | dot | json (got: ${got})",
+                    "--format 只支持 html | mermaid | dot | json（收到：${got}）"))
             }
             var payload = ""
             match (fmtOpt) {
@@ -1353,10 +1367,6 @@ func cmdGraph(rest: ArrayList<String>, ctx: CliContext, legacyNote!: Bool = true
                 case Dot => payload = archDot(arch, en)
                 case Json => payload = Json.pretty(archJson(arch, en))
                 case Html => payload = archCanvasHtml(arch, en)
-                case Scene =>
-                    // 场景 JSON（moongit-graph-scene v1）：几何/命中/动画时序的
-                    // 数据层，供任何标准 Canvas2D API 移植实现驱动渲染
-                    payload = Json.pretty(buildArchScene(arch, en))
                 case Text => ()
             }
             match (flagValue(args, "--out")) {
@@ -2564,8 +2574,8 @@ func hasPathSuffix(path: String, suffix: String): Bool {
 func cmdRender(rest: ArrayList<String>, ctx: CliContext): Int64 {
     if (rest.size == 0) {
         throw DgError.usage(T(
-            "Usage: cambium render <arch|index> <project> [--confidence] [--force] [--out F]",
-            "用法：cambium render <arch|index> <项目> [--confidence] [--force] [--out 文件]"))
+            "Usage: cambium render <arch|index|check> <project> [--confidence] [--force] [--out F]",
+            "用法：cambium render <arch|index|check> <项目> [--confidence] [--force] [--out 文件]"))
     }
     let args = ArrayList<String>()
     var i: Int64 = 1
@@ -2576,10 +2586,52 @@ func cmdRender(rest: ArrayList<String>, ctx: CliContext): Int64 {
     if (rest[0] == "arch") {
         return renderArchCmd(args, ctx)
     }
+    // check：**只查产物在不在**，不做自愈重建——index 的自愈可能触发整库
+    // 重建（大仓库分钟级），「看一眼按钮该亮哪个」的调用方（GUI 仓库面板）
+    // 付不起这个代价，也绝不该在毫不知情时改库。
+    if (rest[0] == "check") {
+        // 元数固定（check + kind + 项目 = 3 个位置参数）⇒ 走 #196 的同一道闸门：
+        // 位置参数先过 positionalsOnly（值 flag 对如 --out F 不算位置参数），
+        // 多出来的位置参数报 usage（exit 2），绝不静默吞。
+        // 原实现直接按下标读 rest，混在 rest[3+] 的多余项目名/布尔 flag
+        // 全部无声蒸发（exit 0），拼写错误被变成一次「成功」。
+        let refs = positionalsOnly(rest, VALUE_FLAGS)
+        if (refs.size < 3) {
+            throw DgError.usage(T(
+                "Usage: cambium render check <arch|index> <project> [--json]",
+                "用法：cambium render check <arch|index> <项目> [--json]"))
+        }
+        rejectExtraPositionals("render check", refs, 3)
+        let kind = refs[1]
+        let sp = StorePaths(requireProject(refs[2]).id)
+        let path: String
+        if (kind == "arch") {
+            path = sp.dir + "/render/arch.html"
+        } else if (kind == "index") {
+            path = sp.dir + "/render/index.html"
+        } else {
+            throw DgError.usage(T(
+                "render check accepts arch | index (got: ${kind})",
+                "render check 只支持 arch | index（收到：${kind}）"))
+        }
+        let exists = fileExists(path)
+        if (ctx.json) {
+            let o = Json.obj()
+            Json.set(o, "ok", Json.of(true))
+            Json.set(o, "artifact", Json.of(kind))
+            Json.set(o, "exists", Json.of(exists))
+            // path 只在存在时给：缺席给空串等于把「没有」说成一个位置
+            Json.set(o, "path", Json.of(if (exists) { path } else { "" }))
+            printOut(Json.pretty(o))
+        } else {
+            printOut(if (exists) { T("exists: ${path}", "已生成：${path}") } else { T("not generated yet", "尚未生成") })
+        }
+        return 0
+    }
     if (rest[0] != "index") {
         throw DgError.usage(T(
-            "Usage: cambium render <arch|index> <project> [--confidence] [--force] [--out F]",
-            "用法：cambium render <arch|index> <项目> [--confidence] [--force] [--out 文件]"))
+            "Usage: cambium render <arch|index|check> <project> [--confidence] [--force] [--out F]",
+            "用法：cambium render <arch|index|check> <项目> [--confidence] [--force] [--out 文件]"))
     }
     return renderIndexCmd(args, ctx)
 }
@@ -3653,6 +3705,15 @@ let SKILL_FRONTMATTER = "---\nname: cambium\ndescription: 用 Cambium 引擎管�
 
 /// 代码图谱工具在 skill 文本里的附加注解（纯呈现细节，名字本身来自 mcpToolList）。
 func skillGraphToolNote(name: String): String {
+    if (name == "codegraph_tree") {
+        return "（depth 控制目录深度）"
+    }
+    if (name == "codegraph_arch") {
+        return "（format=html|mermaid|dot|json）"
+    }
+    if (name == "codegraph_confidence") {
+        return "（format=json|text|**llm**——可直接喂给模型的逐条复核提示词）"
+    }
     if (name == "arch_gen") {
         return "（产出 arch.json + 摘要；交互 HTML 归 render）"
     }
@@ -3767,6 +3828,80 @@ func skillToolSection(): String {
     return "工具（${total} 个，分 ${groups.size} 组）：\n" + joinStrings(groups, "\n")
 }
 
+/// 图谱交付物生成工作流（LLM playbook 的**唯一来源**）。
+///
+/// 【为什么在引擎】引擎 AI 无关——它不调 LLM，但它最清楚自己有两个
+/// 交付物管线（代码图谱热力图 / 架构图）、每步的命令形态、回执语义
+/// （复用/重绘/首版/第 N 版）、治理信号怎么读。把这些写成给 LLM 的
+/// 工作说明书，LLM（客户端 agent / 外部编码 agent）照它驱动引擎，
+/// 生成过程就是「LLM 编排 + 引擎确定性执行」，而不是 GUI 静默直出。
+///
+/// 【谁消费】`cambium skill graph` 独立出口（客户端播种 agent 任务用）、
+/// skillMarkdown 尾部章节（完整教学包）。两处共用本函数——两份手抄必然漂移。
+func skillGraphWorkflow(en: Bool): String {
+    let sb = StringBuilder()
+    if (en) {
+        sb.append("## Graph deliverables: LLM-driven generation & multi-angle analysis\n\n")
+        sb.append("The engine is a deterministic, AI-agnostic kernel: it renders and returns facts (commands, receipts, JSON). YOU orchestrate: drive it step by step, read what it returns, then interpret and report across multiple angles. Never invent facts it did not return.\n\n")
+        sb.append("### Ground rules (read first)\n\n")
+        sb.append("1. Run a command, then read its receipt. 复用/reused = artifact fresh (cheap); 重绘/redrawn = version moved (quote the version).\n")
+        sb.append("2. `render check` NEVER heals — the only safe existence probe.\n")
+        sb.append("3. Deliverable files are engine-owned single-file HTML: report the path, never edit the content.\n")
+        sb.append("4. All lexical analyses (confidence findings, role classification, reference edges) are approximations — disclose that wherever you present them.\n\n")
+        sb.append("### Deliverable A — code graph / confidence heatmap (`render/index.html`)\n\n")
+        sb.append("The pipeline is complete — just drive it in order:\n\n")
+        sb.append("1. `index gen <project>` — lexical index (self-heals stale probes; large repos take tens of seconds).\n")
+        sb.append("2. `dendro gen <project>` — layered confidence findings. Missing confidence renders an honest \"no confidence data\" legend.\n")
+        sb.append("3. `render index <project> --confidence` — single-file interactive HTML.\n")
+        sb.append("4. `render check index <project>` — verify exists=true, report the path.\n")
+        sb.append("5. `dendro check <project> --json` — global score, per-file findings with file:line evidence.\n\n")
+        sb.append("Report shape for A: one-line global health → top findings table (location / evidence / why suspicious) → suggested review order → disclose the lexical boundary.\n\n")
+        sb.append("### Deliverable B — architecture graph (`render/arch.html`) — MULTI-LEVEL, MULTI-ANGLE\n\n")
+        sb.append("1. `arch gen <project>`  2. `render arch <project>`  3. `render check arch <project>`.\n")
+        sb.append("4. Then collect facts and analyze from FIVE angles (`graph arch <project> --format json` carries all of it — note it is --format json, NOT --json: the arch command treats bare --json as HTML output):\n\n")
+        sb.append("**Angle 1 — Module layering (structure).** `modules` / `edges` / `layers` / `lanes`: per-module files/symbols/lines, layer assignment, fanIn/fanOut/instability. Report: how many modules on which layers; which modules are the depended-on core (high fan-in, low instability) and which are change sources (high instability).\n\n")
+        sb.append("**Angle 2 — Responsibility view (technical).** `roles` / `roleLanes` / `roleEdges` / `roleViolations`: files classified into Entry / Interface / Service / Model / Storage / Support by filename role words (lexical — disclose). Report the technical shape (e.g. interface-heavy, thin service layer), each role's share, and every role violation (data→interface, storage→service = upward dependency).\n\n")
+        sb.append("**Angle 3 — Dependency governance (health).** `warnings.violations` / `cycleEdges` / `violationPairs` / `cycleModules`: layer violations by pair, modules sitting on cycles. Report pairs with their layer semantics; suggest resolving cycles first, then violations.\n\n")
+        sb.append("**Angle 4 — Business reading (domains).** From module/subdirectory names plus `drilldown[module].nodes` file lists, group what jointly serves one user capability (e.g. an editor domain, a translation domain). Rules: name-derived inference ONLY — label it as inference, never present it as an engine-computed grouping.\n\n")
+        sb.append("**Angle 5 — Risks & actions.** Cross angles 1–4 into the 3 most actionable items (cycles, violations, instability outliers), each with engine evidence (module names, counts).\n\n")
+        sb.append("Report shape for B: artifact path + version → architecture overview (angle 1) → responsibility distribution (angle 2) → governance table (angle 3) → business reading (angle 4) → risks & suggestions (angle 5).\n\n")
+        sb.append("### Tool mapping (same capability, two entry points)\n\n")
+        sb.append("If you run inside an agent with tools (MCP / client tool loop) rather than a shell, use the tool forms: `index_gen`, `dendro_gen`, `arch_gen`, `render(target=index|arch, confidence, force)`, `render(target=check, artifact=arch|index)` for existence probes, `arch_gen(name)` for the architecture JSON (arch.json; the HTML deliverable comes from render), `dendro_query(name)` for the confidence snapshot, `arch_query(name, module, violations)`. CLI command names in this playbook map 1:1 onto these tools — never assume a shell when tools are available.\n\n")
+        sb.append("### Cross-deliverable tie-in\n\n")
+        sb.append("Confidence findings (A) localize WHERE the code is untrustworthy; architecture angles (B) explain the structural WHY (cycle members and violation pairs usually concentrate findings). Use `index overview` / `arch query` for extra drill-down when the user asks \"where exactly\".\n\n")
+    } else {
+        sb.append("## 图谱交付物：LLM 驱动的生成与多角度分析\n\n")
+        sb.append("引擎是确定性、AI 无关的内核：它负责渲染并返回事实（命令、回执、JSON）。**你负责编排**：逐步驱动它、读它返回的东西，然后从多个角度解读并报告。引擎没返回的事实绝不编造。\n\n")
+        sb.append("### 通用纪律（先读）\n\n")
+        sb.append("1. 先跑命令再看回执。复用 = 产物新鲜（代价小）；重绘 = 版本前进了（报告时引用版本号）。\n")
+        sb.append("2. `render check` 绝不自愈——它是唯一安全的产物存在性探测。\n")
+        sb.append("3. 交付物是引擎所有的零依赖单文件 HTML：报告路径，绝不编辑其内容。\n")
+        sb.append("4. 一切词法分析（置信度疑点、职责归类、引用边）都是近似——呈现时必须如实声明。\n\n")
+        sb.append("### 交付物 A——代码图谱 / 置信度热力图（`render/index.html`）\n\n")
+        sb.append("管线已完善，按序驱动即可：\n\n")
+        sb.append("1. `index gen <项目>` —— 建词法索引（探针过期自愈重建；大仓几十秒级）。\n")
+        sb.append("2. `dendro gen <项目>` —— 分层置信度疑点。置信度缺席渲染恒发「无置信度数据」图例，不编数据。\n")
+        sb.append("3. `render index <项目> --confidence` —— 零依赖单文件交互 HTML。\n")
+        sb.append("4. `render check index <项目>` —— 验证 exists=true，报告路径。\n")
+        sb.append("5. `dendro check <项目> --json` —— 全局分数、逐文件疑点（file:line 证据）。\n\n")
+        sb.append("A 的报告结构：全局健康一句话 → 主要疑点表（位置 / 证据 / 为什么可疑）→ 建议复核顺序 → 声明词法边界。\n\n")
+        sb.append("### 交付物 B——架构图（`render/arch.html`）——多层级、多角度\n\n")
+        sb.append("1. `arch gen <项目>`  2. `render arch <项目>`  3. `render check arch <项目>`。\n")
+        sb.append("4. 然后从**五个角度**收集事实并分析（`graph arch <项目> --format json` 一次全带回来——注意是 `--format json`，不是 `--json`：arch 命令把裸 `--json` 当 HTML 输出）：\n\n")
+        sb.append("**角度 1｜模块分层（结构视角）。** `modules` / `edges` / `layers` / `lanes`：每模块的文件/符号/行、层归属、扇入/扇出/不稳定度。报告：几个模块落在哪几层；谁是「被依赖核心」（高扇入、低不稳定度）、谁是「变化源头」（高不稳定度）。\n\n")
+        sb.append("**角度 2｜职责视图（技术视角）。** `roles` / `roleLanes` / `roleEdges` / `roleViolations`：文件按文件名职责词归入入口/界面/服务/数据/存储/支撑（词法级——要声明）。报告：技术栈的形状（如界面厚、服务薄）、各角色占比、每条职责违规（数据→界面、存储→服务 = 上行依赖）。\n\n")
+        sb.append("**角度 3｜依赖治理（健康视角）。** `warnings.violations` / `cycleEdges` / `violationPairs` / `cycleModules`：分层违规按模块对列出、环上模块。报告时带上分层语义；治理顺序建议先解环、再解违规。\n\n")
+        sb.append("**角度 4｜业务域解读（业务视角）。** 从模块/子目录命名 + `drilldown[module].nodes` 文件清单，归纳共同支撑一个用户能力的文件群（如「编辑器域」「翻译域」）。规则：**只做命名推断**——标注「命名推断」，绝不把推断说成引擎算出的分组。\n\n")
+        sb.append("**角度 5｜风险与建议（行动视角）。** 综合角度 1–4，给出最值得动的 3 件事（环、违规、不稳定度异常），每条带引擎证据（模块名、计数）。\n\n")
+        sb.append("B 的报告结构：产物路径 + 版本 → 架构总览（角度 1）→ 职责分布（角度 2）→ 治理信号表（角度 3）→ 业务解读（角度 4）→ 风险与建议（角度 5）。\n\n")
+        sb.append("### 工具形态映射（同一能力，两个入口）\n\n")
+        sb.append("如果你运行在带工具的 agent 环境（MCP / 客户端工具循环）而不是 shell，用工具形态：`index_gen`、`dendro_gen`、`arch_gen`、`render(target=index|arch, confidence, force)`、`render(target=check, artifact=arch|index)` 做存在性探测、`arch_gen(name)` 取架构 JSON（arch.json；HTML 交付物走 render）、`dendro_query(name)` 取置信度快照、`arch_query(name, module, violations)`。本 playbook 里的 CLI 命令名与这些工具一一对应——有工具时不要假设自己有 shell。\n\n")
+        sb.append("### 两份交付物的联动\n\n")
+        sb.append("置信度（A）回答「代码哪里不可信」；架构角度（B）解释「结构上的为什么」——环上模块与违规对通常正是疑点富集区。用户追问「到底在哪」时，用 `index overview` / `arch query` 继续下钻。\n\n")
+    }
+    return sb.toString()
+}
+
 func skillMarkdown(): String {
     // 接入方式先攒成列表，标题里的「N 种」由列表长度派生（数字跟着列表走，就不会漂）。
     // 工具清单由 skillToolSection() 从 mcpToolList() 派生——名字与计数不手抄第二份。
@@ -3783,8 +3918,8 @@ func skillMarkdown(): String {
         + "`index refs <符号> [项目]` · `index impact <符号> [项目]` · `index grep <文本> [项目]`\n   "
         + "索引与置信度：`index gen|update|overview <项目>` · `dendro gen|query <项目>` · `arch gen|query <项目>`\n   "
         + "交互图：`render <arch|index> <项目>`（单文件 HTML 落盘，回执带路径与复用/新绘判定）· "
-        + "`graph tree|arch --format html|scene`\n   "
-        + "体检：`dendro check <项目> [--llm]` · `dendro patch <项目> --patch <diff>`")
+        + "`graph tree|arch --format html`\n   "
+        + "产物体检：`render check <arch|index> <项目>`（只探测存在性，绝不重建）· 体检：`dendro check <项目> [--llm]` · `dendro patch <项目> --patch <diff>`")
     let sb = StringBuilder()
     sb.append(SKILL_FRONTMATTER)
     sb.append("# Cambium — 本地项目群进度与代码引擎（agent 使用指南）\n\n")
@@ -3826,9 +3961,8 @@ func skillMarkdown(): String {
         + "拿 S1..S10 信号与 uncertain 清单 → 你逐条裁决（confirm/dismiss/unsure，必须引用代码原文）→ "
         + "dendro_patch_merge(algorithm_json, agent_json) → final 分数与披露\n")
     sb.append("- **架构图**：arch_gen(name) 产出 arch.json 与模块摘要 → arch_query(name[, module]) 读分层/违规/环 → "
-        + "render(target=arch) 出零依赖单文件交互图；要自己画：arch_gen(name, format=scene) 出 moongit-graph-scene v1 JSON "
-        + "（主题 token、形状、粒子、hits 点击区、panels 详情面板、逐视图 edgesDropped 截断披露）——"
-        + "任何 Canvas2D 移植（浏览器/Swift/Skia）按 docs/graph-scene-schema.md 驱动\n\n")
+        + "render(target=arch) 出零依赖单文件交互图（关系连线/模块下钻/搜索/明暗主题全内建；CLI 是 `graph arch <项目> --format html`）——客户端与用户直接渲染该文件；"
+        + "交付前用 render(target=check, artifact=arch) 验证产物就绪。\n\n")
     sb.append("## 红线\n\n")
     sb.append("- git_op 只允许白名单操作（pull/push/commit/stash/unstash/fetch），没有 reset/clean/force-push\n")
     sb.append("- 文档更新只发生 Cambium 托管区域内（引擎保证），用户内容逐字节保留\n")
@@ -3845,18 +3979,24 @@ func skillMarkdown(): String {
     sb.append("codegraph_overview / codegraph_tree / codegraph_symbol / codegraph_impact / codegraph_arch / codegraph_confidence "
         + "是早期工具名，仅为兼容保留、将移除。对应关系：overview→index_overview、tree→index_gen、symbol→index_query、"
         + "impact→index_impact、arch→arch_gen+arch_query+render、confidence→dendro_gen+dendro_query。\n")
+    sb.append(skillGraphWorkflow(isEnglish(loadConfig().language)))
     return sb.toString()
 }
 
 func cmdSkill(rest: ArrayList<String>, ctx: CliContext): Int64 {
     let refs = positionalsOnly(rest, VALUE_FLAGS)
     let action = if (refs.size > 0) { refs[0] } else { "print" }
-    let md = skillMarkdown()
     match (action) {
+        case "graph" =>
+            // 图谱生成工作流的独立出口：客户端播种 agent 任务、外部编码 agent
+            // 单取这一节，不必吞下整份教学包。与 skillMarkdown 尾部同源。
+            printOut(skillGraphWorkflow(isEnglish(loadConfig().language)))
+            return 0
         case "print" =>
-            printOut(md)
+            printOut(skillMarkdown())
             return 0
         case "install" =>
+            let md = skillMarkdown()
             var dir = ""
             match (flagValue(rest, "--dir")) {
                 case Some(v) => dir = expandHome(v)
@@ -3875,7 +4015,7 @@ func cmdSkill(rest: ArrayList<String>, ctx: CliContext): Int64 {
             }
             return 0
         case _ =>
-            throw DgError.usage(T("Usage: cambium skill <print|install> [--dir D]", "用法：cambium skill <print|install> [--dir D]"))
+            throw DgError.usage(T("Usage: cambium skill <print|graph|install> [--dir D]", "用法：cambium skill <print|graph|install> [--dir D]"))
     }
 }
 
@@ -4170,7 +4310,7 @@ func printHelp(): Unit {
         printOut("                           (old names kept as aliases: confidence <gen|query|db>, graph confidence,")
         printOut("                            graph patchconf)")
         printOut("                           Code graph: symbol index / relationship tree / impact /")
-        printOut("                           interactive architecture canvas (--format html|mermaid|dot|json|scene)")
+        printOut("                           interactive architecture canvas (--format html|mermaid|dot|json)")
         printOut("  graph db [project] [--out F]  Write the symbol-level index to a single-file SQLite DB")
         printOut("                           (nodes/edges with confidence tiers; query callers/callees via SQL)")
         printOut("  dendro db [project] [--out F]  Write the confidence report to a single-file SQLite DB")
@@ -4191,6 +4331,7 @@ func printHelp(): Unit {
         printOut("  render <arch|index> <project>  Render deliverables from the persisted payload (reuses when")
         printOut("                           unchanged; --force redraws; render index --confidence overlays confidence.json)")
         printOut("  config <list|get|set> [k] [v]  Configuration (keys: language / update.backupKeep")
+        printOut("  render check <arch|index> <project>  Verify the deliverable exists (never rebuilds)")
         printOut("                           / update.maxShallowBranches / roots)")
         printOut("  verify [project]         Verify doc integrity (user content untouched)")
         printOut("  doctor                   Environment self-check")
@@ -4242,7 +4383,7 @@ func printHelp(): Unit {
     printOut("                           / --merge 合并终稿）")
     printOut("                           confidence：代码置信度报告（--llm 出 LLM 复核提示词；--no-ast 跳过语法树层）")
     printOut("                           代码图谱：符号索引/关系树/影响面/技术架构图")
-    printOut("                           （arch 用 --format html|mermaid|dot|json|scene；html 为 Canvas 交互图）")
+    printOut("                           （arch 用 --format html|mermaid|dot|json；html 为 Canvas 交互图）")
     printOut("  graph db [项目] [--out F]  符号级索引写入单文件 SQLite（nodes/edges，含 tier 确信度；")
     printOut("                           agent 用 SQL 查 callers/callees）")
     printOut("  dendro db [项目] [--out F]  置信度报告写入单文件 SQLite（findings/dimensions/罚分表）")
@@ -4259,6 +4400,7 @@ func printHelp(): Unit {
     printOut("  render <arch|index> <项目>  用持久化 payload 渲染单文件交互 HTML（未变即复用；--force 重绘；")
     printOut("                           render index --confidence 叠加 confidence.json 热力图）")
     printOut("  config <list|get|set> [k] [v]  配置（键：language / update.backupKeep / update.maxShallowBranches / roots）")
+    printOut("  render check <arch|index> <项目>  验证交付物是否就绪（只探测存在性，绝不重建）")
     printOut("  verify [项目]            校验文档完整性（用户内容是否被改动）")
     printOut("  doctor                   环境自检")
     printOut("  version                  引擎版本号")

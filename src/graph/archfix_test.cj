@@ -181,49 +181,9 @@ public func fn${i}(t: Text): Int64 { return 1 }
     }
 }
 
-// MARK: - R4：arch 的截断披露要进 html 与 scene 两个出口
+// MARK: - R4：arch 的截断披露要进 html 出口
 
-/// R4 回归：scene 的 meta 恒发 truncated（false 也发）。原先只有 archJson 有
-/// 这个键，scene 连键都没有 —— 同一事实在两个出口一个说一个不说。
-@Test
-func testArchSceneMetaAlwaysEmitsTruncated(): Unit {
-    let root = writeTree()
-    try {
-        let scene = buildArchScene(buildArch(buildGraph(root)), false)
-        let meta = Json.getOr(scene, "meta")
-        @Assert(Json.has(meta, "truncated"))
-        // fallback 取反：键缺失即红（恒发与值一起钉）；小夹具远不到 4000 上限
-        @Assert(Json.boolAt(meta, "truncated", true) == false)
-    } finally {
-        removeTree(root)
-    }
-}
 
-/// R4 回归（截断态）：真实撞上 GRAPH_MAX_FILES=4000 —— walk 层任何文件都计数
-/// （README.md 亦然），pad 全用 .md：不进 facts（语言识别排除），arch 聚合保持
-/// 轻量，但 truncated 如实置位并一路透传 graph → ArchData → scene meta。
-@Test
-func testArchSceneMetaTruncatedTrueWhenFileCapHit(): Unit {
-    let root = writeTree()
-    try {
-        ensureDir("${root}/zzbulk")
-        var i: Int64 = 0
-        while (i < GRAPH_MAX_FILES) {
-            writeFileAtomic("${root}/zzbulk/pad${i}.md", "pad\n")
-            i += 1
-        }
-        let g = buildGraph(root)
-        @Assert(g.truncated)   // 前提：真触发了文件数上限
-        let arch = buildArch(g)
-        @Assert(arch.truncated)
-        let scene = buildArchScene(arch, false)
-        let meta = Json.getOr(scene, "meta")
-        @Assert(Json.has(meta, "truncated"))
-        @Assert(Json.boolAt(meta, "truncated", false))
-    } finally {
-        removeTree(root)
-    }
-}
 
 /// R4 回归（html 半边）：驱动 JS 必须真的消费 DATA.truncated —— 键在数据里、
 /// 页面从不读它 = 数据显示没算。两种语言都要有消费点（英文模式同一分支）。
@@ -880,54 +840,6 @@ func testLayoutSwimlaneSameLayerSameYAndInterfaceAboveFoundation(): Unit {
     }
 }
 
-/// R13 回归（scene 半边）：架构级 panel（scene 侧的「模块对象」）恒发治理
-/// 四键；泳道 frame 带 fill token（认识 fills 的驱动画淡底泳道），frame 数
-/// 与 archJson.lanes 条数一致。
-@Test
-func testArchScenePanelsCarryFanKeysAndFramesCarryFill(): Unit {
-    let root = writeTree()
-    try {
-        let arch = buildArch(buildGraph(root))
-        let scene = buildArchScene(arch, false)
-        // ① panels：arch: 前缀的模块对象逐个查四键（默认值取反法）
-        let panels = Json.getOr(scene, "panels")
-        var archPanels: Int64 = 0
-        match (panels) {
-            case JObj(items) =>
-                for ((k, po) in items) {
-                    if (!k.startsWith("arch:")) { continue }
-                    archPanels += 1
-                    @Assert(Json.has(po, "fanIn"))
-                    @Assert(Json.has(po, "fanOut"))
-                    @Assert(Json.has(po, "instability"))
-                    @Assert(Json.has(po, "layerName"))
-                    @Assert(Json.intAt(po, "fanIn", -1) >= 0)
-                    @Assert(Json.intAt(po, "fanOut", -1) >= 0)
-                    @Assert(Json.intAt(po, "instability", 101) <= 100)
-                    @Assert(Json.strAt(po, "layerName", "").size > 0)
-                }
-            case _ => @Assert(false)
-        }
-        @Assert(archPanels == Int64(arch.modules.size))   // 前提：每模块一个 panel
-        // ② frames：每个非空层一个、都带 fill（淡底 token），数与 lanes 一致
-        let j = archJson(arch, false)
-        let laneCount = Int64(Json.arrAt(j, "lanes").size)
-        @Assert(laneCount > 0)
-        let archView = Json.getOr(Json.getOr(scene, "views"), "arch")
-        var frames: Int64 = 0
-        var filledFrames: Int64 = 0
-        for (s in Json.arrAt(archView, "shapes")) {
-            if (Json.strAt(s, "t", "") == "frame") {
-                frames += 1
-                if (Json.strAt(s, "fill", "").size > 0) { filledFrames += 1 }
-            }
-        }
-        @Assert(frames == laneCount)
-        @Assert(filledFrames == laneCount)
-    } finally {
-        removeTree(root)
-    }
-}
 
 /// R13 回归（驱动消费半边）：renderJs 必须真消费新数据——泳道（DATA.lanes）、
 /// 卡片治理信号（fanIn/instability）、顶栏体检（buildHealth/Top3）、图例
@@ -985,6 +897,150 @@ public func recvCaller(boxed: Box): Int64 {
         // `boxed.T()` 的 T 是接收者调用（前导点属于自己的标志），不撞
         // cli/lang.cj 的翻译函数 T
         @Assert(!hasEdge(g.archRefEdges, "graph/recv.cj", "cli/lang.cj"))
+    } finally {
+        removeTree(root)
+    }
+}
+
+
+/// 测试用引号字面量（避免在仓颉源码里写转义引号——上一版的 \\" 序列
+/// 直接是非法 token，测试目标编译失败）。
+func jsStrForTestQuote(): String {
+    let out = ArrayList<UInt8>()
+    out.add(34)
+    return fromUtf8Lossy(out.toArray())
+}
+
+// ── 职责分层（技术深度）：分类器 / 聚合 / JSON 出口 / HTML 消费 ──
+
+/// 分类器：真实仓库文件名逐个钉住。规则按优先级排序——
+/// SettingsSheet 命中界面（Sheet 后缀）而不是数据（Settings）；
+/// SessionStore 命中存储（Store）而不是服务；AppDelegate 是入口。
+@Test
+func testFileRoleClassification(): Unit {
+    // 入口
+    @Assert(fileRole("Sources/d2note/main.swift") == ROLE_ENTRY)
+    @Assert(fileRole("Sources/d2note/AppDelegate.swift") == ROLE_ENTRY)
+    @Assert(fileRole("app/App.ts") == ROLE_ENTRY)
+    // 界面（优先于数据词：SettingsSheet 不是配置模型）
+    @Assert(fileRole("Sources/d2note/EditorTextView.swift") == ROLE_UI)
+    @Assert(fileRole("Sources/d2note/SettingsSheet.swift") == ROLE_UI)
+    @Assert(fileRole("src/CommandPalette.ts") == ROLE_UI)
+    @Assert(fileRole("src/Theme.swift") == ROLE_UI)
+    // 存储（优先于服务词：SessionStore 不是 session 服务）
+    @Assert(fileRole("Sources/d2note/SessionStore.swift") == ROLE_STORAGE)
+    @Assert(fileRole("src/cache.rs") == ROLE_STORAGE)
+    // 服务
+    @Assert(fileRole("Sources/d2note/TranslateService.swift") == ROLE_SERVICE)
+    @Assert(fileRole("Sources/d2note/SuggestionEngine.swift") == ROLE_SERVICE)
+    // 数据
+    @Assert(fileRole("Sources/d2note/EditorDocument.swift") == ROLE_MODEL)
+    @Assert(fileRole("Sources/d2note/SourceLanguage.swift") == ROLE_MODEL)
+    // 支撑
+    @Assert(fileRole("Sources/d2note/Highlighter.swift") == ROLE_SUPPORT)
+    @Assert(fileRole("Sources/d2note/Formatter.swift") == ROLE_SUPPORT)
+    // 其他（无任何职责词命中——如实落「其他」，不硬编）
+    @Assert(fileRole("Sources/d2note/SampleContent.swift") == ROLE_OTHER)
+    @Assert(fileRole("Package.swift") == ROLE_OTHER)
+}
+
+/// 角色违规判定：低秩依赖高秩（数据→界面、存储→服务）= 违规；
+/// 「其他」两侧都不判（坐标系之外，同模块层 4 的 M12 教训）。
+@Test
+func testRoleViolationDirection(): Unit {
+    @Assert(isRoleViolation(ROLE_MODEL, ROLE_UI))          // 数据 → 界面 = 逆流
+    @Assert(isRoleViolation(ROLE_STORAGE, ROLE_SERVICE))   // 存储 → 服务 = 逆流
+    @Assert(!isRoleViolation(ROLE_UI, ROLE_SERVICE))       // 界面 → 服务 = 健康下行
+    @Assert(!isRoleViolation(ROLE_ENTRY, ROLE_UI))         // 入口 → 界面 = 健康
+    @Assert(!isRoleViolation(ROLE_OTHER, ROLE_UI))         // 其他不参与
+    @Assert(!isRoleViolation(ROLE_UI, ROLE_OTHER))         // 同上
+}
+
+/// 聚合不变量：标准夹具上
+///   ① roles 恒 7 组（空角色也在，files=0）；
+///   ② Σ roleMix == Σ role files == 总文件数（一个文件恰归一个角色）；
+///   ③ 模块 roleMix 桶数恒 7（消费方按桶画比例，键集不漂）；
+///   ④ 入口文件被记录（夹具有 main 入口形态的文件则非空，这里只验形状）。
+@Test
+func testRoleAggregationInvariants(): Unit {
+    let root = writeTree()
+    try {
+        let arch = buildArch(buildGraph(root))
+        @Assert(arch.roles.size == ROLE_COUNT)
+        var roleFileSum: Int64 = 0
+        for (g in arch.roles) { roleFileSum += g.files }
+        @Assert(roleFileSum == arch.totalFiles)
+        var mixSum: Int64 = 0
+        for (m in arch.modules) {
+            @Assert(m.roleMix.size == ROLE_COUNT)
+            for (c in m.roleMix) { mixSum += c }
+        }
+        @Assert(mixSum == arch.totalFiles)
+        // 代表文件：非空角色的 topFiles 不超过 8，且都是真实路径（行数降序裁剪）
+        for (g in arch.roles) {
+            @Assert(g.topFiles.size <= 8)
+            @Assert(g.topFiles.size <= g.files)
+        }
+        // 职责视图布局：非空角色卡有坐标，空角色坐标为 0（不画）
+        var laidOut = 0
+        for (g in arch.roles) {
+            if (g.files > 0) {
+                laidOut += 1
+                @Assert(g.w > 0.0)
+            }
+        }
+        @Assert(laidOut > 0)
+    } finally {
+        removeTree(root)
+    }
+}
+
+/// archJson 职责出口恒发（空仓库给空数组——缺键会被消费方读成旧版本）；
+/// 模块对象带 7 桶 roleMix；角色卡带 id（驱动 findNode/依赖面板按 id 找节点）。
+@Test
+func testArchJsonCarriesRoleView(): Unit {
+    let root = writeTree()
+    try {
+        let arch = buildArch(buildGraph(root))
+        let j = archJson(arch, false)
+        @Assert(Json.has(j, "roles"))
+        @Assert(Json.has(j, "roleLanes"))
+        @Assert(Json.has(j, "roleEdges"))
+        @Assert(Json.has(j, "roleViolations"))
+        @Assert(Json.intAt(j, "roleViolations", -1) >= 0)
+        var roleWithId = 0
+        for (r in Json.arrAt(j, "roles")) {
+            @Assert(Json.has(r, "id"))
+            roleWithId += 1
+        }
+        @Assert(roleWithId > 0)
+        for (m in Json.arrAt(j, "modules")) {
+            @Assert(Json.arrAt(m, "roleMix").size == ROLE_COUNT)
+            @Assert(Json.has(m, "entryFiles"))
+        }
+    } finally {
+        removeTree(root)
+    }
+}
+
+/// 驱动消费半边：交互 HTML 必须真的读职责数据——视图切换 chips、
+/// 角色泳道（roleLanes）、角色边、边信号规范化（violation → viol）。
+/// 键在数据里、页面不读 = 数据显示没算（不变量 17 的教训）。
+@Test
+func testArchHtmlConsumesRoleView(): Unit {
+    let root = writeTree()
+    try {
+        let html = archCanvasHtml(buildArch(buildGraph(root)), false)
+        // 切换 chips 与驱动接线
+        @Assert(html.contains("vchip"))
+        // HTML 里该属性由模板写成 data-view="role"（引号是字面量的一部分）
+        @Assert(html.contains("data-view=" + jsStrForTestQuote() + "role" + jsStrForTestQuote()))
+        // 角色泳道与角色边的消费点
+        @Assert(html.contains("DATA.roleLanes"))
+        @Assert(html.contains("DATA.roleEdges"))
+        @Assert(html.contains("RNAMES"))
+        // 边信号规范化（修 violation → viol 的键名漂移潜伏 bug）
+        @Assert(html.contains("e.viol = !!e.violation"))
     } finally {
         removeTree(root)
     }
