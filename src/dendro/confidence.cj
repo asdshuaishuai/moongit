@@ -611,8 +611,13 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
                 if (AST_DROPPED_NODES > 0) {
                     astNote += "；${AST_DROPPED_NODES} 个签名不成其为签名的函数节点已丢弃（tree-sitter 错误恢复的产物）"
                 }
-                // 批失败 ⇒ 那些文件的 AST 独有信号整类缺失，逐类说清
-                let missing = astOnlyKindsUnavailable(AST_FAILED_BATCHES > 0)
+                // 有文件没走成语法树（批失败 / 语言没有语法）⇒ 那些文件的 AST 独有信号整类缺失，逐类说清；
+                // 全部文件都走成了就什么都不缺——不能把「7 类」挂在一份没有降级的报告上
+                let missing = if (AST_FAILED_BATCHES > 0 || fallbackFiles > 0) {
+                    astOnlyKindsUnavailable(true)
+                } else {
+                    ArrayList<String>()
+                }
                 if (missing.size > 0) {
                     astNote += "；受影响的文件上这些类别的信号缺失：" + joinStrings(missing, "、")
                 }
