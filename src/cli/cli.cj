@@ -1832,13 +1832,31 @@ func archRebuild(p: ProjectEntry, prevCount: Int64): (Int64, SourceProbe) {
 
 /// query / render 共用的自愈入口：过期或缺 arch.json 先重建（等价 arch update）。
 /// 返回 (重建后的版本号, 是否发生了自愈重建)。
-func archEnsureFresh(p: ProjectEntry): (Int64, Bool) {
-    let (fresh, _, _) = archProbeFresh(p)
-    if (fresh) {
-        return (archCurrentCount(p), false)
+func archLoadCurrent(p: ProjectEntry, rebuildIfStale: Bool): (Int64, Bool, Bool) {
+    // 架构图是**快照**（2026-11-28 用户定）：源码变动不触发重建——打开页面看到的是上一次生成的图，
+    // 重建只由用户手动（arch update / render arch --force / 客户端「刷新」）。两类例外照旧自愈：
+    // ① 没有快照（首次进页总得有图）；② 快照形状旧（引擎升级迁移，archPayloadShapeCurrent——
+    //    升级后旧载荷缺新键，不重建页面就一直在旧形状上）。
+    // 探针过期（代码变动）不重建，只如实上报 stale——render 的回执带它，页面据此提示「点刷新重建」。
+    // rebuildIfStale = force：手动重建时连载荷一起重算（只重绘 HTML 的话画出来的还是旧数据）。
+    var healed = false
+    var shapeOk = false
+    match (archStoreRead(p)) {
+        case Some(j) => shapeOk = archPayloadShapeCurrent(j)
+        case None => ()
     }
-    let (count, _) = archRebuild(p, archCurrentCount(p))
-    return (count, true)
+    var stale = false
+    let (fresh, _, _) = archProbeFresh(p)
+    if (!shapeOk) {
+        let (_, _) = archRebuild(p, archCurrentCount(p))
+        healed = true
+    } else if (!fresh && rebuildIfStale) {
+        let (_, _) = archRebuild(p, archCurrentCount(p))
+        healed = true
+    } else {
+        stale = !fresh
+    }
+    return (archCurrentCount(p), healed, stale)
 }
 
 /// `cambium arch` —— 顶层架构命名空间：gen（构建 + 持久化）/ update
@@ -2001,7 +2019,7 @@ func archQueryCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     var moduleId = ""
     if (refs.size == 2) { moduleId = refs[1] }
     let wantViolations = hasFlag(args, "--violations")
-    let (_, healed) = archEnsureFresh(p)
+    let (_, healed, _) = archLoadCurrent(p, false)   // query 也是读快照：代码变动不重建，stale 不另报（render 的回执才带）
     // 自愈之后 arch.json 必然可读（刚重写或本就新鲜）；读不出 = 写入失败，硬失败
     let payload = match (archStoreRead(p)) {
         case Some(j) => j
@@ -2866,7 +2884,7 @@ func renderIndexCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
 }
 
 /// `render arch` 的核心（CLI 与 MCP 共用；三段判定只有这一份实现）：
-/// ① 自愈（过期/缺 arch.json 先重建，等价 arch update）；
+/// ① 取数（archLoadCurrent：快照口径——源码变动不重建只报 stale；缺库/形状旧才自愈；force 连载荷一起重算）；
 /// ② 读持久化 arch.json → renderArchHtml（布局坐标已在 archJson 的
 ///    modules x/y/w/h 与 lanes 里，绘图直接消费，不重算图谱）；
 /// ③ 复用判定：现有产物内嵌 (updateCount, generatedAt) == arch.json 的
@@ -2874,9 +2892,10 @@ func renderIndexCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
 ///    版本号在「arch.json 缺席后重建」会从 0 重计，时间戳参与比对，
 ///    无标记 = 旧产物/被改过，不可复用（「读不出来」不许当「没变」）。
 /// 渲染语言取 arch.json meta 的 en（生成时的语言烤进产物，不随 config 漂）。
-/// 返回回执 JSON（project/path/reused/updateCount/generatedAt/selfHealed）。
+/// 快照口径（2026-11-28）：源码变动不重建（stale=true 上报）；force = 手动重建，载荷连 HTML 一起重算。
+/// 返回回执 JSON（project/path/reused/updateCount/generatedAt/selfHealed/stale）。
 func renderArchCore(p: ProjectEntry, force: Bool, outPath: String): JsonValue {
-    let (_, healed) = archEnsureFresh(p)
+    let (_, healed, archStale) = archLoadCurrent(p, force)
     let jsonPath = archJsonPathOf(p)
     let renderPath = archRenderPathOf(p)
     ensureDir(dirname(renderPath))
@@ -2935,6 +2954,8 @@ func renderArchCore(p: ProjectEntry, force: Bool, outPath: String): JsonValue {
     Json.set(o, "updateCount", Json.of(shownCount))
     Json.set(o, "generatedAt", Json.of(payloadGen))
     Json.set(o, "selfHealed", Json.of(healed))
+    // 快照口径恒发（false 也发）：代码变了但还没手动重建 = true，页面据此提示
+    Json.set(o, "stale", Json.of(archStale))
     return o
 }
 
@@ -2962,16 +2983,23 @@ func renderArchCmd(args: ArrayList<String>, ctx: CliContext): Int64 {
     } else {
         ""
     }
+    // 快照口径：代码变了但没手动重建——打开页面看的是旧图，必须说出来（永不静默）
+    let staleNote = if (Json.boolAt(o, "stale", false) && !healed) {
+        T(" (code changed since the snapshot — click Refresh or run `cambium arch update` to rebuild)",
+          "（架构快照已过期：代码有变动——点「刷新」或执行 cambium arch update 重建）")
+    } else {
+        ""
+    }
     if (ctx.json) {
         printOut(Json.pretty(o))
         return 0
     }
     if (reuse) {
-        printOut(T("Reused persisted render (${indexVersionLabel(count)}): ${Json.strAt(o, "path", "")}${healedNote}",
-            "已复用持久化渲染（${indexVersionLabel(count)}）：${Json.strAt(o, "path", "")}${healedNote}"))
+        printOut(T("Reused persisted render (${indexVersionLabel(count)}): ${Json.strAt(o, "path", "")}${healedNote}${staleNote}",
+            "已复用持久化渲染（${indexVersionLabel(count)}）：${Json.strAt(o, "path", "")}${healedNote}${staleNote}"))
     } else {
-        printOut(T("Redrawn: ${Json.strAt(o, "path", "")} · ${indexVersionLabel(count)}${healedNote}",
-            "已重绘：${Json.strAt(o, "path", "")} · ${indexVersionLabel(count)}${healedNote}"))
+        printOut(T("Redrawn: ${Json.strAt(o, "path", "")} · ${indexVersionLabel(count)}${healedNote}${staleNote}",
+            "已重绘：${Json.strAt(o, "path", "")} · ${indexVersionLabel(count)}${healedNote}${staleNote}"))
     }
     return 0
 }

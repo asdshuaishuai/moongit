@@ -755,7 +755,7 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                 let moduleId = getStr("module")
                 let violations = boolArg("violations")
                 let wantJson = Json.boolAt(args, "json", true)
-                let (_, healed) = archEnsureFresh(p)
+                let (_, healed, _) = archLoadCurrent(p, false)   // 快照口径：query 读旧图不重建
                 let payload = match (archStoreRead(p)) {
                     case Some(j) => j
                     case None => return mcpErr("arch.json 缺失：${archJsonPathOf(p)}——先调 arch_gen")

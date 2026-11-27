@@ -3322,6 +3322,57 @@ public func start(t: Text): Int64 {
     return p
 }
 
+/// 快照口径（2026-11-28 用户定）：架构图生成后不随源码变动重建——render arch 探针过期只如实上报
+/// stale（回执恒发），产物逐字节不变、版本不动；重建只由用户手动（arch update / render arch --force）。
+/// --force 是手动重建：载荷连 HTML 一起重算（只重绘 HTML 的话画出来的还是旧数据）。
+/// 置信度与代码图谱仍随变动重构（indexEnsureFresh 探针自愈 + 客户端补生成快照），与架构图刻意不同。
+@Test
+func testArchRenderKeepsSnapshotUntilUserRefreshes(): Unit {
+    let base = "/tmp/deepgit-archsnap-${nowMillis()}"
+    let testHome = base + "-home"
+    ensureDir(testHome)
+    enterTestHome(testHome)
+    try {
+        let p = archCliFixtureProject(base, "arch-snap-demo")
+        let ctx = CliContext(ArrayList<String>(["arch"]))
+        let store = deepgitPath(["store", p.id])
+        let jsonPath = store + "/arch.json"
+        @Assert(cmdArch(ArrayList<String>(["gen", "arch-snap-demo"]), ctx) == 0)
+        // 首绘
+        let o1 = renderArchCore(p, false, "")
+        @Assert(Json.boolAt(o1, "reused", true) == false)
+        @Assert(Json.boolAt(o1, "stale", true) == false)
+        @Assert(Json.intAt(o1, "updateCount", -1) == 0)
+        let html1 = readFileTextOr(store + "/render/arch.html", "")
+        // 源码变动（探针过期）：不重建——产物逐字节不变、版本不动、stale 如实上报
+        writeFileAtomic("${p.path}/src/cli/late.cj", "package demo.cli\n\npublic func late(): Int64 { return 9 }\n")
+        let o2 = renderArchCore(p, false, "")
+        @Assert(Json.boolAt(o2, "reused", false) == true)
+        @Assert(Json.boolAt(o2, "stale", false) == true)
+        @Assert(Json.intAt(o2, "updateCount", -1) == 0)
+        @Assert(readFileTextOr(store + "/render/arch.html", "") == html1)
+        // query 同一口径：不自愈（selfHealed=false，读的是旧快照）
+        let payload2 = Json.parse(readFileTextOr(jsonPath, "")).getOrThrow()
+        let ov = archOverviewJson(p, payload2, false)
+        @Assert(Json.boolAt(ov, "selfHealed", true) == false)
+        // --force = 用户手动重建：载荷连 HTML 一起重算，stale 归零、版本 +1
+        let o3 = renderArchCore(p, true, "")
+        @Assert(Json.boolAt(o3, "reused", true) == false)
+        @Assert(Json.boolAt(o3, "stale", true) == false)
+        @Assert(Json.intAt(o3, "updateCount", -1) == 1)
+        @Assert(readFileTextOr(store + "/render/arch.html", "") != html1)
+        // 之后再来一次非 force：新鲜，stale=false
+        let o4 = renderArchCore(p, false, "")
+        @Assert(Json.boolAt(o4, "stale", true) == false)
+        @Assert(Json.boolAt(o4, "reused", false) == true)
+    } finally {
+        exitTestHome()
+        removePathIfExists(base + "/repo")
+        removePathIfExists(testHome)
+        removePathIfExists(base)
+    }
+}
+
 /// 升级自愈：铺开批之前落盘的 arch.json（geo 里没有嵌入间距四个键）探针虽然一致，也按过期重建。
 /// 不然引擎升级后已登记的项目一直复用旧载荷——模板升了、页面重绘了，图却还是定宽的一列
 /// （实测抓到：隔离库里登记过的仓库升级后 render arch 仍读旧载荷，geo 没有 emb* 键）。
