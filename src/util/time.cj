@@ -2,7 +2,7 @@
 //
 // 设计取舍：ISO 字符串的时间显示采用「字符串切片」而非时区换算——git 提交时间
 // 由提交者时区决定，忠实显示原始值比转成本地时间更有意义。
-package moongit.util
+package cambium.util
 
 import std.time.*
 import std.unittest.*
@@ -50,7 +50,7 @@ public func formatDateTime(iso: String): String {
     // 旧实现只查长度和第 4/7 位是不是 "-"，然后无条件切 [..10] 和 [11..16]，
     // 串里只要有一个多字节字符插在切点之前就崩掉整个命令。
     // 实测 journal.jsonl 里 at="2026-10-01T03:4中"（第 15 字节起是汉字），
-    // `moongit journal` 报「内部错误：Invalid utf8 byte sequence」exit 1。
+    // `cambium journal` 报「内部错误：Invalid utf8 byte sequence」exit 1。
     // journal.jsonl 是面向用户的可读文件，还被 post-commit 钩子持续追加。
     for (k in [4, 5, 7, 8, 10, 11, 16]) {
         if (!isUtf8Boundary(s, k)) {
@@ -234,7 +234,7 @@ func testFormatDateTimeDoesNotSplitUtf8Char(): Unit {
     // 串里只要有一个多字节字符插在切点之前，切点就劈进字符中间，
     // 仓颉抛 "Invalid utf8 byte sequence" —— 整个命令崩掉。
     // 实测 journal.jsonl 里 at="2026-10-01T03:4中"（第 15 字节起是汉字），
-    // `moongit journal` 报「内部错误：Invalid utf8 byte sequence」exit 1。
+    // `cambium journal` 报「内部错误：Invalid utf8 byte sequence」exit 1。
     // journal.jsonl 是面向用户的可读文件，还被 post-commit 钩子持续追加。
     @Assert(formatDateTime("2026-10-01T03:4中") == "-")
     // formatDateOnly 只切 [..10]，这个串的前 10 字节本来就是纯 ASCII，切片合法 ——

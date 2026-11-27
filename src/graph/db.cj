@@ -19,11 +19,11 @@
 // 【meta 表的数字口径与表行数自洽】files = files 表行数（graph.files）、
 // symbols = nodes 表行数（payload.functions）。meta 是给 agent 的速览，
 // 数字必须能对上表，否则查询行数对不上 meta 会怀疑库坏了。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
 import std.convert.*
-import moongit.util.*
+import cambium.util.*
 
 /// graph db 的 meta.generator。schema 演进时递增版本（v1 → v2），
 /// 读方据此判断能否信任键集。
@@ -121,7 +121,7 @@ public func indexMetaRead(dbPath: String): Option<IndexMeta> {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// A. 符号级索引图库（moongit graph db）
+// A. 符号级索引图库（cambium graph db）
 //
 //   meta(key, value)          generator / project / root / files / symbols
 //   nodes(id, kind, name, file, line, lang, findings, max_weight)
@@ -320,7 +320,7 @@ func graphDbFill(db: SqliteDb, graph: CodeGraph, funcPayload: JsonValue): Bool {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// B. 置信度报告库（moongit confidence db）
+// B. 置信度报告库（cambium confidence db）
 //
 //   meta(key, value)   score / files_analyzed / ast_used / ast_note /
 //                      capped_kind / capped_total / root

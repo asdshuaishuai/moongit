@@ -1,5 +1,5 @@
 #!/bin/sh
-# 打包 moonGit CLI 发布产物（本地构建后手动发布用）。
+# 打包 Cambium CLI 发布产物（本地构建后手动发布用）。
 #
 # ⚠️ 这个包必须离开构建机也能跑（AGENTS 不变量 7/8/9/133）：
 #   · 裸二进制的 rpath 带构建机绝对路径（~/.local/share/cangjie/...），
@@ -7,7 +7,7 @@
 #     @executable_path 相对 rpath，并把仓颉 runtime dylib 一起打进包里。
 #   · 改过 load command 的二进制必须重新 ad-hoc 签名（arm64 未签名会被
 #     AMFI 直接 SIGKILL，exit 137 零输出）。
-#   · tar 根部放 moongit 启动器注入 cjHeapSize=1gb：仓颉运行时堆上限只在
+#   · tar 根部放 cambium 启动器注入 cjHeapSize=1gb：仓颉运行时堆上限只在
 #     进程启动前生效，发布通道绕过它 = 大仓库 graph arch 的 OOM 在发布产物上复发。
 #   · 平台探测必须同时看 uname -s 与 uname -m：只看 -m 会把 macOS Intel
 #     误标成 linux-x64。
@@ -40,7 +40,7 @@ IS_DARWIN=false
 
 BIN="target/release/bin/main"
 [ -f "$BIN" ] || { echo "先 cjpm build"; exit 1; }
-OUT="moongit-v${VERSION}-${PLATFORM}.tar.gz"
+OUT="cambium-v${VERSION}-${PLATFORM}.tar.gz"
 
 # ------------------------------ 仓颉 runtime 定位 ------------------------------
 # runtime dylib 的来源。CJ_HOME 推导顺序：环境变量 → cjc 所在 SDK → 默认安装路径。
@@ -55,13 +55,13 @@ else
   exit 1
 fi
 
-STAGE="$(mktemp -d /tmp/moongit-pkg.XXXXXX)"
+STAGE="$(mktemp -d /tmp/cambium-pkg.XXXXXX)"
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/bin" "$STAGE/runtime/lib"
 
-cp "$BIN" "$STAGE/bin/moongit-cli"
-chmod 755 "$STAGE/bin/moongit-cli"
-CLI="$STAGE/bin/moongit-cli"
+cp "$BIN" "$STAGE/bin/cambium-cli"
+chmod 755 "$STAGE/bin/cambium-cli"
+CLI="$STAGE/bin/cambium-cli"
 
 # ------------------------------ macOS：rpath 治理 + runtime 捆绑 ------------------------------
 if [ "$IS_DARWIN" = true ] && [ "${PLATFORM#darwin}" != "$PLATFORM" ]; then
@@ -165,10 +165,10 @@ else
   echo "  捆绑的 runtime：${BUNDLED}"
 fi
 
-# ------------------------------ 根部启动器（cjHeapSize，对齐 moongit.sh / install.sh） ------------------------------
-cat > "$STAGE/moongit" <<'WRAP'
+# ------------------------------ 根部启动器（cjHeapSize，对齐 cambium.sh / install.sh） ------------------------------
+cat > "$STAGE/cambium" <<'WRAP'
 #!/bin/sh
-# moonGit 发布包启动器：给仓颉运行时一个够用的堆（只在未设置时设，尊重调用方的选择）。
+# Cambium 发布包启动器：给仓颉运行时一个够用的堆（只在未设置时设，尊重调用方的选择）。
 # 仓颉运行时的堆上限由 cjHeapSize 决定（必须带单位，如 1gb），且只在进程启动前生效 ——
 # 程序自己改不了，只能在启动器这一层设。默认堆偏小：大仓库的
 # graph arch --format json|html|scene 会 OutOfMemoryError（cjHeapSize=1gb 下恒通过）。
@@ -180,24 +180,24 @@ ROOT="$(dirname "$SELF")"
 case "$(uname -s)" in
   Linux) export LD_LIBRARY_PATH="${ROOT}/runtime/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ;;
 esac
-exec "${ROOT}/bin/moongit-cli" "$@"
+exec "${ROOT}/bin/cambium-cli" "$@"
 WRAP
-chmod 755 "$STAGE/moongit"
+chmod 755 "$STAGE/cambium"
 
-tar czf "$OUT" -C "$STAGE" moongit bin runtime
+tar czf "$OUT" -C "$STAGE" cambium bin runtime
 echo "✓ $OUT"
-echo "  布局：moongit（启动器，注入 cjHeapSize=1gb）/ bin/moongit-cli / runtime/lib/"
+echo "  布局：cambium（启动器，注入 cjHeapSize=1gb）/ bin/cambium-cli / runtime/lib/"
 
 # ------------------------------ 打包后自验（**真的跑**，不是打印口令） ------------------------------
 # ⚠⚠ 原来这里只**打印**自验口令、从不执行 ⇒ 坏包照样「✓」出厂（实测 v0.2.0：
 #   CI 产物缺仓颉 runtime，脚本仍打印「✓」，流水线全绿，坏包一路发布到用户手里）。
 # ⇒ 现在自己解包 + 在**空环境**里跑起来；跑不起来就 exit 1（让流水线红，别发出去）。
-VERIFY_DIR="$(mktemp -d /tmp/moongit-verify.XXXXXX)"
+VERIFY_DIR="$(mktemp -d /tmp/cambium-verify.XXXXXX)"
 tar xzf "$OUT" -C "$VERIFY_DIR"
 # ⚠ env -i：清空环境变量 ⇒ 暴露「靠构建机绝对路径/环境变量才跑得起来」的包。
-if ! env -i "$VERIFY_DIR/moongit" --help >/dev/null 2>&1; then
+if ! env -i "$VERIFY_DIR/cambium" --help >/dev/null 2>&1; then
   echo "[错误] 产物自验失败：解包后在**空环境**里跑不起来"
-  echo "       判据：env -i ${VERIFY_DIR}/moongit --help"
+  echo "       判据：env -i ${VERIFY_DIR}/cambium --help"
   echo "       包内容："
   tar tzf "$OUT" | sed 's/^/         /'
   exit 1

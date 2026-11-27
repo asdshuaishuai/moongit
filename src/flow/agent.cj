@@ -1,12 +1,12 @@
-// Agent 接口：为上层 AI 实现（deepDolphin.app / 未来的 deepDesign 式层）提供
+// Agent 接口：为上层 AI 实现（Canopy.app / 未来的 deepDesign 式层）提供
 // 「所需的一切」——预算内的 markdown 上下文包 + 可执行工具清单。
 // 引擎本身是 AI 无关的：这里只做确定性的事实组装与裁剪。
-package moongit.flow
+package cambium.flow
 
 import std.collection.*
 import std.env.*
-import moongit.kernel.*
-import moongit.util.*
+import cambium.kernel.*
+import cambium.util.*
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -173,7 +173,7 @@ public func checkContextScope(scope: String, name: String): ContextScopeCheck {
     return if (name.isEmpty()) { ContextScopeCheck.Ok } else { ContextScopeCheck.NameWithoutProjectScope }
 }
 
-/// `moongit context` 的产物：正文 + 采集健康度。
+/// `cambium context` 的产物：正文 + 采集健康度。
 ///
 /// ⚠️ M18：正文里其实已经跑过一遍 allProjectStatuses + buildDashboard，
 /// 而 cmdContext 为了算退出码**又原样跑了一遍** —— 所有项目的 git 采集开销
@@ -216,7 +216,7 @@ public func buildAgentContext(
     let dash = buildDashboard(targets, config)
     let sb = StringBuilder()
 
-    sb.append("# moonGit 项目群上下文\n\n")
+    sb.append("# Cambium 项目群上下文\n\n")
     sb.append("> 生成于 ${formatDateTime(nowIso())} · 引擎为 AI 无关内核，以下为确定性事实\n\n")
 
     // ⚠️ 存储损坏必须在**第一屏**说，不能只躺在某个项目的字段里。
@@ -567,8 +567,8 @@ public func safeSliceAtLine(s: String, maxBytes: Int64): String {
 /// 原来每个工具带 `method` + `path`（`GET /api/context?scope=group` …），
 /// 末尾 note 还写着「由上层 AI 通过 HTTP 调用执行」。
 /// HTTP 服务端已按「传输层只在本机进程之间通信、不跨网络」整体删除（AGENTS.md 第一条不变量：
-/// **没有 HTTP 服务，没有 `moongit serve`，没有 `/api/*`**），
-/// 于是 `moongit tools --json` 每次调用都在教 agent 去打 10 个不存在的端点。
+/// **没有 HTTP 服务，没有 `cambium serve`，没有 `/api/*`**），
+/// 于是 `cambium tools --json` 每次调用都在教 agent 去打 10 个不存在的端点。
 /// 唯一没暴露的原因是客户端 `engineToolDefinitions` 只读 name/description/params，
 /// 把这两列丢掉了 —— 那是调用方的将就，不是这里没坏。
 ///
@@ -725,7 +725,7 @@ func testBuildAgentContextEmpty(): Unit {
     let config = Config.defaults()
     let reg = Registry()
     let ctx = buildAgentContext(reg.projects, config, "group", "", 8000)
-    @Assert(ctx.text.contains("moonGit 项目群上下文"))
+    @Assert(ctx.text.contains("Cambium 项目群上下文"))
     let miss = buildAgentContext(reg.projects, config, "project", "ghost", 8000)
     @Assert(miss.text.contains("未找到项目"))
 }

@@ -2,12 +2,12 @@
 //
 // 【agent 契约】--json 的键名是稳定契约（客户端与 MCP 宿主按名解码）；
 // 文本路径是人看的，措辞可以迭代，键名不许漂。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
 import std.sort.*
 import std.convert.*
-import moongit.util.*
+import cambium.util.*
 
 // MARK: - 概览
 

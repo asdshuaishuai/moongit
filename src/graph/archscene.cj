@@ -8,11 +8,11 @@
 //   · treehtml.cj 的 langThemesJson —— 图谱页的 langThemes.{dark,light}
 // 返回顺序（swift…module）是契约的一部分：输出按此序生成，字节级稳定。
 
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
 import std.convert.*
-import moongit.util.*
+import cambium.util.*
 
 // MARK: - 主题 token
 

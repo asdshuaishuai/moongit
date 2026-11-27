@@ -1,10 +1,10 @@
 // 进度模型：分支状态判定、delta 计算、状态标签。
-package moongit.kernel
+package cambium.kernel
 
 import std.collection.*
 import std.unittest.*
 import std.unittest.testmacro.*
-import moongit.util.*
+import cambium.util.*
 
 /// 分支状态：
 /// - merged：已合入默认分支

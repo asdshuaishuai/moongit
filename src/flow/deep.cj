@@ -1,13 +1,13 @@
 // 深度更新（deep）：手动触发的全量文档重写（overview/history/architecture/commands）。
-package moongit.flow
+package cambium.flow
 
 import std.collection.*
 import std.env.*
 import std.fs.*
 import std.unittest.*
 import std.unittest.testmacro.*
-import moongit.kernel.*
-import moongit.util.*
+import cambium.kernel.*
+import cambium.util.*
 
 public class DeepOptions {
     public var scope: String = "all"  // all | readme | agent
@@ -99,7 +99,7 @@ public func runDeep(project: ProjectEntry, config: Config, opts: DeepOptions): D
         let base = recordBranchBaseline(project, config, facts, progress, config.maxShallowBranches)
 
         // 章节内容：规则引擎确定性渲染。引擎是 AI 无关的——
-        // LLM 增强由上层 AI 实现（deepDolphin.app）基于 /api/context 自行完成。
+        // LLM 增强由上层 AI 实现（Canopy.app）基于 /api/context 自行完成。
         let provider = "rules"
         var highlights = ArrayList<String>()
         let (readmeOverview, readmeHistory, agentArch, agentCmds) = rulesDeepSections(facts, progress, config.language)

@@ -13,11 +13,11 @@
 // 【分层的诚实边界】层判定是**模块名的启发式**（util→基础、kernel→核心…），
 // 不是依赖方向的拓扑论证。启发式判错的层不改变边的事实——
 // 边才是事实，层是解读；两者在数据里分开存放。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
 import std.convert.*
-import moongit.util.*
+import cambium.util.*
 
 // MARK: - 分层
 

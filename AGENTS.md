@@ -1,9 +1,9 @@
-# AGENTS.md — moonGit 工作区指南
+# AGENTS.md — Cambium 工作区指南
 
-moonGit Engine：基于 git 历史的本地项目群进度引擎（跨平台核心，**AI 无关**）。**100% 仓颉实现，零第三方依赖**（JSON/SHA-256/Markdown 渲染全部自研）。
-外部依赖只有系统 `git`（AI 调用走 curl 的时代已随 `src/ai` 一起结束）。本仓库是引擎；各平台 UI 层在 deepDolphin 仓库（macOS 客户端 deepDolphin.app 已实现：菜单栏常驻 + 主面板）。
+Cambium Engine：基于 git 历史的本地项目群进度引擎（跨平台核心，**AI 无关**）。**100% 仓颉实现，零第三方依赖**（JSON/SHA-256/Markdown 渲染全部自研）。
+外部依赖只有系统 `git`（AI 调用走 curl 的时代已随 `src/ai` 一起结束）。本仓库是引擎；各平台 UI 层在 Canopy 仓库（macOS 客户端 Canopy.app 已实现：菜单栏常驻 + 主面板）。
 
-> 🔴 **改名时的硬边界：改名字，不改身份。** 引擎已从 deepGit 更名为 **moonGit**，
+> 🔴 **改名时的硬边界：改名字，不改身份。** 引擎已从 deepGit 更名为 **Cambium**，
 > 但下列字面量**必须保持原样**，它们是既有数据与既有外部契约，不是显示名：
 >
 > | 保持不变 | 它是什么 |
@@ -14,14 +14,14 @@ moonGit Engine：基于 git 历史的本地项目群进度引擎（跨平台核�
 > | `deepgit://project/{id}`（`mcp.cj`） | 已发布的 MCP 资源 URI，是协议标识符不是名字。改了打断所有已配置好的 MCP 客户端，零功能收益 |
 > | `deepgitHome()`（函数名） | 同上，纯内部标识；改名要动 5 个文件 12 处，而它是「解析 `~/.deepgit` 的那个函数」，名字与职责一致 |
 >
-> 反向的坑同样真实：`install.sh` 装 `moongit` 时**必须**留 `deepgit → moongit` 软链，
+> 反向的坑同样真实：`install.sh` 装 `cambium` 时**必须**留 `deepgit → cambium` 软链，
 > `main.cj` 的 argv[0] 判定**必须**同时认新旧两个名字 ——
 > 否则老脚本会拿到「未知命令」，且这类失败发生在用户机器上而不是 CI 上。
 > 完整对照表见 [README.md](README.md) 的「命名」一节。
 
 > **传输层哲学：只在本机进程之间通信，不跨网络。** 引擎对客户端只暴露两条通道——
-> CLI（`moongit <命令> --json`，**以子进程方式调用**）与 MCP（`moongit mcp`，stdio JSON-RPC）。
-> **没有 HTTP 服务，没有 `moongit serve`，没有 `/api/*`。**
+> CLI（`cambium <命令> --json`，**以子进程方式调用**）与 MCP（`cambium mcp`，stdio JSON-RPC）。
+> **没有 HTTP 服务，没有 `cambium serve`，没有 `/api/*`。**
 >
 > ⚠️ 早先这里写的是「只用**进程内**通信」，而同一句话下一行就写着「以子进程方式调用」——
 > 两句自相矛盾，而且「进程内」这个词把**没实现**的 FFI（同一进程、同一地址空间）
@@ -68,12 +68,12 @@ cjpm test --parallel 1
 本次实测**没有改到用户任何文件内容**（store 下 26 个项目文件时间戳未变），
 留下的是空目录，但「跑测试会碰真实数据」本身就是缺陷。
 
-**运行二进制必须带运行时路径**（或直接用 `scripts/moongit.sh` 包装）：
+**运行二进制必须带运行时路径**（或直接用 `scripts/cambium.sh` 包装）：
 
 ```sh
-sh scripts/moongit.sh status --json     # 推荐：自动处理工具链与 rpath
+sh scripts/cambium.sh status --json     # 推荐：自动处理工具链与 rpath
 # 或
-moonGit/target/release/bin/main status
+Cambium/target/release/bin/main status
 ```
 
 - **macOS 26/27+ 关键坑**：系统 SDK 的 `libSystem.tbd` 只声明 `arm64e-macos`，
@@ -83,16 +83,16 @@ moonGit/target/release/bin/main status
   `scripts/install.sh` 会自动下载 macOS 15.5 SDK 并裁剪到 `~/.local/share/sdks/MacOSX.minimal/latest`；
   也可 `sh scripts/build-minimal-sdk.sh <源SDK目录>` 手动生成，或 `export DEEPGIT_SDKROOT=` 指定现成 SDK。
   STS 1.2.0 / 1.3.0-alpha 的链接器同样是 15.0.4，升版本解决不了此问题。
-- **deepDolphin（mac 客户端）注意**：双形态——MenuBarExtra `.window` 弹窗（bar，辅助）+
+- **Canopy（mac 客户端）注意**：双形态——MenuBarExtra `.window` 弹窗（bar，辅助）+
   NSWindow 主面板（PanelWindowController 承载 PanelView，可 `--open-panel --project X --section milestones`
-  深链启动）。**它是纯客户端**：数据全部走 **CLI 子进程**（`EngineCLI.swift` 拉起 `moongit <命令> --json`，
+  深链启动）。**它是纯客户端**：数据全部走 **CLI 子进程**（`EngineCLI.swift` 拉起 `cambium <命令> --json`，
   `AIClient.swift` 是其类型安全封装）——读 `status` / `dashboard` / `milestone list` / `journal` / `docs`，
   写 `update` / `deep` / `track` / `git <op>`。**不走 HTTP 网络**。
   契约模型集中在 `Models.swift`，键名与引擎 `flow/status.cj`、`flow/dashboard.cj`、
   `kernel/milestones.cj` 严格同名——引擎改键 = 破坏契约。CLI `status [项目] --json` 恒定 envelope
   `{projects, summary, language}`，单项目与多项目同形状，客户端只按这一种形状解码。
   MenuBarExtra 内容是**懒加载**的：启动期逻辑放 AppDelegate，别放 BarView 的 `.task`。
-- ⚠️ **改任何 JSON 键名/增删字段后必须跑 `deepDolphin/macos/scripts/contract-check.sh`。**
+- ⚠️ **改任何 JSON 键名/增删字段后必须跑 `Canopy/macos/scripts/contract-check.sh`。**
   那类破坏**编译期发现不了、代码评审也看不出来**（引擎侧和客户端侧各自看着都合理），
   只在真解码时才炸。已实证的代价：P0-1 `status(name:)` 按裸 `ProjectStatus` 解码而引擎
   恒返回 envelope —— 100% 必现的 `Key 'id' not found`，详情面板每次打开都崩。
@@ -102,11 +102,11 @@ moonGit/target/release/bin/main status
   全部项目失败时 stdout 是否仍带可解析 JSON（**且该场景必须真的是非 0 退出**，
   否则这条断言整个空转——加过一个常驻沙箱项目后 exit 悄悄变 0，已踩过）、
   MCP 三个出口的形状、以及**降级态键集 == 健康态键集**。
-  已挂进 `deepDolphin/macos/build.sh` 末尾（`CONTRACT_STRICT=1` 可令其阻断）。
+  已挂进 `Canopy/macos/build.sh` 末尾（`CONTRACT_STRICT=1` 可令其阻断）。
   它当场抓出过 4 个真不一致，其中 3 个在引擎侧：`dashboard` 的里程碑条目曾缺
   `tagName` / `createdAt` / `completedAt` / `id`，且 `tag` 键在两个出口里**同名不同义**
   （`milestone list` 里是用户绑定的 tag，`dashboard` 里是解析后的 tagName）。
-  注意：脚本按 `../../moonGit/...` 定位仓内 release；用已安装的旧版会报出一堆假失败。
+  注意：脚本按 `../../Cambium/...` 定位仓内 release；用已安装的旧版会报出一堆假失败。
 - ⚠️ **披露字段一律恒发，键集不得随数据变化。**
   写成 `if (!gitReadable) 才加 unverifiedReason` 时，键集就随数据漂了：
   实测健康态 17 键、降级态 CLI 18 键而 dashboard 17 键。后果是消费方只能靠
@@ -234,24 +234,24 @@ util → (kernel | graph) → flow → cli
 - **面板级 git 操作走 `runGitOp` 白名单**（kernel/git.cj）：pull（--ff-only）/ push（无 upstream 自动
   补 -u origin）/ commit（必须带 message，身份用 `gitUserName/gitUserEmail` 兜底）/ stash / unstash / fetch。
   **不要往里加 reset/clean/force-push**——这是给 GUI 客户端的按钮用的，误触即事故。
-  CLI 入口 `moongit git <op> [项目] --json`；文档内容 `moongit docs [项目] --json`（单文件 200KB 截断）。
+  CLI 入口 `cambium git <op> [项目] --json`；文档内容 `cambium docs [项目] --json`（单文件 200KB 截断）。
   注意：release 二进制改了命令行为后必须 `cjpm build` 重出 release，`cjpm test` 只构建测试目标——
   客户端内嵌的是 release 引擎，曾因此出现「测试全绿但内嵌引擎还是旧行为」。
 - **`git worktree list` 不支持 `--format=`**，只有 `--porcelain`（records 以 `worktree ` 行开头）；
   `git stash list` 要用 `--pretty=format:`（`--format=` 会把 `%x1f` 原样输出，`%1f` 也一样）。
   porcelain/相对路径里的 `/tmp` 会被 git 输出成 `/private/tmp`——路径比较一律走 `util/paths.cj` 的
   `samePath()`（词法规范化 + macOS 符号链接容忍）。
-- **MCP 服务器（cli/mcp.cj）**：`moongit mcp` 以 stdio 单行 JSON-RPC 运行（2024-11-05）。
+- **MCP 服务器（cli/mcp.cj）**：`cambium mcp` 以 stdio 单行 JSON-RPC 运行（2024-11-05）。
   工具执行直连 flow/kernel 层（mcpCallTool），与 CLI 同源；**stdout 是协议通道，
   严禁 printOut 任何非协议内容**（日志恒走 stderr，MCP 模式还会 Log.setQuiet(true)）。
-  新增 agent 能力 = mcpToolList 加清单 + mcpCallTool 加分支，并同步 `moongit tools --json`（agentToolsManifest）。
+  新增 agent 能力 = mcpToolList 加清单 + mcpCallTool 加分支，并同步 `cambium tools --json`（agentToolsManifest）。
   Cangjie 注意：lambda 语法在此版本不可靠（`{ (a: T) => }` 报错），局部函数用 `func` 嵌套定义。
-- **Skill（cli.cj skillMarkdown）**：`moongit skill print|install` 输出教学包；
+- **Skill（cli.cj skillMarkdown）**：`cambium skill print|install` 输出教学包；
   内容改动要同步 README 的 MCP 章节。
 - **引擎保持 AI 无关（deepDesign 模式，改前必读）**：`src/ai` 包已删除——provider/prompts 不在引擎里，
   规则启发式在 `kernel/narrative.cj`。AI 的配置、调用、工具循环全部在客户端（AIProvider.swift / AgentView.swift）。
-  引擎对 agent 只暴露两个喂养接口：`moongit context --json`（flow/agent.cj，预算内 markdown 事实包）与
-  `moongit tools --json`（工具清单）。**往引擎里加 LLM 调用 = 违反架构**；要让 agent 能做新动作，加引擎工具 + 更新清单即可。
+  引擎对 agent 只暴露两个喂养接口：`cambium context --json`（flow/agent.cj，预算内 markdown 事实包）与
+  `cambium tools --json`（工具清单）。**往引擎里加 LLM 调用 = 违反架构**；要让 agent 能做新动作，加引擎工具 + 更新清单即可。
   注意 `cjpm test` 不重建 release——改了命令行为必须 `cjpm build` 后再装，否则客户端内嵌引擎还是旧行为。
 - **CLI 位置参数解析统一走 `VALUE_FLAGS`**（`cli/cli.cj`）：新增「带值 flag」必须加进这个名单，
   否则它的值会被当成项目名（曾导致 `hook --source hook` 静默解析失败）。
@@ -273,11 +273,11 @@ util → (kernel | graph) → flow → cli
 
 4. **AI 无关：引擎不做任何 LLM 调用**（原「AI 失败必须降级」随 `src/ai` 删除改写）。
    叙述/文档生成走确定性规则引擎（`kernel/narrative.cj`）；LLM 增强由上层客户端
-   （deepDolphin）基于 `/api/context` 自行完成。引擎侧不存在 `aiChatJson`/`aiError`
+   （Canopy）基于 `/api/context` 自行完成。引擎侧不存在 `aiChatJson`/`aiError`
    这类符号——AI 内容缺失或失败时，进度库与日志照常写，绝不因 AI 内容缺席而失败。
 
 5. **钩子必须后台异步且永不非零退出**：`post-commit` 与 `post-merge` 共用同一套托管块
-   （`(moongit track --quiet --source hook >/dev/null 2>&1 &)`），可重复安装/卸载而不破坏用户已有钩子内容。
+   （`(cambium track --quiet --source hook >/dev/null 2>&1 &)`），可重复安装/卸载而不破坏用户已有钩子内容。
 
 6. **状态聚合并发化的边界**：`flow/status.cj` 的 `allProjectStatuses` 用 `std.sync.spawn` 并发采集，
    前提是「只读 + 每项目独立 store」。往 `projectStatus` 里加**写操作**前必须三思；
@@ -289,7 +289,7 @@ util → (kernel | graph) → flow → cli
    于是「本机能跑」证明的是开发机装了 SDK，不是 app 自包含。
    改法是**重写**：先 `codesign --remove-signature`（install_name_tool 拒改已签名二进制），
    逐条 `-delete_rpath "<路径字符串>"` 删光（**收字符串不收序号**，传序号报错但退出码仍是 0），
-   再按 `@executable_path/../Frameworks` 等相对顺序加回。见 `deepDolphin/macos/build.sh`。
+   再按 `@executable_path/../Frameworks` 等相对顺序加回。见 `Canopy/macos/build.sh`。
 
 8. **放进 `Contents/Resources/` 的可执行文件必须单独签名。**
    `codesign --force --deep --sign - <bundle>` 只把 `Contents/MacOS`、`Frameworks/`、
@@ -310,7 +310,7 @@ util → (kernel | graph) → flow → cli
     原来它每次都 `var convo = [ChatMessage.user(question)]` 从零起步、用完即弃 ——
     所谓"对话"其实是一串互不相干的一次性提问，模型看不见上一轮。
     「那刚才那个项目后来怎么样了」会拿第一轮的上下文硬答，**而且答得还挺像回事**。
-    多轮版把「拼对话」抽到 `Conversation.seed`（`deepDolphin/macos/Sources/deepDolphin/AgentConversation.swift`），
+    多轮版把「拼对话」抽到 `Conversation.seed`（`Canopy/macos/Sources/Canopy/AgentConversation.swift`），
     这样"历史会不会被丢"才是**可断言的行为**而不是某一种拼法 ——
     内联在 run 里时，lint 只能查到一种写法，换个写法缺陷就溜过去（NC18 的教训）。
     历史发送前要过 `trimHistory`，否则聊几轮撞上下文上限，
@@ -439,7 +439,7 @@ util → (kernel | graph) → flow → cli
     一律写 `${VAR}`。`client-check` 第 4 组会扫全部 `.sh` 守住这条。
 
 24. **给 agent / 模型看的输出里，不许携带已删传输层的任何地址。**
-    `agentToolsManifest()`（`moongit tools --json`）原来给每个工具带
+    `agentToolsManifest()`（`cambium tools --json`）原来给每个工具带
     `method` + `path`（`GET /api/context?scope=group`…），末尾 note 还写着
     「由上层 AI 通过 HTTP 调用执行」——**10 条 `/api/*` 全部指向已整体删除的服务端**，
     与本文件第 7 行的头号不变量直接冲突。清单是**要喂给模型**的，
@@ -505,10 +505,10 @@ util → (kernel | graph) → flow → cli
     它只证明了「渲染函数给什么数就写什么数」，
     **根本没经过 `cmdReport` 里那个决定「传什么进去」的接缝**。
     于是把 `let dashProjects = …` 退回错误版本（整群报告传已滤掉 disabled 的
-    `targets`），测试**全绿**，而真实 `moongit report` 的「已注册」当场从 2 掉回 1。
+    `targets`），测试**全绿**，而真实 `cambium report` 的「已注册」当场从 2 掉回 1。
     补法：在调用方所在的包里直接调 `cmdReport` 端到端跑一遍，断言落盘文件的内容。
-    —— 关键是**跨包的测试结构上就抓不到**：调用方在 `moongit.cli`，
-    而测试在 `moongit.flow`，那个接缝压根不在测试的执行路径上。
+    —— 关键是**跨包的测试结构上就抓不到**：调用方在 `cambium.cli`，
+    而测试在 `cambium.flow`，那个接缝压根不在测试的执行路径上。
     同理，「测试自己准备数据再喂给纯函数」永远只证明纯函数，
     证明不了**谁在喂它、喂的是什么**。
 
@@ -518,7 +518,7 @@ util → (kernel | graph) → flow → cli
     模型只要吐一次**畸形的 arguments JSON**，`params` 就成了 `[:]`，
     `name` 取到空串，客户端拼出**空位置参数** `["update", "", …]`；
     而引擎把空位置参数等同于「不传项目名」= **整个项目群**。
-    实测（/tmp 沙箱，两个已注册项目）：`moongit update "" --json --quiet`
+    实测（/tmp 沙箱，两个已注册项目）：`cambium update "" --json --quiet`
     把两个项目的 README **都改写了**，exit 0，界面上那次调用显示「✓ 执行成功」。
     读侧同样扩大作用域且不报错：`journal ""` 返回所有项目的日志，
     `context ""` 静默退化成整个项目群的上下文。
@@ -744,7 +744,7 @@ util → (kernel | graph) → flow → cli
     客户端的 `AgentCore` 有两条路取同一份 context：
       · 系统提示词那条路抽 `ctxObj["context"]` → markdown
       · 工具结果那条路（`get_group_context` / `get_project_context`）
-        把整个 `{"scope":…,"budget":…,"context":"# moonGit…\n…"}` 塞进对话
+        把整个 `{"scope":…,"budget":…,"context":"# Cambium…\n…"}` 塞进对话
     而引擎自己的 MCP 工具回的是**裸 markdown**。
     于是同名工具三种形状，模型读到的第一行是 `{"scope":`。
     现在两条路共用 `ContextEnvelope.decode`（零依赖纯函数，client-check 钉住）。
@@ -820,7 +820,7 @@ util → (kernel | graph) → flow → cli
     两种规则都判它不是失败）。只有 **`{ok:…, code|error:…}` 两个键都带**
     的形状才能把两条规则分开。断言抓不住等于没做。
     ⚠️ 「某条命令必须恒发某组字段」的测试**必须走那条命令本身**：
-    这里的 6 份载荷都是 `moongit <cmd> --json` 的真实 stdout 逐字抄的，
+    这里的 6 份载荷都是 `cambium <cmd> --json` 的真实 stdout 逐字抄的，
     手搓夹具比现实更完整就永远测不出漏读（同 #188 的教训）。
 
 45. **配置键要么改变行为，要么不存在；「键不存在」必须报错，不许返回 null。**
@@ -859,7 +859,7 @@ util → (kernel | graph) → flow → cli
       · 剥注释的实现只有一份才谈得上可靠（同 43 的道理）。
 
 46. **「没有证据」不等于「有反证」；判据的输入必须包含它要回答的那个问题。**
-    缺陷 #195 全在 `moongit verify` 一个命令里，四个独立缺陷同源：
+    缺陷 #195 全在 `cambium verify` 一个命令里，四个独立缺陷同源：
       · **假指控**：`applyRegions` 只在文件**已存在**时才留备份，所以
         **引擎自己新建的文档一份快照都没有**。而备份目录里除真备份外还住着
         两个元数据文件 `.docpath` / `.owned`，cmdVerify 把 `listDir` 的结果
@@ -908,9 +908,9 @@ util → (kernel | graph) → flow → cli
     缺陷 #196：`cmdDocs` / `cmdRemove` 各写了一份
     `targets.add(requireProject(refs[0]))` —— **只取第一个**，
     其余项目名蒸发，退出码还是 **0**：
-      · `moongit docs alpha beta --json` → rc=0，输出只有 alpha 的 envelope，
+      · `cambium docs alpha beta --json` → rc=0，输出只有 alpha 的 envelope，
         beta 一个字都没出现，也没有任何「已忽略」提示
-      · `moongit remove alpha beta` → rc=0，「✓ 已取消注册：alpha」，
+      · `cambium remove alpha beta` → rc=0，「✓ 已取消注册：alpha」，
         **beta 原封不动留在注册表里**（`list` 仍能看到）
     `remove` 那个尤其恶劣：取消注册是**破坏性操作**，
     「要注销两个、只注销一个、还告诉我成功了」比不响应更糟 ——
@@ -927,7 +927,7 @@ util → (kernel | graph) → flow → cli
       · **元数固定的命令**（add / milestone）走 `rejectExtraPositionals`，
         多出来的位置参数**报错**而不是吞掉 ——
         吞掉它等于把用户的拼写错误变成一次「成功」。
-        真实例子：`moongit add <路径> <名称>` 这种写法**一直**不生效
+        真实例子：`cambium add <路径> <名称>` 这种写法**一直**不生效
         （名字只认 `--name`），却打印「✓ 已注册」。
         本次审计里我自己就踩了两次 —— 写测试脚本时注册全被守卫挡掉才发现。
     ⚠️ 收口时顺带修掉的：`cmdRemove` 多项目 `--json` 若逐个 `printOut`，
@@ -944,7 +944,7 @@ util → (kernel | graph) → flow → cli
       · `unreadable`  —— 有目录读不出来（#179）
       · `depthCapped` —— 撞到 `--depth` 上限且下面还有没看过的子目录
     缺第三种的实测后果（仓库在第 4 层）：
-        moongit scan <树> --depth 2
+        cambium scan <树> --depth 2
         → 「未发现项目（已访问 3 个目录）」exit 0
     仓库明明就在那儿。而同一个函数对「目录过多」早就有正确措辞
     （那句「扫描被截断…本次**未**覆盖全部范围」），只是**深度这条路没接上**。
@@ -976,13 +976,13 @@ util → (kernel | graph) → flow → cli
     缺陷 #198 是同一族的两处，都属于「空 ≠ 无害」：
       · **`addProject` 收下了空名项目**。`name` 为空时用 `basename(root)` 兜底，
         而 `basename("/")` 是空串，于是
-            moongit add /                 →  ✓ 已注册：（dir）→ /
+            cambium add /                 →  ✓ 已注册：（dir）→ /
             MCP add_project {"path": ""}  →  已注册：（/）
         写进注册表一条 `name=""`、`path="/"` 的条目。后果不是「多一行」：
           ① 那条项目**永远引用不到** —— `findProjectIn` 对空 ref 返回 None，
              连 `remove` 都删不掉它（用户连补救手段都没有）；
           ② 它**永久污染每一次聚合命令**：实测之后
-             `moongit status --json` → `summary.failedProjects = 1`，
+             `cambium status --json` → `summary.failedProjects = 1`，
              而那条项目的 error 是「Native function error.」——
              用户看不懂、也查不出是哪来的。
       · **MCP `run_shallow_update` 把缺 name 当成「更新全部项目」**。它是 15 个
@@ -1012,7 +1012,7 @@ util → (kernel | graph) → flow → cli
     ⚠️ 上文那句「已知遗留」已由不变量 50 处置：当时记的是
     「不可采集目录的 error 是运行时原文，措辞质量，非谎报」——
     **那个判断是错的**。同一句 `Native function error.` 在
-    `moongit add / --name home` 这条路径上的成因不是措辞，是整条命令崩了。
+    `cambium add / --name home` 这条路径上的成因不是措辞，是整条命令崩了。
 
 50. **会失败的系统调用不许当不会失败；「读不到」是第四态，且必须走到用户眼前。**
     缺陷 #199 的成因查清了：`FileInfo` 的属性各自走不同的系统调用，
@@ -1025,9 +1025,9 @@ util → (kernel | graph) → flow → cli
       · `FileInfo(path)` **构造器本身**也抛。
     而 `collectActivity` 与扫描器的循环体**一个 try/catch 都没有**。
     后果实测：
-      · `moongit scan /`                  → exit 1「内部错误：Native function error.」
-      · `moongit scan /private/var/db`    → exit 1 同上
-      · `moongit add / && moongit status` → 该项目 `error='Native function error.'`、
+      · `cambium scan /`                  → exit 1「内部错误：Native function error.」
+      · `cambium scan /private/var/db`    → exit 1 同上
+      · `cambium add / && cambium status` → 该项目 `error='Native function error.'`、
         `commitCount=-1`、`userDirtyCount=-1`
     即：**一个只读属性取不到，整个项目的状态面板全黑**。
     而这些路径是**用户自己给的** —— 指向 `/` 或任何系统目录都合法。
@@ -1073,7 +1073,7 @@ util → (kernel | graph) → flow → cli
       · `fileExists(<doc>)` 在父目录不可读时返回 false，
         于是内层循环一次都不跑，`leftovers` 为空 → 输出「无」。
     实测：磁盘上确实有 `README.md.tmp-999-0`，把项目目录 `chmod 000` 之后
-    `moongit doctor` 报的是**「临时残留  无」**。磁盘上那个文件就在那儿，它只是没读到。
+    `cambium doctor` 报的是**「临时残留  无」**。磁盘上那个文件就在那儿，它只是没读到。
     危害等级高于一般措辞问题：`doctor` 的退出码语义是「环境能不能用」，
     而这一行是用户判断「我的仓库干不干净」的唯一依据。
     四条硬规则：
@@ -1100,7 +1100,7 @@ util → (kernel | graph) → flow → cli
     缺陷 #201：`config set update.backupKeep 0` 放行（只拦负数），
     `pruneBackups` 也只拦负数。于是 0 走到
     `excess = names.size - keep = names.size` → **把全部备份删光**。
-    端到端实测（`backupKeep=0` 跑一次 `moongit update proj`）：
+    端到端实测（`backupKeep=0` 跑一次 `cambium update proj`）：
       引擎输出「✓ 已更新 README.md」、exit 0，托管区**写进了用户的 README**，
       而 `备份文件数 = 0` —— 用户的原文永久丢失，引擎全程报告成功。
     关键在于 **0 与负数的数学后果完全一样**，区别只有语义标签。
@@ -1135,9 +1135,9 @@ util → (kernel | graph) → flow → cli
     `config set update.maxShallowBranches` 原来**一行校验都没有**。
     实测两条命令就能证：
     ```
-    $ moongit config set update.maxShallowBranches 0
+    $ cambium config set update.maxShallowBranches 0
     ✓ 已设置 update.maxShallowBranches = 0        ← 报成功（stdout）
-    $ moongit config get update.maxShallowBranches
+    $ cambium config get update.maxShallowBranches
     6                                              ← 存的是 0，读出来是 6
     ```
     原因是读路径（`configFromJson`）会把 `< 1` 静默修回 6，只在 **stderr** 留一行。
@@ -1602,7 +1602,7 @@ util → (kernel | graph) → flow → cli
         批量更新虽然动多个仓库，但每个文件都留备份（不变量 62），所以它是
         **告知式**确认、不染红 —— 满屏红会稀释「红=危险」这个信号。
     ⚠️ 同一动作的**每个入口都要有确认**：批量更新在 `BarView`（弹窗）与
-    `DeepDolphinApp` 的菜单两处都存在。而菜单那条路是 `.commands` 里的 `CommandMenu`
+    `CanopyApp` 的菜单两处都存在。而菜单那条路是 `.commands` 里的 `CommandMenu`
     ——**不是 View**，挂不上 `.confirmationDialog`，所以待确认状态必须放在
     `AppModel.pendingBulkUpdate` 上，由主面板代为呈现。
     漏掉任一入口，这层保护就等于不存在（判据里专门钉了这条）。
@@ -1800,7 +1800,7 @@ util → (kernel | graph) → flow → cli
     这条是本轮真实踩到的，而且症状与病因隔着三层。
     我给 `ProjectStatus` 补 `overall` / `dirty` 时，把两个子结构的字段
     声明成了非可选（`let summary: String`）。而引擎在**采集失败**时
-    是这么发的（`moonGit/src/flow/status.cj:361`）：
+    是这么发的（`Cambium/src/flow/status.cj:361`）：
     ```json
     "overall": {}, "dirty": {}
     ```
@@ -1826,7 +1826,7 @@ util → (kernel | graph) → flow → cli
     换成不带过滤的 `grep -rn "facts.toJson"` 才看见：
     `repo.cj:951` 与 `984` 两个测试在用它守 JSON 形状契约。
 
-    而且它**确实该保留**：`moongit docs` 的深更新会把 commitActivity /
+    而且它**确实该保留**：`cambium docs` 的深更新会把 commitActivity /
     authors / tags 写进 markdown（客户端文档页能读到），
     改版规范 D5 又把它列为「复活热力图 / 贡献者 / tag 视图的现成资产」。
     生产路径零调用 ≠ 可以删 —— 要问的是「有没有人在等它」。
@@ -1848,7 +1848,7 @@ util → (kernel | graph) → flow → cli
 77. **同一个判定只能有一个出处；客户端不得复刻引擎的阈值。**
     我在分支卡上写了一句
     `b.staleDays >= 30 ? .orange : .tertiary`，而引擎的档位线是
-    **3 天 / 14 天**（`moonGit/src/kernel/progress.cj:30-36`）：
+    **3 天 / 14 天**（`Cambium/src/kernel/progress.cj:30-36`）：
     ```swift
     if (d < 3.0)  { return "active" }
     if (d < 14.0) { return "idle" }
@@ -1951,14 +1951,14 @@ util → (kernel | graph) → flow → cli
     于是 `--project foo` **单独使用会被静默忽略** —— 而主面板本来就是
     「启动自动打开」的，也就是说从命令行传深链必须额外记住加一个
     无关的 `--open-panel`，少加了没有任何提示。
-    复现：`deepDolphin.app --project target` ⇒ selection 停在默认的 `.dashboard`。
+    复现：`Canopy.app --project target` ⇒ selection 停在默认的 `.dashboard`。
     推广：
       · 解析函数里**不要用一个开关当另一个开关的前置条件**，
         除非它们在语义上真的有依赖。
       · 这类缺陷没法靠读代码看出来，因为那行 `guard` 看着很合理 ——
         只有**真的敲一次命令**才会发现。所以启动参数必须**可单测**：
         抽成纯函数（`Route.parse(_ args: [String])`），
-        判据直接喂 `["deepDolphin", "--project", "target"]`。
+        判据直接喂 `["Canopy", "--project", "target"]`。
       · 顺带：参数值本身可能是另一个 flag（`--project --open-panel`）。
         把 `--` 开头的值当名字，就会去加载一个叫「--open-panel」的项目 ——
         而那正好会撞上下一个缺陷（永远转圈）。
@@ -2009,7 +2009,7 @@ util → (kernel | graph) → flow → cli
 
 86. **照抄设计稿之前，先核对它引用的文件名是不是真的。**
     设计稿的深更新按钮上印着「AGENT.md + README」。照抄进客户端就会告诉用户
-    moonGit 会改一个叫 `AGENT.md` 的文件 —— 而引擎托管的是
+    Cambium 会改一个叫 `AGENT.md` 的文件 —— 而引擎托管的是
     **README / AGENTS / CLAUDE**（无 `.md`）。
     这不是细节：这是**动手前告诉用户会改哪几个文件**的那句话，
     写错一个文件名，用户按下去之后在文件系统里找不到它，
@@ -2100,7 +2100,7 @@ util → (kernel | graph) → flow → cli
 
 91. **负控改了引擎源码并重建之后，还原时必须重建回去。**
     注入 `pendingCommits` 的旧实现时重建了一次引擎，于是
-    `moonGit/target/release/bin/main` 变成了**注入版**。
+    `Cambium/target/release/bin/main` 变成了**注入版**。
     还原源码（sha 核对通过）之后我没重建二进制 ——
     下一轮契约检查就挂了 1 条，原因是「引擎报的值对不上」，
     与它声称的判据（徽章的数据源）**完全无关**。
@@ -2286,7 +2286,7 @@ util → (kernel | graph) → flow → cli
 
 100. **自动化视觉验证有边界：能用它排除，不能用它确诊。**
     连续三轮挂着「视觉未验证，只能靠人眼」这个待办，直到写了个离屏渲染
-    harness（`deepDolphin/macos/scripts/render-harness/`）把真实视图渲成 PNG。
+    harness（`Canopy/macos/scripts/render-harness/`）把真实视图渲成 PNG。
     它确实把一批问题从盲区里拿了出来（三态文案、EmptyState、卡片圆角接缝、
     分段条配色、spacing 等值替换后的观感），但**它自己也会撒谎**。
 
@@ -2719,8 +2719,8 @@ util → (kernel | graph) → flow → cli
 
 119. **走不上的分支不会报错，只会显得像「保险起见的多余代码」。**
     本轮实例：`AppDelegate.openPanel()` 里那条
-    「窗口已经开着就直接 focus」的快路径判 `w.title == "deepDolphin"`，
-    而 `PanelView` 的 `.navigationTitle("deepDolphin 面板")` 覆盖了窗口标题
+    「窗口已经开着就直接 focus」的快路径判 `w.title == "Canopy"`，
+    而 `PanelView` 的 `.navigationTitle("Canopy 面板")` 覆盖了窗口标题
     （`NSApp.windows[i].title` 取的正是**导航标题**，不是 `Window` 场景的初始标题）
     ⇒ **那个比较永不成立**，每次都落到下面的通知转发。
       · 症状为什么藏得住：功能**没坏**。通知转发那条兜底照样把窗口带出来，
@@ -2833,7 +2833,7 @@ util → (kernel | graph) → flow → cli
       先自问「这两组除了被测变量，还差什么」，再采信结论。
 
 123. **全局改名时，先分清哪些字面量是「名字」，哪些是「身份」。**
-    - 本项目从 deepGit 改到 moonGit 时，最省事的做法是全局替换 —— 而它会**静默毁数据**。
+    - 本项目从 deepGit 改到 Cambium 时，最省事的做法是全局替换 —— 而它会**静默毁数据**。
     - 判据很简单：**这个字面量被谁持有？**
       | 谁持有 | 例子 | 能不能改 |
       |---|---|---|
@@ -2861,7 +2861,7 @@ util → (kernel | graph) → flow → cli
     - `containsTodo` 判「出现过 TODO 这个词」，于是命中了自己解释「TODO 残留」的注释
       （自审 2/2 全是假阳性）；第一版修法（后跟 `:`/`(`）仍会命中**文档里示范标记写法**的行。
       正解是把判据锚在**结构位置**（注释体跳过空白后的第一个词）。
-    - **既有测试可能把缺陷写成断言**：`testScanCangjieAndGo` 当时断言 `imports[0] == "moongit"`
+    - **既有测试可能把缺陷写成断言**：`testScanCangjieAndGo` 当时断言 `imports[0] == "cambium"`
       （正是那个 bug）。它红了先问「守的是行为还是当时那个 bug」——是后者就**显式推翻并留理由**。
     - **提取类代码要拿真实仓库验证「数量是否合理」**：单测夹具是自己写的，测不出这种错。
     - **检测器自己的测试数据也要防自噬**：标记字面量必须拼接构造（`"TO" + "DO"`）。
@@ -2961,7 +2961,7 @@ util → (kernel | graph) → flow → cli
     范围 `[4MB, 系统内存]`）—— 实测**不带单位的值被静默忽略**（只在日志里留一行
     `Unsupported cjHeapSize parameter…`），于是得到「我设了却没用」这种最难查的症状。
     该变量只在**进程启动前**生效，程序自己改不了 ⇒ 只能由启动器设：
-    `scripts/moongit.sh` 与 `install.sh` 写入的包装脚本默认注入 `cjHeapSize=1gb`（不覆盖用户设置）。
+    `scripts/cambium.sh` 与 `install.sh` 写入的包装脚本默认注入 `cjHeapSize=1gb`（不覆盖用户设置）。
     证据：deepOrca 的 `arch --format json` 在默认堆下**时崩时通**（rc 1,0,0,1,1）、`scene` 恒崩；
     `cjHeapSize=1gb` 下三者恒定通过；最小可用 `512mb`。
     推广：
@@ -2978,12 +2978,12 @@ util → (kernel | graph) → flow → cli
 
 ```sh
 # 引擎
-sh scripts/moongit.sh scan ~/dev --depth 4
-sh scripts/moongit.sh status --json | jq '.projects | length'
-sh scripts/moongit.sh update <项目> --no-ai      # 跳过 AI，用规则引擎
-sh scripts/moongit.sh deep <项目> --scope readme --dry-run
-sh scripts/moongit.sh context --budget 20000     # agent 上下文包
-sh scripts/moongit.sh tools                     # agent 工具清单
+sh scripts/cambium.sh scan ~/dev --depth 4
+sh scripts/cambium.sh status --json | jq '.projects | length'
+sh scripts/cambium.sh update <项目> --no-ai      # 跳过 AI，用规则引擎
+sh scripts/cambium.sh deep <项目> --scope readme --dry-run
+sh scripts/cambium.sh context --budget 20000     # agent 上下文包
+sh scripts/cambium.sh tools                     # agent 工具清单
 
 # 测试隔离（不污染真实 ~/.deepgit）
 export DEEPGIT_HOME=/tmp/deepgit-test
@@ -2997,11 +2997,11 @@ sh scripts/nc-audit-2026-10-09.sh     # audit-2026-10-09 那 47 条修复的判�
 sh scripts/check-launcher-heap.sh
 
 # macOS 客户端（独立 SwiftPM 项目；主面板 + 菜单栏 bar，纯展示层）
-cd deepDolphin/macos
+cd Canopy/macos
 sh build.sh                    # swift build -c release + 组装 .app + ad-hoc 签名
-open deepDolphin.app --args --open-panel    # 启动即开主面板（--project X 直达详情）
-# 深链调试：--section milestones | --project deepDolphin
-# 构建期会尝试把引擎（~/.local/bin/moongit 或 moonGit/target/release/bin/main）
+open Canopy.app --args --open-panel    # 启动即开主面板（--project X 直达详情）
+# 深链调试：--section milestones | --project Canopy
+# 构建期会尝试把引擎（~/.local/bin/cambium 或 Cambium/target/release/bin/main）
 # 与仓颉运行时 dylib 内嵌进 .app（~59MB），使 app 可独立分发；不内嵌则按
 # DEEPGIT_BIN → 内嵌副本 → ~/.local/bin → 登录 shell PATH 的顺序发现引擎。
 ```
@@ -3146,12 +3146,12 @@ _（本节由 deepGit 依据仓库事实生成，可运行 `deepgit update --mod
 
 ```
 (根目录 4 个文件)
-deepDolphin/ (63)
+Canopy/ (63)
   macos/ (60)
     deepGit/ (60)
   web/ (3)
     assets/ (2)
-moonGit/ (31)
+Cambium/ (31)
   src/ (29)
     ai/ (3)
     cli/ (2)
@@ -3169,7 +3169,7 @@ _未检测到标准构建清单，请参考 README。_
 <!-- deepgit:end commands -->
 
 <!-- deepgit:begin progress -->
-## 当前进度（moonGit 维护）
+## 当前进度（Cambium 维护）
 
 > 浅更新 · 追踪 4 个分支 · 2 处未提交改动 · 更新于 2026-10-10 17:13
 
@@ -3196,15 +3196,15 @@ _未检测到标准构建清单，请参考 README。_
 
 2026-10-20 发 v0.2.0 时照出来的：发版 workflow **从来没跑通过**（SDK 直链已失效，
 两个 job 都在装 SDK 那步就红），而 workflow 里的打包步骤**即使跑通也是错的**：
-`tar czf moongit-<tag>-<平台>.tar.gz moongit-cli` —— ① 只有裸二进制，**仓颉 runtime
-没跟过去**（离开构建机就 Library not loaded）；② 根部的可执行文件叫 `moongit-cli`，
-而客户端安装器找的是根部那个 **`moongit`**（启动器）⇒ 装下来「找不到可执行文件」。
+`tar czf cambium-<tag>-<平台>.tar.gz cambium-cli` —— ① 只有裸二进制，**仓颉 runtime
+没跟过去**（离开构建机就 Library not loaded）；② 根部的可执行文件叫 `cambium-cli`，
+而客户端安装器找的是根部那个 **`cambium`**（启动器）⇒ 装下来「找不到可执行文件」。
 ⇒ 正确做法是**用引擎自己的 `scripts/package-release.sh`**：它产出自包含布局
-（`moongit` 启动器 + `bin/moongit-cli` + `runtime/lib/`），且 macOS 侧还做 rpath 治理
+（`cambium` 启动器 + `bin/cambium-cli` + `runtime/lib/`），且 macOS 侧还做 rpath 治理
 与 ad-hoc 重签。
 
 ⇒ 判据（可复用）：**发布前先在收件人的环境里解包跑一次**
-`tar xzf <产物> -C /tmp/x && env -i /tmp/x/moongit --help` ——
+`tar xzf <产物> -C /tmp/x && env -i /tmp/x/cambium --help` ——
 `env -i` 是关键（清空环境变量 ⇒ 暴露「靠构建机绝对路径/环境变量才跑得起来」的包）。
 ⇒ 推广：任何「产出给别人用」的制品，验收都应该是**在别人的环境里从零跑起来**，
 不是「在构建机上跑通了」。
@@ -3233,7 +3233,7 @@ checkout 用 `ref: ${{ env.TAG_NAME }}`，`softprops/action-gh-release` 用 `tag
 ### 不变量 140 · 依赖探测**不得依赖构建环境**；产物打包后必须**真的跑一次**才算数
 
 2026-10-20 发 v0.2.0 后，客户端端到端下载装完**引擎跑不起来**
-（`exec: .../bin/moongit-cli: not found`）。查出来是**坏包**：CI 产物的
+（`exec: .../bin/cambium-cli: not found`）。查出来是**坏包**：CI 产物的
 `runtime/lib/` 是**空的**（本地打的同一个包是好的）⇒ 仓颉 runtime 库没进去。
 根因在 `scripts/package-release.sh` 的 Linux 分支：它用 **`ldd`** 找仓颉库 ——
 而 `ldd` 解析依赖靠的是**运行时的库搜索路径**（`LD_LIBRARY_PATH` / `ld.so.conf`）：
@@ -3246,7 +3246,7 @@ checkout 用 `ref: ${{ env.TAG_NAME }}`，`softprops/action-gh-release` 用 `tag
 1. **依赖清单要从二进制自己读**，别用「运行一下看它找得到谁」：
    Linux 用 `readelf -d` 的 `DT_NEEDED`，mac 用 `otool -L` —— 两者都不看运行时环境。
 2. **库来源用 SDK 目录**（权威），找不到就 `exit 1`；不许「找不到就跳过」。
-3. **打包后必须真的解包跑一次**（`env -i <解包目录>/moongit --help`），跑不通就 `exit 1`。
+3. **打包后必须真的解包跑一次**（`env -i <解包目录>/cambium --help`），跑不通就 `exit 1`。
    ⚠ 原来脚本只**打印**自验口令、从不执行 ⇒ 等于没有自验。
 4. `env -i` 是关键：清空环境变量，暴露「靠构建机绝对路径/环境变量才跑得起来」的包。
 

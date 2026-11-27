@@ -9,11 +9,11 @@
 //
 // 【嵌入纪律】本文件的 JS 一律字符串拼接 —— 不用模板字面量（`${` 会撞仓颉插值）、
 // 不用反斜杠转义；数据经 jsonSafeForEmbed 处理后内嵌。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
 import std.convert.*
-import moongit.util.*
+import cambium.util.*
 
 /// JSON 内嵌安全：把 `<` 转成 \u003c —— 防御 "</script>" 提前闭合标签。
 /// （结构字符里本来就没有 '<'，命中的只会是字符串值里的泛型尖括号。）
@@ -74,7 +74,7 @@ public struct ArchUi {
     public init(en: Bool) {
         if (en) {
             title = "Architecture"
-            sub = "computed by moonGit engine (Cangjie) — deterministic layout, zero dependencies"
+            sub = "computed by Cambium engine (Cangjie) — deterministic layout, zero dependencies"
             search = "Search module…"
             fit = "Fit"
             theme = "Theme"
@@ -109,7 +109,7 @@ public struct ArchUi {
             compositionWord = "Composition"
         } else {
             title = "技术架构"
-            sub = "moonGit 引擎（仓颉）确定性计算 · 零依赖单文件"
+            sub = "Cambium 引擎（仓颉）确定性计算 · 零依赖单文件"
             search = "搜索模块…"
             fit = "复位"
             theme = "主题"
@@ -204,7 +204,7 @@ public func renderArchHtml(archJsonStr: String, en: Bool): String {
     // 持久化产物的自报家门（复用判定比对的就是这一行）
     var metaComment = ""
     if (Json.has(root, "updateCount")) {
-        metaComment = "<!-- moongit arch render · updateCount=" +
+        metaComment = "<!-- cambium arch render · updateCount=" +
             Int64(Json.intAt(root, "updateCount", 0)).toString() +
             " · generatedAt=" + Json.strAt(root, "generatedAt", "") + " -->\n"
     }
@@ -213,7 +213,7 @@ public func renderArchHtml(archJsonStr: String, en: Bool): String {
 
     sb.append("<!DOCTYPE html>\n${metaComment}<html lang=\"${if (en) { "en" } else { "zh-CN" }}\" data-theme=\"dark\">\n<head>\n<meta charset=\"UTF-8\">\n")
     sb.append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n")
-    sb.append("<meta name=\"generator\" content=\"moonGit graph arch (Cangjie engine, deterministic layout)\">\n")
+    sb.append("<meta name=\"generator\" content=\"Cambium graph arch (Cangjie engine, deterministic layout)\">\n")
     sb.append("<title>${ui.title} · ${totalFiles}f / ${totalSymbols}s</title>\n")
     sb.append("""
 <style>
@@ -712,7 +712,7 @@ func renderJs(en: Bool): String {
     // 任何提供标准 Canvas2D API 的实现（OffscreenCanvas / node-canvas /
     // Skia 绑定 / CoreGraphics 包装）都可以把自己的 ctx 传给 renderTo，
     // draw() 只调用上文审计过的那组标准方法，绘制路径不碰 DOM。
-    sb.append("  window.MoongitArch = {\n")
+    sb.append("  window.CambiumArch = {\n")
     sb.append("    scene: DATA,\n")
     sb.append("    canvas: cv,\n")
     sb.append("    setTheme: function (d) { dark = d; document.body.className = dark ? 'dark' : 'light'; },\n")

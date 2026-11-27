@@ -7,13 +7,13 @@
 // 【降级语义】找不到 ast-grep 时返回 None，由调用方降级为词法级分析并
 // **如实披露**（不许把降级说成全量）。仓颉语言没有 tree-sitter 语法包，
 // ast-grep 直接拒绝；因此 .cj 文件始终走词法降级——这是覆盖边界，不是 bug。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
 import std.convert.*
 import std.env.*
 import std.posix.*
-import moongit.util.*
+import cambium.util.*
 
 // MARK: - 工具发现
 
@@ -31,7 +31,7 @@ var AST_TOTAL_BATCHES: Int64 = 0
 
 /// ast-grep 可执行文件路径（None = 不可用）。
 public func findAstGrep(): Option<String> {
-    match (getVariable("MOONGIT_AST_GREP")) {
+    match (getVariable("CAMBIUM_AST_GREP")) {
         case Some(p) =>
             if (!p.trimAscii().isEmpty()) { return Some(p.trimAscii()) }
         case None => ()
@@ -143,7 +143,7 @@ func runAstGrep(graph: CodeGraph): Option<ArrayList<AstNode>> {
     let byLang = HashMap<String, ArrayList<String>>()
     // .c 文件 ast-grep 只认后缀（Cpp 规则不扫 .c）——复制为 .cpp 临时副本再扫，
     // 扫完把结果里的 .cpp 路径映回原 .c（Cpp 是 C 的超集，解析结果可靠）。
-    let tmpDirRoot = "${tempBase()}/moongit-c-as-cpp-${getpid()}"
+    let tmpDirRoot = "${tempBase()}/cambium-c-as-cpp-${getpid()}"
     C_AS_CPP_ROOT = tmpDirRoot
     // 批失败统计复位必须在**一切早退之前**（含 byLang 空仓的 return None）：
     // 否则同进程二次分析会读到上一次的脏值，把「语言无覆盖」误说成「批次失败」
@@ -197,7 +197,7 @@ func runAstGrep(graph: CodeGraph): Option<ArrayList<AstNode>> {
         let rules = rulesYamlFor(al)
         if (rules.isEmpty()) { continue }
         // 临时规则文件
-        let tmpDir = "${tempBase()}/moongit-conf-${getpid()}-${Int64(graph.files.size)}-${al}"
+        let tmpDir = "${tempBase()}/cambium-conf-${getpid()}-${Int64(graph.files.size)}-${al}"
         ensureDir(tmpDir)
         let rulePath = "${tmpDir}/rule.yml"
         writeFileAtomic(rulePath, rules)
@@ -253,7 +253,7 @@ func runAstGrep(graph: CodeGraph): Option<ArrayList<AstNode>> {
 
 /// M2：临时目录（.c→.cpp 副本 + 每语言规则目录）扫完即清。
 /// 原来没有任何清理路径 —— 每次进程运行在 /tmp 残留一组（含 pid，非无限累积），
-/// 而没人会去扫 /tmp 里的 moongit-* 目录。用完即清才是「工具」的礼貌。
+/// 而没人会去扫 /tmp 里的 cambium-* 目录。用完即清才是「工具」的礼貌。
 func cleanupAstTmpDirs(): Unit {
     for (d in tmpDirs) {
         removePathIfExists(d)

@@ -1,5 +1,5 @@
 // 仓库事实采集：把 git 数据规整成 AI 可读的结构化事实。
-package moongit.kernel
+package cambium.kernel
 
 import std.collection.*
 import std.fs.*
@@ -7,7 +7,7 @@ import std.sync.*
 import std.time.*
 import std.unittest.*
 import std.unittest.testmacro.*
-import moongit.util.*
+import cambium.util.*
 
 /// 单个仓库最多纳入多少个跟踪文件。
 ///
@@ -523,7 +523,7 @@ public func collectFacts(root: String, kind: String, config: Config, commits: In
     let (accessible, timedOut) = volumeAccessibleEx(root)
     if (!accessible) {
         let hint = if (timedOut) {
-            "无法访问 ${root} —— 访问被持续阻塞，很可能是 macOS 未授予「可移除宗卷」访问权限（系统设置 → 隐私与安全性 → 文件与文件夹 → moonGit）"
+            "无法访问 ${root} —— 访问被持续阻塞，很可能是 macOS 未授予「可移除宗卷」访问权限（系统设置 → 隐私与安全性 → 文件与文件夹 → Cambium）"
         } else {
             "路径不存在或卷未挂载：${root}"
         }
@@ -1006,7 +1006,7 @@ func collectDirFacts(root: String, config: Config, maxFiles!: Int64 = 12000, max
 @Test
 func testLanguageOf(): Unit {
     @Assert(languageOf("src/main.swift") == "Swift")
-    @Assert(languageOf("moonGit/src/main.cj") == "Cangjie")
+    @Assert(languageOf("Cambium/src/main.cj") == "Cangjie")
     @Assert(languageOf("a/b.mbt.md") == "MoonBit")
     @Assert(languageOf("x.tsx") == "TypeScript")
     @Assert(languageOf("README.md") == "Markdown")

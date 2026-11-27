@@ -7,11 +7,11 @@
 //   Agent ambiguous  → confidence 0.5
 //   Agent 没处理     → deferred，0.5，报告中列出
 //   overall 重算 = 全部 entities 的加权均值（算法项权重 1.0）
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
 import std.convert.*
-import moongit.util.*
+import cambium.util.*
 
 // MARK: - Layer 1 出口：algorithm.json
 
@@ -83,14 +83,14 @@ public func patchConfidenceSkill(projectName: String): String {
     let sb = StringBuilder()
     sb.append("# Skill: Code Confidence Review (Layer 2)\n\n")
     sb.append("## 目标\n")
-    sb.append("读取 algorithm.json（`moongit graph patchconf ${projectName} --patch <diff>` 的输出）")
+    sb.append("读取 algorithm.json（`cambium graph patchconf ${projectName} --patch <diff>` 的输出）")
     sb.append("中的 `uncertain` 列表，逐项判断其真实置信度，输出 agent.json。\n\n")
     sb.append("## 可用工具（本引擎映射）\n")
     sb.append("- `read_file(path, start, end)` → 宿主的文件读取工具\n")
     sb.append("- `grep(pattern, path)` → 宿主的搜索工具\n")
-    sb.append("- `list_symbols(module)` → `moongit graph tree ${projectName} --json`（全量图）或 `graph symbol ${projectName} <名>`\n")
-    sb.append("- `get_signature(symbol)` → `moongit graph symbol ${projectName} <名>`（输出含 file:line，再 read_file 取签名）\n")
-    sb.append("- `run_algorithm(rel_id)` → `moongit graph patchconf ${projectName} --patch <diff>` 重跑\n\n")
+    sb.append("- `list_symbols(module)` → `cambium graph tree ${projectName} --json`（全量图）或 `graph symbol ${projectName} <名>`\n")
+    sb.append("- `get_signature(symbol)` → `cambium graph symbol ${projectName} <名>`（输出含 file:line，再 read_file 取签名）\n")
+    sb.append("- `run_algorithm(rel_id)` → `cambium graph patchconf ${projectName} --patch <diff>` 重跑\n\n")
     sb.append("## 处理流程\n")
     sb.append("对 `uncertain` 中每一项：\n")
     sb.append("1. 读 `context_ref`（file + line）附近的代码\n")
@@ -112,7 +112,7 @@ public func patchConfidenceSkill(projectName: String): String {
     sb.append("- 必须有 evidence_refs；没有证据的结论 confidence ≤ 0.5\n")
     sb.append("- 不要重做 entities 里已有的项\n")
     sb.append("- 不要修改任何文件\n")
-    sb.append("- 完成后用合并器出终稿：`moongit graph patchconf --merge algorithm.json agent.json`\n")
+    sb.append("- 完成后用合并器出终稿：`cambium graph patchconf --merge algorithm.json agent.json`\n")
     return sb.toString()
 }
 

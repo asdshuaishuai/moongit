@@ -1,13 +1,13 @@
 // 浅更新（update）：记录各分支进度到 store + README/AGENT 托管区域。
-package moongit.flow
+package cambium.flow
 
 import std.collection.*
 import std.env.*
 import std.fs.*
 import std.unittest.*
 import std.unittest.testmacro.*
-import moongit.kernel.*
-import moongit.util.*
+import cambium.kernel.*
+import cambium.util.*
 
 public class UpdateOptions {
     public var mode: String = "shallow"
@@ -127,8 +127,8 @@ public func runUpdate(project: ProjectEntry, config: Config, opts: UpdateOptions
     // （store 的 progress/state/journal + 用户仓库里 README/AGENTS 的托管区读-改-写），
     // 而以前这里按 opts.mode 分裂成 track.lock / update.lock，runDeep 又用 project.lock ——
     // 三个互不排斥的锁名意味着「防并发更新」根本没生效：
-    //   moongit update myproj   （终端 A）
-    //   moongit track --quiet   （A 刚 commit 完，post-commit 钩子后台自动触发）
+    //   cambium update myproj   （终端 A）
+    //   cambium track --quiet   （A 刚 commit 完，post-commit 钩子后台自动触发）
     // 会同时进入临界区，后写者用陈旧快照覆盖 progress.json，state.json 的 runCount 少加。
     // 锁名表达的是「互斥哪个资源」，不是「做哪种操作」。
     let lockFile = "${store.locks}/project.lock"
@@ -525,7 +525,7 @@ public func recordBranchBaseline(
     }
 
     // 叙述生成：规则引擎（确定性）。引擎是 AI 无关的——
-    // LLM 增强由上层 AI 实现（deepDolphin.app）基于 /api/context 自行完成。
+    // LLM 增强由上层 AI 实现（Canopy.app）基于 /api/context 自行完成。
     var narratives = HashMap<String, BranchNarrative>()
     let provider = "rules"
     for (d in deltas) {
@@ -1378,7 +1378,7 @@ func testDocWriteFailureStillPersistsProgressToStore(): Unit {
         // 锁住 AGENTS.md（不可变位：权限位仍是 0644，查权限位抓不到）
         let agents = repo + "/AGENTS.md"
         let agentsAfterRound1 = readFileTextOr(agents, "")
-        @Assert(agentsAfterRound1.contains("moonGit"))
+        @Assert(agentsAfterRound1.contains("Cambium"))
         execCapture("chflags", ["uchg", agents], None, 8000)
         locked = agents
 

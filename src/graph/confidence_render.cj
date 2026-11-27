@@ -3,11 +3,11 @@
 // 【llmPrompt 的定位】引擎 AI 无关（零 LLM 调用），但可以把**确定性事实 +
 // 待复核问题**打包成一段可直接喂模型的提示词。语义分析（这函数到底对不对）
 // 由上层 agent 执行 —— 引擎负责让那一步有据可依，不负责替它下结论。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
 import std.convert.*
-import moongit.util.*
+import cambium.util.*
 
 // MARK: - JSON
 
@@ -114,7 +114,7 @@ public func confidenceText(r: ConfidenceReport): String {
         }
         sb.append("  ${f.file}:${f.line}  ${f.evidence}\n")
     }
-    sb.append("\n复核提示：moongit graph confidence <项目> --llm 生成 LLM 语义复核提示词\n")
+    sb.append("\n复核提示：cambium graph confidence <项目> --llm 生成 LLM 语义复核提示词\n")
     return sb.toString()
 }
 

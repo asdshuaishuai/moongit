@@ -1,5 +1,5 @@
 // 路径工具：~ 展开、全局数据目录、项目 ID、相对路径。
-package moongit.util
+package cambium.util
 
 import std.collection.*
 import std.env.*
@@ -210,7 +210,7 @@ public func dirname(p: String): String {
     }
 }
 
-/// 显示用短路径：/Volumes/data/…/moonGit
+/// 显示用短路径：/Volumes/data/…/Cambium
 public func prettyPath(p: String, maxLen: Int64): String {
     if (p.size <= maxLen) {
         return p
@@ -475,7 +475,7 @@ public func writeFileAtomic(filePath: String, content: String): Unit {
         } catch (e: Exception) {
             // 写失败时不要把临时文件留在用户仓库里 —— 它会变成 git status 里的脏文件，
             // 而且用户无从判断它是什么。（进程被 kill -9 的情况无法在此处理，
-            // 由 moongit doctor 的残留检查兜底。）
+            // 由 cambium doctor 的残留检查兜底。）
             removePathIfExists(tmp)
             attempt += 1
             if (attempt >= 2) {
@@ -596,7 +596,7 @@ func testDeepgitHomeOverride(): Unit {
 
 @Test
 func testPrettyPath(): Unit {
-    let long = "/Volumes/data/dev/coding/deepcodeUI/deepGit/moonGit/src/util"
+    let long = "/Volumes/data/dev/coding/deepcodeUI/deepGit/Cambium/src/util"
     let p = prettyPath(long, 30)
     @Assert(p.size <= 30)
     @Assert(prettyPath("/short", 30) == "/short")

@@ -9,10 +9,10 @@
 // 【契约依赖】R3/R6 的 capped、unreadableDirs 字段由「图谱核心」单元按跨区域
 // 契约 A/B 落地（ImpactResult.refFilesCapped/impactedCapped、
 // CodeGraph.unreadableDirs）；本文件按契约消费，不重复定义。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
-import moongit.util.*
+import cambium.util.*
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -67,13 +67,13 @@ func testTreeDepthMatchesFullGraphJsonFileSet(): Unit {
         // 深度 2 与 3 的文件各一个：没有它们夹具最深只有 1，错位一层验不出来
         ensureDir("${root}/flow/inner")
         writeFileAtomic("${root}/flow/inner/deep.cj", """
-package moongit.flow.inner
+package cambium.flow.inner
 
 public func deepThing(): Int64 { return 1 }
 """)
         ensureDir("${root}/flow/inner/deeper")
         writeFileAtomic("${root}/flow/inner/deeper/deep2.cj", """
-package moongit.flow.inner.deeper
+package cambium.flow.inner.deeper
 
 public func deeperThing(): Int64 { return 2 }
 """)
@@ -153,7 +153,7 @@ func testImpactCapIsDisclosedWhenLimitHit(): Unit {
         var i: Int64 = 0
         while (i <= IMPACT_MAX_FILES) {
             writeFileAtomic("${root}/bulk/ref${i}.cj", """
-package moongit.bulk
+package cambium.bulk
 
 public func fn${i}(t: Text): Int64 { return 1 }
 """)
@@ -349,7 +349,7 @@ func testUnreadableDirIsDisclosedInGraphExits(): Unit {
 /// 注入比「chmod 200 个目录」便宜且同样走真实 treeText。
 func syntheticGraphWithUnreadable(unreadable: ArrayList<String>): CodeGraph {
     return CodeGraph(
-        "/tmp/moongit-archfix-synthetic",
+        "/tmp/cambium-archfix-synthetic",
         ArrayList<FileEntry>(),
         ArrayList<(String, String)>(),
         ArrayList<(String, String, Int64)>(),
@@ -437,7 +437,7 @@ func testArchJsonDrilldownEdgeCarriesModuleViolationSignal(): Unit {
         // util 文件引用 cli/main.swift 定义的 Runner：类型标注即可形成引用边
         //（writeTree 夹具里 flow→util 的引用边就是 `t: Text` 这么形成的）
         writeFileAtomic("${root}/util/bad.cj", """
-package moongit.util
+package cambium.util
 
 public func usesRunner(): Bool {
     let r: Runner = Runner()
@@ -731,34 +731,34 @@ func writeArchFixTree(): String {
     ensureDir("${root}/graph")
     ensureDir("${root}/cli")
     writeFileAtomic("${root}/util/hosta.cj", """
-package moongit.util
+package cambium.util
 
 public func archSymAlpha(): Int64 { return 1 }
 """)
     writeFileAtomic("${root}/util/hostb.cj", """
-package moongit.util
+package cambium.util
 
 public func archSymBeta(): Int64 { return 2 }
 """)
     writeFileAtomic("${root}/util/hostc.cj", """
-package moongit.util
+package cambium.util
 
 public func archSymGamma(): Int64 { return 3 }
 """)
     // (d)：跨模块同名公开符号（strx.cj 每包一份是 AGENTS 明文的合法重名）
     writeFileAtomic("${root}/util/strx.cj", """
-package moongit.util
+package cambium.util
 
 public func isBlank(s: String): Bool { return true }
 """)
     writeFileAtomic("${root}/kernel/strx.cj", """
-package moongit.kernel
+package cambium.kernel
 
 public func isBlank(s: String): Bool { return true }
 """)
     // (d)：成员方法（缩进声明）——跨包不可能以自由标识符形态调用
     writeFileAtomic("${root}/util/box.cj", """
-package moongit.util
+package cambium.util
 
 public class Box {
     public func size(): Int64 { return 1 }
@@ -766,7 +766,7 @@ public class Box {
 """)
     // (d)：与泛型占位符 T 同名的公开函数（引擎自身 cli/lang.cj 的真实形态）
     writeFileAtomic("${root}/cli/lang.cj", """
-package moongit.cli
+package cambium.cli
 
 public func T(en: String, zh: String): String { return zh }
 """)
@@ -781,7 +781,7 @@ func testArchRefEdgesIgnoreCommentMentions(): Unit {
     let root = writeArchFixTree()
     try {
         writeFileAtomic("${root}/graph/comment.cj", """
-package moongit.graph
+package cambium.graph
 
 // 本行注释提到 archSymBeta 只是文档
 /// doc 注释也提到 archSymBeta
@@ -813,7 +813,7 @@ func testArchRefEdgesIgnoreStringLiterals(): Unit {
     let root = writeArchFixTree()
     try {
         let sb = StringBuilder()
-        sb.append("package moongit.graph\n\n")
+        sb.append("package cambium.graph\n\n")
         sb.append("public func gammaInString(): String { return \"archSymGamma\" }\n\n")
         sb.append("public func gammaInMultiline(): String {\n")
         sb.append("    return \"\"\"\n")
@@ -842,7 +842,7 @@ func testArchRefEdgesKeepRealCrossModuleCalls(): Unit {
     let root = writeArchFixTree()
     try {
         writeFileAtomic("${root}/graph/caller.cj", """
-package moongit.graph
+package cambium.graph
 
 public func callAlpha3(): Int64 { return archSymAlpha() }
 
@@ -873,7 +873,7 @@ func testArchRefEdgesRejectCrossModuleAmbiguityAndGenerics(): Unit {
     let root = writeArchFixTree()
     try {
         writeFileAtomic("${root}/flow/app.cj", """
-package moongit.flow
+package cambium.flow
 
 public func runApp(): Bool { return isBlank("x") }
 
@@ -913,7 +913,7 @@ func testArchRefEdgesIgnoreGenericTypeArguments(): Unit {
     let root = writeArchFixTree()
     try {
         writeFileAtomic("${root}/graph/genuse.cj", """
-package moongit.graph
+package cambium.graph
 
 public func wrapGen<T>(x: T): T {
     let cached: Option<T> = None
@@ -948,8 +948,8 @@ func testImportEdgesIgnoreImportsInsideStringLiterals(): Unit {
     let root = writeArchFixTree()
     try {
         let sb = StringBuilder()
-        sb.append("package moongit.graph\n\n")
-        sb.append("import moongit.util\n\n")
+        sb.append("package cambium.graph\n\n")
+        sb.append("import cambium.util\n\n")
         sb.append("public func caller3(): Int64 { return archSymAlpha() }\n\n")
         sb.append("public func docText2(): String {\n")
         sb.append("    return \"\"\"\n")
@@ -959,7 +959,7 @@ func testImportEdgesIgnoreImportsInsideStringLiterals(): Unit {
         writeFileAtomic("${root}/graph/realimp.cj", sb.toString())
         // 假 import 的解析目标：flow 模块里真有同名目录与符号可命中
         writeFileAtomic("${root}/flow/fake.cj", """
-package moongit.flow
+package cambium.flow
 
 public func fakeImport(): Int64 { return 9 }
 """)
@@ -1211,7 +1211,7 @@ func testArchRefEdgesReceiverCallUsesOwnLeadingFlag(): Unit {
     let root = writeArchFixTree()
     try {
         writeFileAtomic("${root}/graph/recv.cj", """
-package moongit.graph
+package cambium.graph
 
 public func recvCaller(boxed: Box): Int64 {
     let v = boxed.T()
@@ -1256,7 +1256,7 @@ func testRenderArchHtmlTwoSegmentRoundTrip(): Unit {
         @Assert(legacy.contains("\"lanes\""))
         @Assert(legacy.contains("\"x\""))
         // 兼容面：临时 JSON 无 updateCount → 无复用标记（graph arch 产物形状不变）
-        @Assert(!legacy.contains("moongit arch render"))
+        @Assert(!legacy.contains("cambium arch render"))
         // round-trip（meta 在）：archJson 全量 + meta 包装 → 标记可读回
         let stored = Json.parse(json).getOrThrow()
         Json.set(stored, "probe", SourceProbe(1, 2, 3).toJson())

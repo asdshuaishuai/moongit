@@ -1,15 +1,15 @@
-// 托管区域文档引擎：moonGit 只改写自己标记的区块，其余内容逐字节保留。
+// 托管区域文档引擎：Cambium 只改写自己标记的区块，其余内容逐字节保留。
 //
 //   <!-- deepgit:begin progress -->
 //   …生成内容…
 //   <!-- deepgit:end progress -->
-package moongit.kernel
+package cambium.kernel
 
 import std.collection.*
 import std.fs.*
 import std.unittest.*
 import std.unittest.testmacro.*
-import moongit.util.*
+import cambium.util.*
 
 public class Region {
     public let name: String
@@ -522,7 +522,7 @@ public func readDocForRewrite(filePath: String): String {
     } catch (e: Exception) {
         throw DgError("DOC_NOT_UTF8",
             "${basename(filePath)} 不是合法的 UTF-8 文本（可能是 GBK/UTF-16 编码或含二进制内容），已拒绝改写：" +
-            "moonGit 会把读到的内容整篇写回，有损解码会把托管区之外的用户正文替换成 U+FFFD 并永久固化。" +
+            "Cambium 会把读到的内容整篇写回，有损解码会把托管区之外的用户正文替换成 U+FFFD 并永久固化。" +
             "请先把它转存为 UTF-8（macOS 可用 `iconv -f gbk -t utf-8 <原文件> > <文件>`）再重试")
     }
 }
@@ -571,7 +571,7 @@ public func applyRegions(filePath: String, regions: ArrayList<(String, String)>,
         copy(Path(filePath), to: Path(backupPath), overwrite: true)
     }
 
-    // 只规整 moonGit 生成的区域内容（renderBlock 内已做），
+    // 只规整 Cambium 生成的区域内容（renderBlock 内已做），
     // 文档其余部分必须逐字节保留 —— 不能对整篇文档做 tidyMarkdown。
     writeFileAtomic(filePath, next)
     // 归属凭据必须在文档写成功**之后**记：先记后写一旦写失败，
@@ -639,7 +639,7 @@ public func previewRegions(filePath: String, regions: ArrayList<(String, String)
 /// 什么时候没有真备份？`applyRegions` 只在 `exists` 为真时才留备份
 /// （见上面 `if (exists && !backupDir.isEmpty())`）—— 也就是
 /// **引擎自己新建的文档一份快照都没有**。实测：注册一个只有 a.txt 的空仓库，
-/// 跑一次 `moongit update` 生成 README.md，再 `moongit verify`：
+/// 跑一次 `cambium update` 生成 README.md，再 `cambium verify`：
 ///   备份目录里只有 `.docpath` 与 `.owned`，没有真备份
 ///   → verify 拿 README 的非托管区域去和字符串 "progress"（.owned 的内容）比
 ///   → 报「非托管区域与上次写入前不一致（你之后编辑过，或引擎改动了托管区域
@@ -725,7 +725,7 @@ public func verifyPreservation(filePath: String, backupFile: String): (Bool, Boo
                     }
                     // 措辞要准确：这里比对的是「当前文件」与「上次写入前的备份」，
                     // 差异只说明非托管区域在上次写入之后被改过 —— 可能是使用者自己编辑的，
-                    // 也可能是 moonGit 破坏了托管区域以外的内容。两者后果不同，
+                    // 也可能是 Cambium 破坏了托管区域以外的内容。两者后果不同，
                     // 不能一律写成「用户内容被改动」而让使用者误以为引擎毁了自己的内容。
                     return (false, false, "非托管区域与上次写入前不一致（你之后编辑过，或引擎改动了托管区域外内容；备份可恢复）")
             }
@@ -808,7 +808,7 @@ public func readBackupManifest(backupDir: String): String {
 /// 缺陷 #201：`config set update.backupKeep 0` 原来放行（只拦负数），
 /// 而 `pruneBackups` 也只拦负数，于是 0 走到「excess = names.size - 0」=
 /// **把全部备份删光**，包括 `applyRegions` 在同一次运行里刚为用户文件建的那份。
-/// 实测：`backupKeep=0` 跑一次 `moongit update proj` →
+/// 实测：`backupKeep=0` 跑一次 `cambium update proj` →
 ///   引擎报「✓ 已更新 README.md」、exit 0、托管区写进了用户的 README，
 ///   而备份文件数 = 0。用户的原文永久丢失，引擎全程报告成功。
 ///
@@ -934,12 +934,12 @@ func testUserContentIsPreservedByteForByte(): Unit {
 
 @Test
 func testUpsertRegionKeepsOldTimestampWhenContentUnchanged(): Unit {
-    let content1 = "> moonGit · 更新于 2026-09-30 10:00\n\n正文内容"
+    let content1 = "> Cambium · 更新于 2026-09-30 10:00\n\n正文内容"
     let doc = upsertRegion("# t\n", "progress", content1)
-    let content2 = "> moonGit · 更新于 2026-09-30 11:00\n\n正文内容"
+    let content2 = "> Cambium · 更新于 2026-09-30 11:00\n\n正文内容"
     let doc2 = upsertRegion(doc, "progress", content2)
     @Assert(doc2 == doc)  // 时间戳未刷新
-    let content3 = "> moonGit · 更新于 2026-09-30 11:00\n\n正文已改变"
+    let content3 = "> Cambium · 更新于 2026-09-30 11:00\n\n正文已改变"
     let doc3 = upsertRegion(doc, "progress", content3)
     @Assert(doc3 != doc)
     @Assert(doc3.contains("正文已改变"))
@@ -965,14 +965,14 @@ func testNoOpGuardSurvivesCrossMinuteStampAndTrailingNewlines(): Unit {
     let backupDir = "${dir}/bk"
     try {
         // 真实渲染器的形态：尾部两个换行 + 引用行 + 若干空行
-        let rendered1 = "> moonGit · 更新于 2026-09-30 10:00\n\n## 进度\n\n- main：3 个提交\n\n\n"
+        let rendered1 = "> Cambium · 更新于 2026-09-30 10:00\n\n## 进度\n\n- main：3 个提交\n\n\n"
         let r1 = applyRegions(file, regionsOf(rendered1), backupDir, "")
         @Assert(r1.changed)
         let after1 = readFileTextOr(file, "")
         @Assert(after1.contains("10:00"))
 
         // 跨一分钟：只有时间戳和尾部换行数不同，正文一字未改
-        let rendered2 = "> moonGit · 更新于 2026-09-30 11:00\n\n## 进度\n\n- main：3 个提交\n\n\n"
+        let rendered2 = "> Cambium · 更新于 2026-09-30 11:00\n\n## 进度\n\n- main：3 个提交\n\n\n"
         let r2 = applyRegions(file, regionsOf(rendered2), backupDir, "")
         // 核心：必须判定为「无变化」
         @Assert(!r2.changed)
@@ -985,7 +985,7 @@ func testNoOpGuardSurvivesCrossMinuteStampAndTrailingNewlines(): Unit {
         @Assert(countBackupFiles(backupDir) == 0)
 
         // 正文真变了就必须改 —— 守卫不能变成「什么都不写」
-        let rendered3 = "> moonGit · 更新于 2026-09-30 11:00\n\n## 进度\n\n- main：9 个提交\n\n\n"
+        let rendered3 = "> Cambium · 更新于 2026-09-30 11:00\n\n## 进度\n\n- main：9 个提交\n\n\n"
         let r3 = applyRegions(file, regionsOf(rendered3), backupDir, "")
         @Assert(r3.changed)
         @Assert(readFileTextOr(file, "").contains("9 个提交"))
@@ -1029,7 +1029,7 @@ func testStripUpdateStamp(): Unit {
     // 契约（审计 L10 收紧）：只剥「`>` 引用行」里的 stamp——引擎只在渲染块
     // 首行写 `> … · 更新于 <时间>`（render.cj）。正文行里的「更新于 」是
     // 用户可控文本（commit subject 等），误剥会让等价比对两边同剥错行。
-    @Assert(stripUpdateStamp("> moonGit · 更新于 2026-01-01 00:00\n\n正文") == "> moonGit · \n\n正文")
+    @Assert(stripUpdateStamp("> Cambium · 更新于 2026-01-01 00:00\n\n正文") == "> Cambium · \n\n正文")
     @Assert(stripUpdateStamp("## 进度\n\n> 更新于 2026-01-01 00:00\n\n### main") == "## 进度\n\n> \n\n### main")
     // 非 quote 行不许动（原实现会从首个「更新于 」剥到行尾——正是 L10 的缺陷形态）
     @Assert(stripUpdateStamp("a 更新于 2026-01-01 00:00\nb") == "a 更新于 2026-01-01 00:00\nb")
@@ -1747,7 +1747,7 @@ func testPruneBackupsRefusesToDeleteOnNegativeKeep(): Unit {
     // 它把 0 当成「用户明确要求不留备份」。但 keep=0 的实际行为不是「不留备份」，
     // 而是 **applyRegions 先建一份、pruneBackups 同一轮把它删掉** ——
     // 引擎做完了建备份的全套工作，然后亲手销毁它。
-    // 端到端实测（backupKeep=0 跑一次 `moongit update proj`）：
+    // 端到端实测（backupKeep=0 跑一次 `cambium update proj`）：
     //     引擎输出「✓ 已更新 README.md」、exit 0，托管区写进了用户的 README，
     //     备份文件数 = 0。用户的原文永久丢失，而引擎全程报告成功。
     //

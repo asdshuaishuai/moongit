@@ -1,6 +1,6 @@
 // 进程执行：封装 git 等外部命令调用，返回结构化结果。
 //
-// 设计取舍：moonGit **只依赖「系统 git」一个必备二进制**，
+// 设计取舍：Cambium **只依赖「系统 git」一个必备二进制**，
 // 其余能力（JSON/SHA256/Markdown）全部自研，保持零第三方依赖。
 //
 // ⚠️ 这里原来还封装了 `curlPostJson`（经 curl 发 HTTP POST），
@@ -12,7 +12,7 @@
 // （它自己的测试也是恒真的：`@Assert(status == 0 || status > 0)`
 //   对任何 Int64 都成立、`@Assert(body.size >= 0)` 同理，
 //   那种测试永远不会红，属于"看起来在跑、实际什么都没验"。）
-package moongit.util
+package cambium.util
 
 import std.collection.*
 import std.convert.*

@@ -1,5 +1,5 @@
 // 文本处理工具：宽度计算、截断、Markdown 规整、JSON 提取。
-package moongit.util
+package cambium.util
 
 import std.collection.*
 import std.unittest.*
@@ -52,7 +52,7 @@ public func truncate(s: String, maxWidth: Int64, ellipsis: String): String {
     return sb.toString() + ellipsis
 }
 
-/// 中和 moonGit 托管区标记。
+/// 中和 Cambium 托管区标记。
 ///
 /// 引擎会把 commit subject、AI 生成的摘要、文件名等**完全不可信的文本**
 /// 原样写进用户 README/AGENTS 的托管区。实测可远程触发的后果：

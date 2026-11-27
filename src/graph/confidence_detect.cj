@@ -2,11 +2,11 @@
 //
 // 【纪律】每个检测器只做一件事，阈值全部引用 confidence.cj 里的常量；
 // 证据字符串必须自足（file:line + 为什么可疑的可核验描述）。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
 import std.convert.*
-import moongit.util.*
+import cambium.util.*
 
 // MARK: - ① 孤儿符号
 

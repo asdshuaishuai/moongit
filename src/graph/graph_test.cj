@@ -2,7 +2,7 @@
 //
 // 【测试隔离】临时目录按 pid + 时间戳 + 进程内序号命名，用完整树删除；
 // 不碰 DEEPGIT_HOME（图谱不依赖引擎配置，天然隔离）。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
 import std.env.*
@@ -11,7 +11,7 @@ import std.posix.*
 import std.sync.*
 import std.unittest.*
 import std.unittest.testmacro.*
-import moongit.util.*
+import cambium.util.*
 
 // 进程内自增序号：并行用例下 pid + 毫秒会撞出同一路径（同进程同 pid，
 // 两次 testRoot() 落进同一毫秒），两个夹具就会写同一棵树——
@@ -42,7 +42,7 @@ func writeTree(): String {
     ensureDir("${root}/flow")
     ensureDir("${root}/cli")
     writeFileAtomic("${root}/util/text.cj", """
-package moongit.util
+package cambium.util
 
 import std.collection.*
 
@@ -53,9 +53,9 @@ public class Text {
 }
 """)
     writeFileAtomic("${root}/flow/update.cj", """
-package moongit.flow
+package cambium.flow
 
-import moongit.util.*
+import cambium.util.*
 
 public func runUpdate(t: Text): Bool {
     let x = t.trimAll("  ")
@@ -148,16 +148,16 @@ enum Mode { case fast }
 @Test
 func testScanCangjieAndGo(): Unit {
     let cj = """
-package moongit.flow
+package cambium.flow
 
-import moongit.util.*
+import cambium.util.*
 
 public func runUpdate(): Bool { return true }
 public class Updater { }
 """
     let f = scanSource(cj, "cangjie")
-    // ⚠️ 推翻旧断言：这里原本是 `imports[0] == "moongit"`（首段）—— 那是把缺陷
-    // 写成了断言（`import moongit.util.*` 的语义在**末段** `util`；取首段 `moongit`
+    // ⚠️ 推翻旧断言：这里原本是 `imports[0] == "cambium"`（首段）—— 那是把缺陷
+    // 写成了断言（`import cambium.util.*` 的语义在**末段** `util`；取首段 `cambium`
     // 导致整个仓颉仓库 import 边恒为 0）。详见 confidence 修复与下方
     // `testImportSegmentResolution`。
     @Assert(f.imports[0] == "util")
@@ -298,7 +298,7 @@ func testTreeAndSymbolOutputs(): Unit {
 @Test
 func testImportSegmentResolution(): Unit {
     // 仓颉/Swift 的跨包引用语义在**末段**（能命中项目内目录/文件名的才是它）。
-    @Assert(scanSource("import moongit.util.*\n", "cangjie").imports[0] == "util")
+    @Assert(scanSource("import cambium.util.*\n", "cangjie").imports[0] == "util")
     @Assert(scanSource("import Foundation\n", "swift").imports[0] == "Foundation")
     // Swift 别名 `import X as Y` → 取 X，不是别名 Y
     @Assert(scanSource("import CoreGraphics as CG\n", "swift").imports[0] == "CoreGraphics")
@@ -330,7 +330,7 @@ func testTodoMarkerShape(): Unit {
 }
 
 func confFixture(): String {
-    let root = "${tempDirPath()}/moongit-conf-test-${getpid()}-${nowMillis()}"
+    let root = "${tempDirPath()}/cambium-conf-test-${getpid()}-${nowMillis()}"
     ensureDir("${root}/util")
     ensureDir("${root}/cli")
     writeFileAtomic("${root}/util/a.cj", """
@@ -384,7 +384,7 @@ func testOrphanIsSymbolLevel(): Unit {
 func testLexicalDeepNestingAndMagic(): Unit {
     // 纯仓颉夹具（无 tree-sitter 语法 → 走词法路径）：验证词法路径确实产出
     // 深嵌套与魔法数，而不是只剩「超长函数」。
-    let root = "${tempDirPath()}/moongit-conf-lex-${getpid()}"
+    let root = "${tempDirPath()}/cambium-conf-lex-${getpid()}"
     ensureDir(root)
     writeFileAtomic("${root}/deep.cj", """
 package p
@@ -460,7 +460,7 @@ func testScoreIsSizeInvariantAndMonotone(): Unit {
 func testArchMermaidNodeIdsAreInjective(): Unit {
     // 两个模块 id 在「非法字符 → _」的旧映射下会**折叠**（`a-b` 与 `a_b` 都 → `a_b`），
     // 图上两个模块合并成一个节点且不报错。现在按下标映射，必须是两个不同节点。
-    let root = "${tempDirPath()}/moongit-archid-${getpid()}"
+    let root = "${tempDirPath()}/cambium-archid-${getpid()}"
     ensureDir("${root}/a-b")
     ensureDir("${root}/a_b")
     writeFileAtomic("${root}/a-b/x.cj", "package p\n\npublic func ax(): Int64 { return 1 }\n")
@@ -587,7 +587,7 @@ func testPatchConfidenceLayers(): Unit {
     try {
         // patch：调用了存在的 Text（解析）+ 不存在的幻觉 fn（未解析）
         let diff = "--- a/flow/update.cj\n+++ b/flow/update.cj\n@@ -1,3 +1,7 @@\n" +
-            " package moongit.flow\n+\n+public func patchHelper(t: Text): Bool {\n" +
+            " package cambium.flow\n+\n+public func patchHelper(t: Text): Bool {\n" +
             "+    let ok = t.trimAll(\"x\")\n+    return ok && ghost_fn(t)\n+}\n"
         let pc = analyzePatchConfidence(graph, diff)
         // S1 部分（有解析也有未解析）
@@ -638,7 +638,7 @@ func testPatchEntityIsOnePerDeclaration(): Unit {
     try {
         let graph = buildGraph(root)
         let diff = "--- a/flow/update.cj\n+++ b/flow/update.cj\n@@ -1,3 +1,10 @@\n" +
-            " package moongit.flow\n+\n+public func patchHelper(t: Text): Bool {\n" +
+            " package cambium.flow\n+\n+public func patchHelper(t: Text): Bool {\n" +
             "+    let a = 1\n+    let b = 2\n+    return second(t)\n+}\n" +
             "+public func second(t: Text): Bool {\n+    return true\n+}\n"
         let pc = analyzePatchConfidence(graph, diff)
@@ -679,7 +679,7 @@ func testPatchUncertainHasNoDuplicates(): Unit {
     try {
         let graph = buildGraph(root)
         let diff = "--- a/flow/update.cj\n+++ b/flow/update.cj\n@@ -1,3 +1,7 @@\n" +
-            " package moongit.flow\n+\n+public func patchHelper(t: Text): Bool {\n" +
+            " package cambium.flow\n+\n+public func patchHelper(t: Text): Bool {\n" +
             "+    let ok = t.trimAll(\"x\")\n+    return ok && ghost_fn(t)\n+}\n"
         let pc = analyzePatchConfidence(graph, diff)
         var ghost: Int64 = 0
@@ -702,7 +702,7 @@ func testPatchUseBeforeDefFires(): Unit {
         let graph = buildGraph(root)
         // 先调用 later()，后声明 later() —— 同一文件内 use-before-def
         let diff = "--- a/flow/update.cj\n+++ b/flow/update.cj\n@@ -1,3 +1,8 @@\n" +
-            " package moongit.flow\n+\n+public func patchHelper(t: Text): Bool {\n" +
+            " package cambium.flow\n+\n+public func patchHelper(t: Text): Bool {\n" +
             "+    return later(t)\n+}\n+\n+public func later(t: Text): Bool {\n" +
             "+    return true\n+}\n"
         let pc = analyzePatchConfidence(graph, diff)
@@ -724,7 +724,7 @@ func testPatchDeclaredBeforeUseIsNotFlagged(): Unit {
     try {
         let graph = buildGraph(root)
         let diff = "--- a/flow/update.cj\n+++ b/flow/update.cj\n@@ -1,3 +1,8 @@\n" +
-            " package moongit.flow\n+\n+public func early(t: Text): Bool {\n" +
+            " package cambium.flow\n+\n+public func early(t: Text): Bool {\n" +
             "+    return true\n+}\n+\n+public func patchHelper(t: Text): Bool {\n" +
             "+    return early(t)\n+}\n"
         let pc = analyzePatchConfidence(graph, diff)
@@ -760,7 +760,7 @@ func testRefEdgesMaterializeInTotalOrder(): Unit {
 /// （build.cj:15 用了 paths.cj 的 readFileText，却被拿去和 errors.cj 对账）。
 @Test
 func testUnusedImportIsModuleLevel(): Unit {
-    let root = "${tempDirPath()}/moongit-unused-import-${getpid()}-${nowMillis()}"
+    let root = "${tempDirPath()}/cambium-unused-import-${getpid()}-${nowMillis()}"
     try {
         ensureDir("${root}/util")
         ensureDir("${root}/cli")
@@ -817,7 +817,7 @@ func testFullGraphJsonHonoursDepthAndDisclosesCut(): Unit {
         // 加一个深度 2 的文件：没有它，夹具里最深只有 1，截断分支验不到
         ensureDir("${root}/flow/inner")
         writeFileAtomic("${root}/flow/inner/deep.cj", """
-package moongit.flow.inner
+package cambium.flow.inner
 
 public func deepThing(): Int64 { return 1 }
 """)
@@ -1016,7 +1016,7 @@ func testQualifiedCFunctionNameIsScanned(): Unit {
 ///   负向防线：真幻觉名（**裸**自由调用）仍要报。
 @Test
 func testQualifiedAndArrowCallsAreNotUnresolved(): Unit {
-    let root = "${tempDirPath()}/moongit-scan-qualified-${getpid()}-${nowMillis()}"
+    let root = "${tempDirPath()}/cambium-scan-qualified-${getpid()}-${nowMillis()}"
     ensureDir(root)
     let src = "int main(void) {\n" +
         "    QDateTime::currentMSecsSinceEpoch();\n" +
@@ -1182,9 +1182,9 @@ func testCAstPathMapsBackWithoutDoubleExtension(): Unit {
     let savedCpp = C_AS_CPP_ROOT
     try {
         AST_SCAN_ROOT = "/tmp/fake-root"
-        C_AS_CPP_ROOT = "/tmp/moongit-c-as-cpp-999"
+        C_AS_CPP_ROOT = "/tmp/cambium-c-as-cpp-999"
         let item = Json.obj()
-        Json.set(item, "file", Json.of("/tmp/moongit-c-as-cpp-999/sub%2Ft.c.cpp"))
+        Json.set(item, "file", Json.of("/tmp/cambium-c-as-cpp-999/sub%2Ft.c.cpp"))
         Json.set(item, "ruleId", Json.of("fn"))
         Json.set(item, "text", Json.of("int f(void) { return 0; }"))
         let start = Json.obj()
@@ -1268,7 +1268,7 @@ func testTreeCanvasHtmlExport(): Unit {
         @Assert(!html.contains("vtabs"))
         @Assert(html.contains("class=\"sidebar\""))
         @Assert(html.contains("<canvas"))
-        @Assert(html.contains("MoongitCodeGraph") || html.contains("functionEdges"))
+        @Assert(html.contains("CambiumCodeGraph") || html.contains("functionEdges"))
         @Assert(html.contains("referenceEdges"))
         @Assert(html.contains("archRefEdges"))
         @Assert(html.contains("depthOmitted"))
@@ -1620,7 +1620,7 @@ func __lintRefEdgesMaterializationHasATotalOrder(): Unit {
 /// 走真实路径：buildGraph（scanSource）+ analyzeConfidence。
 @Test
 func testGoReceiverMethodRealNameIsExtracted(): Unit {
-    let root = "${tempDirPath()}/moongit-go-recv-${getpid()}-${nowMillis()}"
+    let root = "${tempDirPath()}/cambium-go-recv-${getpid()}-${nowMillis()}"
     ensureDir(root)
     writeFileAtomic("${root}/shape.go", """
 package main
@@ -1681,7 +1681,7 @@ func (b *Rect) Dump() {
 /// 走真实路径：buildGraph（第二遍位置感知扫描）+ analyzeConfidence。
 @Test
 func testUnresolvedCallIgnoresKeywordsCommentsAndStrings(): Unit {
-    let root = "${tempDirPath()}/moongit-unres-${getpid()}-${nowMillis()}"
+    let root = "${tempDirPath()}/cambium-unres-${getpid()}-${nowMillis()}"
     ensureDir(root)
     writeFileAtomic("${root}/k.c", """
 #include <stdlib.h>
@@ -1737,7 +1737,7 @@ int step(int v) {
 /// 「疑似内存泄漏」。走真实路径：buildGraph + analyzeConfidence。
 @Test
 func testPointerRiskIgnoresCommentedMalloc(): Unit {
-    let root = "${tempDirPath()}/moongit-ptr-${getpid()}-${nowMillis()}"
+    let root = "${tempDirPath()}/cambium-ptr-${getpid()}-${nowMillis()}"
     ensureDir(root)
     writeFileAtomic("${root}/commented.c", """
 #include <stdlib.h>
@@ -1846,7 +1846,7 @@ func testPatchConfidenceIgnoresDeclsInsideBlockComment(): Unit {
 /// 走真实路径：buildGraph + analyzeConfidence（detectSemanticIssues）。
 @Test
 func testComplexityIgnoresCommentedBranches(): Unit {
-    let root = "${tempDirPath()}/moongit-cc-${getpid()}-${nowMillis()}"
+    let root = "${tempDirPath()}/cambium-cc-${getpid()}-${nowMillis()}"
     ensureDir(root)
     writeFileAtomic("${root}/quiet.cj", """
 package p
@@ -1929,7 +1929,7 @@ func testFieldTypeOnlyStructIsNotEmpty(): Unit {
 /// 读不出来的目录（#179 同款先例；仓颉 std 无权限 API）。
 @Test
 func testWalkSourcesCollectsUnreadableDirs(): Unit {
-    let root = "${tempDirPath()}/moongit-unread-${getpid()}-${nowMillis()}"
+    let root = "${tempDirPath()}/cambium-unread-${getpid()}-${nowMillis()}"
     ensureDir("${root}/locked")
     ensureDir("${root}/open")
     writeFileAtomic("${root}/locked/hidden.cj", "package p\n\nfunc hidden(): Int64 { return 1 }\n")
@@ -2024,7 +2024,7 @@ func __lintConfidenceThresholdsComeFromConstants(): Unit {
 /// 走真实路径：buildGraph + impactOf。
 @Test
 func testImpactCappedFlagsOnSmallBudget(): Unit {
-    let root = "${tempDirPath()}/moongit-cap-${getpid()}-${nowMillis()}"
+    let root = "${tempDirPath()}/cambium-cap-${getpid()}-${nowMillis()}"
     ensureDir("${root}/util")
     ensureDir("${root}/a1")
     ensureDir("${root}/a2")
@@ -2204,12 +2204,12 @@ func testTreeHtmlFunctionDomainMatchesDepth(): Unit {
         // 深度 2 的文件（depth=1 时被剪）+ 根目录 entry 调深度外符号
         ensureDir("${root}/flow/inner")
         writeFileAtomic("${root}/flow/inner/deep.cj", """
-package moongit.flow.inner
+package cambium.flow.inner
 
 public func deepThing(): Int64 { return 1 }
 """)
         writeFileAtomic("${root}/entry.cj", """
-package moongit
+package cambium
 
 public func entryCall(): Int64 { return deepThing() }
 """)
@@ -2386,7 +2386,7 @@ func testInlineBlockCommentKeepsTokenBoundary(): Unit {
 /// 走真实路径：buildGraph（第二遍位置感知扫描）。
 @Test
 func testInlineBlockCommentGlueDoesNotFabricateCalls(): Unit {
-    let root = "${tempDirPath()}/moongit-glue-${getpid()}-${nowMillis()}"
+    let root = "${tempDirPath()}/cambium-glue-${getpid()}-${nowMillis()}"
     ensureDir(root)
     writeFileAtomic("${root}/glue.c", """
 #include <stdlib.h>
@@ -2494,15 +2494,15 @@ private func sixStubFile(tag: String): String {
 @Test
 func testConfidenceCappedFlagsComeFromRealDrops(): Unit {
     // 场景一：恰好 6 条同类（两个类别都达限未超）
-    let root6 = "${tempDirPath()}/moongit-cap6-${getpid()}-${nowMillis()}"
+    let root6 = "${tempDirPath()}/cambium-cap6-${getpid()}-${nowMillis()}"
     ensureDir(root6)
     writeFileAtomic("${root6}/exactly.cj", sixStubFile(""))
     // 场景二：第 7 条触发每文件每类丢弃
-    let root7 = "${tempDirPath()}/moongit-cap7-${getpid()}-${nowMillis()}"
+    let root7 = "${tempDirPath()}/cambium-cap7-${getpid()}-${nowMillis()}"
     ensureDir(root7)
     writeFileAtomic("${root7}/over.cj", sixStubFile("") + "public func s7() { }\n")
     // 场景三：每文件恰不超限、多文件把总量堆过 CONF_MAX_FINDINGS
-    let rootT = "${tempDirPath()}/moongit-capT-${getpid()}-${nowMillis()}"
+    let rootT = "${tempDirPath()}/cambium-capT-${getpid()}-${nowMillis()}"
     ensureDir(rootT)
     let filesNeeded = CONF_MAX_FINDINGS / (2 * CONF_MAX_PER_KIND_PER_FILE) + 2
     var i: Int64 = 0
@@ -2562,7 +2562,7 @@ func testConfidenceCappedFlagsComeFromRealDrops(): Unit {
 
 @Test
 func testLocalBindingsAndNestedFuncsProduceNoSymbols(): Unit {
-    let root = "${tempDirPath()}/moongit-scan-fake-${getpid()}-${nowMillis()}"
+    let root = "${tempDirPath()}/cambium-scan-fake-${getpid()}-${nowMillis()}"
     ensureDir(root)
     writeFileAtomic("${root}/demo.cj", """
 package demo
@@ -2625,7 +2625,7 @@ public func after(): Int64 {
 /// （未闭合的 `{` 比自平衡的 `{ … }` 更狠：自平衡行净零本来就不动栈）。
 @Test
 func testTripleQuotedBracesDoNotPolluteBraceStack(): Unit {
-    let root = "${tempDirPath()}/moongit-scan-triple-${getpid()}-${nowMillis()}"
+    let root = "${tempDirPath()}/cambium-scan-triple-${getpid()}-${nowMillis()}"
     ensureDir(root)
     let q = "\"\"\""
     let src = "public func doc(): String {\n" +
@@ -2673,12 +2673,12 @@ func testTripleQuotedBracesDoNotPolluteBraceStack(): Unit {
 
 @Test
 func testImportsInsideTripleQuotesAndFromBindingAreNotFacts(): Unit {
-    let root = "${tempDirPath()}/moongit-scan-imp-${getpid()}-${nowMillis()}"
+    let root = "${tempDirPath()}/cambium-scan-imp-${getpid()}-${nowMillis()}"
     ensureDir(root)
     // 夹具内含三引号字符串：仓颉多行字符串不支持转义，用拼接构造
     let q = "\"\"\""
     let src = "package demo\n\n" +
-        "import moongit.util\n\n" +
+        "import cambium.util\n\n" +
         "public func doc(): String {\n" +
         "    let s = " + q + "\n" +
         "import Foundation\n" +
@@ -2716,7 +2716,7 @@ func testImportsInsideTripleQuotesAndFromBindingAreNotFacts(): Unit {
 
 @Test
 func testCangjieExtendIsIndexedAndExtensionIsNot(): Unit {
-    let root = "${tempDirPath()}/moongit-scan-ext-${getpid()}-${nowMillis()}"
+    let root = "${tempDirPath()}/cambium-scan-ext-${getpid()}-${nowMillis()}"
     ensureDir(root)
     writeFileAtomic("${root}/demo.cj", """
 package demo
@@ -2796,7 +2796,7 @@ func testInterpolatedStringQuotesDoNotLeakTokens(): Unit {
 
 @Test
 func testInterpolatedLineYieldsNoFabricatedUnresolvedCall(): Unit {
-    let root = "${tempDirPath()}/moongit-scan-ipt-${getpid()}-${nowMillis()}"
+    let root = "${tempDirPath()}/cambium-scan-ipt-${getpid()}-${nowMillis()}"
     ensureDir(root)
     let dq = fromUtf8Lossy([UInt8(34)])                    // "
     let dl = fromUtf8Lossy([UInt8(36), UInt8(123)])        // ${
@@ -3265,16 +3265,16 @@ func dbTreeFixture(): String {
     ensureDir("${root}/util")
     ensureDir("${root}/flow")
     writeFileAtomic("${root}/util/text.cj", """
-package moongit.util
+package cambium.util
 
 public func trimAll(s: String): String {
     return s
 }
 """)
     writeFileAtomic("${root}/flow/update.cj", """
-package moongit.flow
+package cambium.flow
 
-import moongit.util.*
+import cambium.util.*
 
 public func runUpdate(): Bool {
     return trimAll("  x  ").isEmpty()
@@ -3437,7 +3437,7 @@ func testSourceProbeMatchesBuildScan(): Unit {
         // 源未变：两次轻探针相等
         @Assert(probeMatches(probeNow, sourceProbeNow(root)))
         // 源变化（改内容）：bytes 与 maxMtime 至少一个变 → 探针不再相等
-        writeFileAtomic("${root}/util/text.cj", "package moongit.util\n\npublic class Text2 {\n    public func trimAll(s: String): String {\n        return s\n    }\n}\n")
+        writeFileAtomic("${root}/util/text.cj", "package cambium.util\n\npublic class Text2 {\n    public func trimAll(s: String): String {\n        return s\n    }\n}\n")
         let probeAfter = sourceProbeNow(root)
         @Assert(!probeMatches(probeNow, probeAfter))
         @Assert(probeAfter.bytes != probeNow.bytes)

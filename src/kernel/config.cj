@@ -1,11 +1,11 @@
 // 配置：默认值 + 文件读写 + 环境变量覆盖 + AI provider 解析。
-package moongit.kernel
+package cambium.kernel
 
 import std.collection.*
 import std.env.*
 import std.unittest.*
 import std.unittest.testmacro.*
-import moongit.util.*
+import cambium.util.*
 
 /// AI provider 预设
 
@@ -186,7 +186,7 @@ public func loadConfig(): Config {
 ///
 /// ⚠️ 原来是 `writeFileAtomic(path, pretty(configToJson(cfg)))` ——
 /// 由结构体重新生成**整份文档**，于是 config.json 里任何 Config 结构体
-/// 不认识的键全部消失。实测（`moongit config set update.backupKeep 5` 前后）：
+/// 不认识的键全部消失。实测（`cambium config set update.backupKeep 5` 前后）：
 ///     前：顶层 [version, language, clientAppSettings, update, server]
 ///         update [docs, experimental] / server [host, port, tls]
 ///     后：顶层 [version, language, roots, ai, update, hooks, server]
@@ -195,7 +195,7 @@ public func loadConfig(): Config {
 /// `clientAppSettings` / `update.experimental` / `server.tls` 三个键被静默抹掉，
 /// 而命令还打印「已设置 update.backupKeep = 5」。
 ///
-/// config.json 是**共享文件**：客户端层（deepDolphin.app）也在里面放自己的设置。
+/// config.json 是**共享文件**：客户端层（Canopy.app）也在里面放自己的设置。
 /// 引擎整份重写 = 客户端的配置被引擎的一次 `config set` 悄悄清空。
 /// 方向也反了：保护性写操作的失败方向应当是「多留一份」，不是「顺手删掉不认识的」。
 ///
@@ -356,10 +356,10 @@ func testConfigRejectsNegativeBackupKeepOnLoad(): Unit {
 
 @Test
 func testSaveConfigPreservesKeysEngineDoesNotOwn(): Unit {
-    // config.json 是**共享文件**：客户端层（deepDolphin.app）也在里面放自己的设置。
+    // config.json 是**共享文件**：客户端层（Canopy.app）也在里面放自己的设置。
     // 原来 saveConfig 由结构体重新生成整份文档，于是引擎不认识的键全部消失。
     //
-    // 实测 `moongit config set update.backupKeep 5` 前后：
+    // 实测 `cambium config set update.backupKeep 5` 前后：
     //   前 顶层 [version, language, clientAppSettings, update, server]
     //      update [docs, experimental] / server [host, port, tls]
     //   后 顶层 [version, language, roots, ai, update, hooks, server]

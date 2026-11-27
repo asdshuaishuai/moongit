@@ -1,5 +1,5 @@
 // 手写 JSON 解析/序列化（零依赖）。对象保持插入顺序，保证状态文件稳定可 diff。
-package moongit.util
+package cambium.util
 
 import std.collection.*
 import std.math.*
@@ -397,7 +397,7 @@ public class Json {
     /// 这条契约以前没有兑现，两处直接抛异常穿透所有 `match (Json.parse(..))` 调用方：
     ///   1) `\uD83D\uDE00`（emoji 的标准代理对写法）→ Rune(0xD83D) 抛
     ///      "not a valid Unicode scalar value"。实测一个表情就能杀掉 MCP 进程：
-    ///      `echo '{"jsonrpc":"2.0",...,"note":"😀"}' | moongit mcp` → EXIT=1。
+    ///      `echo '{"jsonrpc":"2.0",...,"note":"😀"}' | cambium mcp` → EXIT=1。
     ///      而 Python MCP 客户端的 `json.dumps` 默认 `ensure_ascii=True`，
     ///      **必然**产出代理对转义 —— 触发面是日常操作而非边缘情况。
     ///   2) 整数溢出（`intAt(1e30)`）→ `Int64(n)` 抛，连 fallback 保护都失效。
@@ -573,7 +573,7 @@ class JsonParser {
                             // JObj 是 pair 列表，直接 add 会让重复键留在表示里：
                             //   · 查找从头扫 ⇒ first-wins，而 Python / JS / Go /
                             //     Rust 全部是 last-wins —— 同一个文件，
-                            //     moonGit 读到 a=1、别的工具读到 a=2
+                            //     Cambium 读到 a=1、别的工具读到 a=2
                             //   · 更糟的是 Json.compact 会把重复键**原样写回**
                             //     （实测 {"a":1,"a":2} 往返后仍是两个 a），
                             //     于是歧义被引擎亲手持久化下来
@@ -582,7 +582,7 @@ class JsonParser {
                             // 读出来是 last-wins，存回去只剩一个键。
                             //
                             // 这里**不报错**：主流解析器都接受这个文件，
-                            // moonGit 若独独拒绝，就成了唯一读不出的那个工具。
+                            // Cambium 若独独拒绝，就成了唯一读不出的那个工具。
                             // 真正要消除的是「读法不一致」，而不是文件本身。
                             var replaced = false
                             for (i in 0..m.size) {
@@ -987,7 +987,7 @@ func testDuplicateKeysResolveLastWinsAndDoNotSurviveRoundTrip(): Unit {
     // JObj 是 pair 列表，原实现对重复键直接 add，于是：
     //   · 查找从头扫 ⇒ first-wins。实测 {"a":1,"a":2} 读到 a=1，
     //     而 Python / JS / Go / Rust 全部是 last-wins（读到 2）。
-    //     同一个文件 moonGit 和别的工具给出不同答案，这类不一致最难查。
+    //     同一个文件 Cambium 和别的工具给出不同答案，这类不一致最难查。
     //   · 更糟：Json.compact 把重复键**原样写回**，往返后仍是两个 a ——
     //     引擎亲手把歧义持久化进了用户的 config.json / progress.json。
     let v = match (Json.parse("{\"a\":1,\"a\":2,\"b\":9}")) {
@@ -1302,7 +1302,7 @@ func testJsonRoundTripsAllControlChars(): Unit {
 ///
 /// 旧实现把 0xD83D 直接交给 `Rune()`，抛 "not a valid Unicode scalar value"，
 /// 穿透所有 `match (Json.parse(..))` 调用方 —— 实测一个表情就能杀掉 MCP 进程：
-///   echo '{"jsonrpc":"2.0","id":1,...,"note":"😀"}' | moongit mcp  → EXIT=1
+///   echo '{"jsonrpc":"2.0","id":1,...,"note":"😀"}' | cambium mcp  → EXIT=1
 @Test
 func testJsonParsesSurrogatePairEmoji(): Unit {
     let v = Json.parse("{\"a\":\"\\ud83d\\ude00\"}")

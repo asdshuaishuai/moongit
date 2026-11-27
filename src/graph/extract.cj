@@ -8,10 +8,10 @@
 //
 // 【AI 原生的落点】关键词 → SymKind 的映射是**穷尽 match + 规则表**：
 // 新语言 = 往词表加几个词，种类语义轴由类型系统保证不会写错。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
-import moongit.util.*
+import cambium.util.*
 
 // MARK: - 语言识别
 
@@ -876,11 +876,11 @@ func scanImportLine(t: String): String {
             let segs = q.split("/")
             return segs[segs.size - 1]
         }
-        // 仓颉/swift 的跨包引用语义在**末段**（import moongit.util → util），
+        // 仓颉/swift 的跨包引用语义在**末段**（import cambium.util → util），
         // 这才是能命中项目内目录/文件名的那一段。
         // ⚠️ tokenize 已把 `.` 当分隔符，所以 `toks[1]` 只是首段 —— 必须收集
         // 「`import` 之后、`as` 之前」的**最后一个**标识符。原实现取 `toks[1]`
-        // 得 `moongit`（仓里无此目录）⇒ 整个仓颉仓库 import 边恒为 0。
+        // 得 `cambium`（仓里无此目录）⇒ 整个仓颉仓库 import 边恒为 0。
         // 边界：`import struct Foundation.Date` 这类修饰形态会取到 `Date`，
         // 解析不到目录 ⇒ 不加边（不会编出错边）。
         let toks = tokenize(t)

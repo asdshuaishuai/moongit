@@ -6,7 +6,7 @@
 //   （HTTP 服务端已整体删除：AGENTS.md 第一条不变量「没有 /api/*」）
 // - 无状态：除显式写操作外全部只读；写操作走与 CLI 相同的锁与白名单
 // - AI 无关：MCP 只暴露事实与动作，供任何 MCP 宿主（Claude/其它 agent）消费
-package moongit.cli
+package cambium.cli
 
 import std.collection.*
 import std.console.*
@@ -14,10 +14,10 @@ import std.convert.*
 import std.env.*
 import std.unittest.*
 import std.unittest.testmacro.*
-import moongit.flow.*
-import moongit.graph.*
-import moongit.kernel.*
-import moongit.util.*
+import cambium.flow.*
+import cambium.graph.*
+import cambium.kernel.*
+import cambium.util.*
 
 // ------------------------------ 工具清单 ------------------------------
 
@@ -63,7 +63,7 @@ func mcpToolDeprecated(name: String, desc: String, schema: JsonValue, replacedBy
     return t
 }
 
-/// MCP 工具全集（与 `moongit tools --json` 同源能力，进程内直连）
+/// MCP 工具全集（与 `cambium tools --json` 同源能力，进程内直连）
 public func mcpToolList(): JsonValue {
     let arr = ArrayList<JsonValue>()
     arr.add(mcpTool("list_projects", "列出全部已注册项目及一句话现状", mcpSchemaObject([], [])))
@@ -91,7 +91,7 @@ public func mcpToolList(): JsonValue {
     //      实测会改写所有项目的 README」）。那次只加在客户端，
     //      引擎自己的 MCP 工具表里这一层**没跟上**。
     //   ③ 工具描述写的是「浅更新」——单数，默认动作与描述不符。
-    // 引擎 CLI 的 `moongit update`（不带名字 = 全部）仍然保留；
+    // 引擎 CLI 的 `cambium update`（不带名字 = 全部）仍然保留；
     // 那是**人**敲的命令，而这里是**模型**填的参数表。
     arr.add(mcpTool("run_shallow_update", "浅更新：记录各分支进度并刷新文档托管区域。name 必填；传 * 表示整个项目群", mcpSchemaObject([("name", "string", "项目名或 ID；传 * 表示全部项目")], ["name"])))
     arr.add(mcpTool("run_deep_update", "深度更新：重写 overview/architecture/commands/history。name 必填（与 run_shallow_update / run_track 同构）", mcpSchemaObject([("name", "string", "项目名或 ID"), ("scope", "string", "all|readme|agent")], ["name"])))
@@ -426,7 +426,7 @@ public func mcpCallTool(name: String, args: JsonValue): JsonValue {
                 //     （cli.cj 的注释原话：「恒定 envelope 形状…（客户端契约）」）。
                 //
                 // 消费方要共用解码器就得写两个分支 —— 这是**已知且刻意**的取舍，
-                // 由 deepDolphin/macos/scripts/contract-check.sh 的第 10 组断言钉住，
+                // 由 Canopy/macos/scripts/contract-check.sh 的第 10 组断言钉住，
                 // 改形状会立刻红。
                 return mcpText(Json.pretty(st), false)
             case "get_dashboard" =>
@@ -974,7 +974,7 @@ public func mcpHandle(req: JsonValue): Option<JsonValue> {
     match (method) {
         case "initialize" =>
             let server = Json.obj()
-            Json.set(server, "name", Json.of("moongit"))
+            Json.set(server, "name", Json.of("cambium"))
             Json.set(server, "version", Json.of(ENGINE_VERSION))
             let caps = Json.obj()
             let toolsCap = Json.obj()
@@ -2084,12 +2084,12 @@ func testMcpShallowUpdateSchemaMarksNameRequired(): Unit {
 
 /// #198：`addProject` 不得收下**空名**项目。
 ///
-/// 实测 `moongit add /` 与 MCP `add_project {"path": ""}` 都能注册出
+/// 实测 `cambium add /` 与 MCP `add_project {"path": ""}` 都能注册出
 /// `name=""`、`path="/"` 的条目，后果不是「多一行」：
 ///   ① 那条项目**永远引用不到** —— `findProjectIn` 对空 ref 直接返回 None，
 ///      连 `remove` 都删不掉它；
 ///   ② 它**永久污染每一次聚合命令**：实测之后
-///        moongit status --json → summary.failedProjects = 1
+///        cambium status --json → summary.failedProjects = 1
 ///      而那条项目的 error 是「Native function error.」—— 用户看不懂、
 ///      也查不出是哪来的。
 @Test
@@ -2313,7 +2313,7 @@ func testSiblingWriteToolsAllRequireName(): Unit {
 }
 
 /// codegraph_arch 的 scene 出口：moongit-graph-scene v1 必须真从这里出来
-/// （deepDolphin 的 SwiftUI 画布与任何 Canvas2D 移植都吃这个格式）。
+/// （Canopy 的 SwiftUI 画布与任何 Canvas2D 移植都吃这个格式）。
 /// 此前 codegraph_* 六个工具在 MCP 层零直连测试——CLI 测过 ≠ 分发层测过。
 @Test
 func testMcpCodegraphArchScene(): Unit {

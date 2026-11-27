@@ -7,13 +7,13 @@
 //
 // 【仓颉并发留白】逐文件的提取天然可 `spawn` 并行；v1 刻意串行 ——
 // 确定性输出优先于吞吐（同一棵树两次构建必须逐字节一致，agent 才能对账）。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
 import std.convert.*
 import std.fs.*
 import std.sort.*
-import moongit.util.*
+import cambium.util.*
 
 // MARK: - 上限与跳过规则
 
@@ -840,7 +840,7 @@ public func buildGraphProbed(root: String): (CodeGraph, SourceProbe) {
     // （行号来自 FileEntry.importLines，与 imports 平行）
     //
     // ⚠️ M6（引擎自食其果）：原判据是「f 是否引用了**解析出的那一个文件**」。
-    // 仓颉/Swift 的 import 是**包级**语义（`import moongit.util` 引入整个 util
+    // 仓颉/Swift 的 import 是**包级**语义（`import cambium.util` 引入整个 util
     // 模块），而 moduleIndex 按目录段取「排序序前两个」里的第一个 ⇒ import 到
     // util 的 build.cj 被拿去对账 util/errors.cj，真正用到的 readFileText
     // 在 util/paths.cj —— 于是「用了」被报成未使用。实测本仓库 10 条报告里

@@ -1,12 +1,12 @@
 // 项目注册表：记录被管理的项目群。
-package moongit.kernel
+package cambium.kernel
 
 import std.collection.*
 import std.fs.*
 import std.env.*
 import std.unittest.*
 import std.unittest.testmacro.*
-import moongit.util.*
+import cambium.util.*
 
 public class ProjectEntry {
     public let id: String
@@ -144,7 +144,7 @@ public func saveRegistry(reg: Registry): Unit {
 /// 全局注册表文件的互斥锁。
 ///
 /// registry.json 同样是跨项目的单文件，而项目锁管不到它。
-/// 并发 `moongit add`（例如菜单栏扫描与命令行 add 同时跑）会各自读到同一份旧快照、
+/// 并发 `cambium add`（例如菜单栏扫描与命令行 add 同时跑）会各自读到同一份旧快照、
 /// 各自全量覆盖 → 先写者的新项目永久消失，而两条命令都返回成功。
 public func withRegistryLock<T>(body: () -> T): T {
     return withLockWaiting(deepgitPath(["locks", "registry.lock"]), 60000, 30000, body)
@@ -175,13 +175,13 @@ public func addProject(inputPath: String, name: String, tags: ArrayList<String>,
     // ⚠️⚠️ #198：名字算出来是空的就**必须拒绝注册**，不能写一条空名项目。
     //
     // 原来只有 `isDirectoryPath` 一道闸，于是
-    //     moongit add /            →  ✓ 已注册：（dir）→ /
+    //     cambium add /            →  ✓ 已注册：（dir）→ /
     //     MCP add_project {"path": ""} → 已注册：（/）
     // 两条都往注册表里塞了 `name=""`、`path="/"` 的条目。后果不是「多一行」：
     //   ① 那条项目**永远引用不到** —— `findProjectIn` 对空 ref 直接返回 None，
     //      于是 `remove` 之类的命令根本删不掉它（用户连补救手段都没有）；
     //   ② 它**永久污染每一次聚合命令**：实测注册后
-    //        moongit status --json → summary.failedProjects = 1
+    //        cambium status --json → summary.failedProjects = 1
     //        该项目的 error = 「Native function error.」
     //      一句用户看不懂、也无处可查的错，挂在每一次 status/dashboard/report 上。
     // 引擎只是「如实地」报了一个它本不该收下的输入。
@@ -278,7 +278,7 @@ public func requireProject(ref: String): ProjectEntry {
     match (findProject(ref)) {
         case Some(p) => return p
         case None =>
-            throw DgError.notFound("未找到项目：${ref}（可用 `moongit list` 查看，或 `moongit scan` 扫描注册）")
+            throw DgError.notFound("未找到项目：${ref}（可用 `cambium list` 查看，或 `cambium scan` 扫描注册）")
     }
 }
 

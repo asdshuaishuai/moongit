@@ -1,5 +1,5 @@
 #!/bin/sh
-# moonGit CI 检查：构建 release + 全量测试（串行）。
+# Cambium CI 检查：构建 release + 全量测试（串行）。
 #
 # 封装 AGENTS.md「构建与测试」的环境三件套，调用方不必各抄一遍：
 #   1. source envsetup.sh（仓颉工具链）
@@ -25,7 +25,7 @@ if [ -d "$HOME/.local/share/sdks/MacOSX.minimal/latest" ]; then
 fi
 
 # 一次性沙箱 store：每次调用一个新目录，绝不指向用户真实数据
-DEEPGIT_HOME="$(mktemp -d "${TMPDIR:-/tmp}/moongit-ci.XXXXXX")"
+DEEPGIT_HOME="$(mktemp -d "${TMPDIR:-/tmp}/cambium-ci.XXXXXX")"
 export DEEPGIT_HOME
 cleanup() { rm -rf "$DEEPGIT_HOME"; }
 trap cleanup EXIT

@@ -1,10 +1,10 @@
 // 报告导出：把项目群进度渲染成一份自包含的 Markdown 报告。
-package moongit.flow
+package cambium.flow
 
 import std.collection.*
 import std.env.*
-import moongit.kernel.*
-import moongit.util.*
+import cambium.kernel.*
+import cambium.util.*
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -132,7 +132,7 @@ public func renderReportMarkdown(statuses: ArrayList<JsonValue>, dash: JsonValue
     } else {
         "${okTotal} 个"
     }
-    sb.append("# moonGit 进度报告\n\n")
+    sb.append("# Cambium 进度报告\n\n")
     sb.append("> 生成于 ${formatDateTime(nowIso())} · ${totalText}\n\n")
 
     sb.append("## 项目群总览\n\n")
@@ -315,7 +315,7 @@ public func renderReportMarkdown(statuses: ArrayList<JsonValue>, dash: JsonValue
 
     sb.append("---\n\n")
     let sourceNote = if (zh) { "本地数据，未出网" } else { "local data only" }
-    sb.append("_本报告由 moonGit 自动生成（" + sourceNote + "）_\n")
+    sb.append("_本报告由 Cambium 自动生成（" + sourceNote + "）_\n")
     return sb.toString()
 }
 
@@ -328,7 +328,7 @@ func testRenderReportMarkdown(): Unit {
     let dash = buildDashboard(reg.projects, config)
     let statuses = allProjectStatuses(reg.projects, config, true)
     let md = renderReportMarkdown(statuses, dash, "zh")
-    @Assert(md.contains("# moonGit 进度报告"))
+    @Assert(md.contains("# Cambium 进度报告"))
     @Assert(md.contains("## 项目群总览"))
     @Assert(md.contains("项目总数"))
     @Assert(md.contains("## 项目详情"))
@@ -373,7 +373,7 @@ func testRenderReportSkipsErrorProjects(): Unit {
     let dash = buildDashboard(reg.projects, config)
     let md = renderReportMarkdown(statuses, dash, "zh")
     // 失败项目要么被错误隔离标注，要么根本不出现在详情里，但不能让报告崩掉
-    @Assert(md.contains("# moonGit 进度报告"))
+    @Assert(md.contains("# Cambium 进度报告"))
 }
 
 @Test

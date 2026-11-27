@@ -47,10 +47,10 @@
 // 第二份划分实现）+ archRefEdges 文件级三元组（代码层调用边叠画的唯一数据源，
 // 与模块边同一架构判据）。引擎单独跑或被 agent 驱动时只产出本 HTML，
 // 无其他渲染通道。
-package moongit.graph
+package cambium.graph
 
 import std.collection.*
-import moongit.util.*
+import cambium.util.*
 
 // MARK: - 分级阈值（treehtml 顶部：三视图的默认落点由它们决定）
 
@@ -606,7 +606,7 @@ public func renderIndexHtml(payload: JsonValue, confOpt: Option<JsonValue>, en: 
     // 持久化产物的自报家门（复用判定比对的就是这一行）
     var metaComment = ""
     if (Json.has(root, "updateCount")) {
-        metaComment = "<!-- moongit index render · updateCount=" +
+        metaComment = "<!-- cambium index render · updateCount=" +
             Int64(Json.intAt(root, "updateCount", 0)).toString() +
             " · generatedAt=" + Json.strAt(root, "generatedAt", "") + " -->\n"
     }
@@ -614,7 +614,7 @@ public func renderIndexHtml(payload: JsonValue, confOpt: Option<JsonValue>, en: 
     let sb = StringBuilder()
     sb.append("<!DOCTYPE html>\n${metaComment}<html lang=\"${langTag}\">\n<head>\n<meta charset=\"UTF-8\">\n")
     sb.append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n")
-    sb.append("<meta name=\"generator\" content=\"moonGit graph tree (Cangjie engine, deterministic layout)\">\n")
+    sb.append("<meta name=\"generator\" content=\"Cambium graph tree (Cangjie engine, deterministic layout)\">\n")
     sb.append("<title>${title} · ${fileCount} files</title>\n")
     sb.append("""
 <style>
@@ -641,7 +641,7 @@ public func renderIndexHtml(payload: JsonValue, confOpt: Option<JsonValue>, en: 
   <header class="topbar">
     <div class="brand">
       <div class="brandmark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5.5 12 2l8 3.5v8L12 22 4 13.5z"/><path d="m4 5.5 8 4 8-4M12 9.5V22"/><circle cx="12" cy="9.5" r="2" fill="currentColor" stroke="none"/></svg></div>
-      <div><h1>AI CODE RELIABILITY</h1><small>CONFIDENCE GRAPH · moonGit</small></div>
+      <div><h1>AI CODE RELIABILITY</h1><small>CONFIDENCE GRAPH · Cambium</small></div>
     </div>
     <div class="vdiv"></div>
     <div class="project-select"><div class="project-avatar" id="projAvatar">MG</div><div><strong id="projName">project</strong><small id="projMeta">indexing…</small></div><span class="tierchip" id="tierChip">—</span></div>
@@ -685,7 +685,7 @@ public func renderIndexHtml(payload: JsonValue, confOpt: Option<JsonValue>, en: 
       <div class="side-body" id="sideBody"></div>
     </aside>
   </main>
-  <footer class="bottom-status"><div class="status-left"><span class="status-green" id="freshTag">● INDEX</span><span id="footerNodes">–</span><span id="modelTag">MODEL: LEX-1</span><span id="evalTag"></span></div><div class="status-right"><span>Canvas renderer</span><span><span class="kbd">?</span> <span id="lblHelp">交互说明</span></span><span>moongit codegraph</span></div></footer>
+  <footer class="bottom-status"><div class="status-left"><span class="status-green" id="freshTag">● INDEX</span><span id="footerNodes">–</span><span id="modelTag">MODEL: LEX-1</span><span id="evalTag"></span></div><div class="status-right"><span>Canvas renderer</span><span><span class="kbd">?</span> <span id="lblHelp">交互说明</span></span><span>cambium codegraph</span></div></footer>
 </div>
 <div class="toast" id="toast"></div>
 <div class="modal-backdrop" id="modalBackdrop"><div class="modal"><div class="modal-head"><h2 id="modalTitle">综合置信度计算模型</h2><button class="icon-btn" id="closeModal">×</button></div><p id="modalIntro"></p><div class="formula" id="modalFormula"></div><table class="weights"><thead><tr><th id="modalTh1">疑点档位</th><th>weight</th><th id="modalTh2">观察内容</th></tr></thead><tbody><tr><td id="modalW1">低档 &lt;4</td><td>1–3</td><td id="modalD1">风格与可读性类疑点，按条数线性累积</td></tr><tr><td id="modalW2">中档 4–7</td><td>4–7</td><td id="modalD2">可信度实质受损：深嵌套/超长函数/魔法数等</td></tr><tr><td id="modalW3">高档 ≥8</td><td>8+</td><td id="modalD3">高风险模式：并发风险/指针风险/结构性缺陷</td></tr></tbody></table><p id="modalCaps"></p><button class="primary-btn" id="closeModal2" style="margin-top:5px">理解</button></div></div>
@@ -2446,7 +2446,7 @@ window.addEventListener('resize', function () {
   resizeTimer = setTimeout(function () { hasFit = false; resize(); fitView(); }, 80);
 });
 init();
-window.MoongitCodeGraph = {
+window.CambiumCodeGraph = {
   scene: D, nodes: NODES, version: 2,
   enterScope: enterScope,
   jumpTo: jumpToNode,

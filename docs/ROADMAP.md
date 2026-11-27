@@ -1,7 +1,7 @@
-# moonGit Engine — 长周期路线图
+# Cambium Engine — 长周期路线图
 
 > **定位**：AI 无关的确定性项目群进度内核。引擎只回答「事实是什么」和「能做什么」；
-> 判断与表达由上层（deepDolphin / MCP 宿主 / 任意 agent）完成。
+> 判断与表达由上层（Canopy / MCP 宿主 / 任意 agent）完成。
 >
 > **版本节奏**：每 6-8 周一个 minor 版本（0.x），1.0 为 API 冻结的稳定版。
 >
@@ -32,7 +32,7 @@
 
 | # | 特性 | 说明 | 客户端影响 |
 |---|------|------|-----------|
-| 2.1 | **watch 模式** `moongit watch` | fsevents / inotify 监听文件变更 → 自动 track；`--interval` 定时自动 update | 客户端"实时模式"开关 |
+| 2.1 | **watch 模式** `cambium watch` | fsevents / inotify 监听文件变更 → 自动 track；`--interval` 定时自动 update | 客户端"实时模式"开关 |
 | 2.2 | **分支生命周期** `branch create/merge/delete` | 安全白名单扩展：merge 需 ff-only 或确认；delete 需已合入；不支持 force | 客户端看板卡片上的分支操作按钮 |
 | 2.3 | **多根扫描** `scan --root A --root B` | 一次扫描多个目录；跨根去重 | 客户端批量添加支持多目录 |
 | 2.4 | **webhook 通知** `hook webhook <url>` | 事件驱动：update 完成 / 里程碑达成 / 分支停滞 → POST JSON 到指定 URL | 设置页 webhook 管理 UI |
@@ -49,7 +49,7 @@
 
 | # | 特性 | 说明 | 客户端影响 |
 |---|------|------|-----------|
-| 3.1 | **远程同步协议** | moonGit sync pull/push：进度库推送到远端 JSON 文件（Git 仓库 / S3 / 自建服务器）；多机冲突解决 | 客户端同步设置 + 冲突展示 |
+| 3.1 | **远程同步协议** | Cambium sync pull/push：进度库推送到远端 JSON 文件（Git 仓库 / S3 / 自建服务器）；多机冲突解决 | 客户端同步设置 + 冲突展示 |
 | 3.2 | **团队聚合** | 多台机器的 registry 合并到一个视图；按 author 维度统计 | 客户端"团队"页 |
 | 3.3 | **review 工作流** | 进度更新需要 review（像 PR 一样 approve/reject）；reviewer 留痕 | 客户端 review 队列 |
 | 3.4 | **Web Dashboard** | 自托管只读 Web 面板（引擎 serve 内置 HTML），手机浏览器可看 | 客户端可选（有 Web 就够了） |
@@ -63,7 +63,7 @@
 
 | # | 特性 | 说明 |
 |---|------|------|
-| 4.1 | **插件系统** | 自定义命令注册（`moongit plugin install <url>`）；自定义数据源（不只 git，还可接 Jira/GitHub Issues） |
+| 4.1 | **插件系统** | 自定义命令注册（`cambium plugin install <url>`）；自定义数据源（不只 git，还可接 Jira/GitHub Issues） |
 | 4.2 | **IDE 扩展** | VS Code 扩展（读引擎 MCP）；JetBrains 插件 |
 | 4.3 | **AI agent 框架** | 引擎内置轻量 agent 循环（可选启用）：注册工具 → LLM 推理 → 执行 → 反馈；但引擎仍不绑定 LLM |
 | 4.4 | **指标插件** | 测试覆盖率趋势 / 代码复杂度趋势 / 构建成功率——作为新的数据维度 |
@@ -86,11 +86,11 @@ v1.0.0 ← Phase 4（生态 + API 冻结）                               长期
 
 ---
 
-## 客户端跟进（deepDolphin 对应表）
+## 客户端跟进（Canopy 对应表）
 
 引擎每新增一个端点，客户端需要新增对应的 UI：
 
-| 引擎能力 | deepDolphin 需要的 UI |
+| 引擎能力 | Canopy 需要的 UI |
 |---|---|
 | 1.1 进度差分 | 详情页"变化"tab |
 | 1.2 速度追踪 | 仪表盘速度曲线图 |

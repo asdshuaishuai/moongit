@@ -1,5 +1,5 @@
 // SHA-256（手写实现，零依赖）。用于项目 ID 与文档内容哈希。
-package moongit.util
+package cambium.util
 
 import std.collection.*
 import std.overflow.*
