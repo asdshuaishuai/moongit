@@ -198,10 +198,11 @@ cambium mcp                      # stdio JSON-RPC（2024-11-05）
 - 更新与追踪：`run_shallow_update`、`run_deep_update`、`run_track`
 - git 与里程碑：`git_op`、`list_milestones`、`milestone_add`、`milestone_action`
 - 代码索引（agent 定位代码）：`index_gen`、`index_update`、`index_overview`、`index_search`、`index_query`、`index_outline`、`index_refs`、`index_impact`、`index_grep`
-- 架构与置信度：`arch_gen`、`arch_update`、`arch_query`、`confidence_gen`、`confidence_query`、`render`
+- 架构与置信度：`arch_gen`、`arch_update`、`arch_query`、`dendro_gen`、`dendro_query`、`render`
 - 补丁级置信度三层（Layer 1 算法信号 / Layer 2 agent 复核走 skill / Layer 3 合并）：
-  `codegraph_patch_confidence`（Layer 1）、`codegraph_patch_merge`（Layer 3）
-- 旧名别名（将移除，勿在新方案里使用）：`codegraph_overview`、`codegraph_tree`、`codegraph_symbol`、`codegraph_impact`、`codegraph_arch`、`codegraph_confidence`
+  `dendro_patch_confidence`（Layer 1）、`dendro_patch_merge`（Layer 3）
+- 旧名别名（将移除，勿在新方案里使用）：`codegraph_overview`、`codegraph_tree`、`codegraph_symbol`、`codegraph_impact`、`codegraph_arch`、
+  `codegraph_confidence`、`confidence_gen`、`confidence_query`、`codegraph_patch_confidence`、`codegraph_patch_merge`
 
 `index_*` 工具同时返回 `content[0].text`（人读摘要）与 `structuredContent`（与 CLI `--json` 同形的对象）；
 只读工具带 `annotations.readOnlyHint`。另有 resources（deepgit://project/{id}）与 prompts（project_brief）。
@@ -438,7 +439,8 @@ window.CAMBIUM_EMBED = {
 ```
 src/util/     JSON / SHA256 / 文本 / 时间 / 路径 / 进程 / 日志 / 错误（叶子，仅依赖 std）
 src/kernel/   配置 / 注册表 / 存储 / git 封装 / 事实采集 / 里程碑 / 进度 / 叙事 / 文档区域 / 渲染 / 钩子
-src/graph/    CodeGraph：符号索引 / 关系边 / 影响面 / 架构图 / 代码置信度（只依赖 util）
+src/graph/    CodeGraph：符号索引 / 关系边 / 影响面 / 架构图（只依赖 util）
+src/dendro/   Dendro：代码置信度 / 补丁置信度 / 热力图产物（只依赖 util 与 graph）
 src/flow/     浅更新 / 深更新 / 状态聚合 / 仪表盘 / 报告 / agent 上下文（编排层）
 src/cli/      命令分发 + MCP 服务器（stdio JSON-RPC）
 scripts/      install.sh / cambium.sh / build-minimal-sdk.sh / package-release.sh /

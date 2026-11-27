@@ -36,10 +36,10 @@ if [ -z "${DEEPGIT_HOME:-}" ]; then
 fi
 
 SB="$(mktemp -d "${TMPDIR:-/tmp}/Cambium-nc-audit.XXXXXX")"
-FILES="src/graph/patchconf.cj src/graph/build.cj src/graph/model.cj src/util/paths.cj src/util/json.cj \
+FILES="src/dendro/patchconf.cj src/graph/build.cj src/graph/model.cj src/util/paths.cj src/util/json.cj \
        src/util/text.cj src/kernel/lock.cj src/kernel/config.cj src/kernel/git.cj src/graph/arch.cj \
-       src/graph/archscene.cj src/graph/render.cj src/graph/extract.cj src/graph/confidence_render.cj \
-       src/graph/confidence_detect.cj src/graph/confidence_ast.cj src/cli/cli.cj"
+       src/graph/archscene.cj src/graph/render.cj src/graph/extract.cj src/dendro/confidence_render.cj \
+       src/dendro/confidence_detect.cj src/dendro/confidence_ast.cj src/cli/cli.cj"
 
 restore_all() {
   for f in $FILES; do
@@ -116,9 +116,9 @@ check() {
 echo "== 负控：audit-2026-10-09 修复判据 =="
 
 # ── NC1 · H1：entities.add 挪回前窥 while 体内（重复 entity）──
-b="$(md5_of src/graph/patchconf.cj)"
+b="$(md5_of src/dendro/patchconf.cj)"
 python3 - <<'PY'
-p = "src/graph/patchconf.cj"
+p = "src/dendro/patchconf.cj"
 s = open(p, encoding="utf-8").read()
 old = '''                    let conf = if (relCount == 0) { 0.9 } else { relScore / Float64(relCount) }
                     entities.add(PatchEntity("${name}@${pf.newPath}:${pl.newNo}", name,
@@ -131,19 +131,19 @@ new = '''                    let conf = if (relCount == 0) { 0.9 } else { relSco
 assert old in s, "NC1 锚点失配"
 open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
 PY
-check "NC1 H1 实体每行重复生成" testPatchEntityIsOnePerDeclaration src/graph/patchconf.cj "$b"
+check "NC1 H1 实体每行重复生成" testPatchEntityIsOnePerDeclaration src/dendro/patchconf.cj "$b"
 
 # ── NC2 · H2：use-before-def 改回「只看到目前为止的声明」──
-b="$(md5_of src/graph/patchconf.cj)"
+b="$(md5_of src/dendro/patchconf.cj)"
 python3 - <<'PY'
-p = "src/graph/patchconf.cj"
+p = "src/dendro/patchconf.cj"
 s = open(p, encoding="utf-8").read()
 old = '''                            match (allPatchDecls.get(tok)) {'''
 new = '''                            match (patchDecls.get(tok)) {'''
 assert old in s, "NC2 锚点失配"
 open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
 PY
-check "NC2 H2 use-before-def 永假" testPatchUseBeforeDefFires src/graph/patchconf.cj "$b"
+check "NC2 H2 use-before-def 永假" testPatchUseBeforeDefFires src/dendro/patchconf.cj "$b"
 
 # ── NC3 · H3：refEdges 物化处不排序（出口字节序跟 HashMap 走）──
 # ⚠️ 这条只能用**源码守卫**判：本工具链的 HashMap 迭代序在单进程内恰好有序，
@@ -295,16 +295,16 @@ PY
 check "NC10 M8 假函数符号" testCStyleFuncNameIsRestrictedToC src/graph/extract.cj "$b"
 
 # ── NC11 · M4：两个含义又共用一个 files 键──
-b="$(md5_of src/graph/confidence_render.cj)"
+b="$(md5_of src/dendro/confidence_render.cj)"
 python3 - <<'PY'
-p = "src/graph/confidence_render.cj"
+p = "src/dendro/confidence_render.cj"
 s = open(p, encoding="utf-8").read()
 old = '''    Json.set(o, "penaltyByFile", JArr(fl))'''
 new = '''    Json.set(o, "files", JArr(fl))'''
 assert old in s, "NC11 锚点失配"
 open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
 PY
-check "NC11 M4 罚分表被静默覆盖" testConfidenceJsonKeySetIsStable src/graph/confidence_render.cj "$b"
+check "NC11 M4 罚分表被静默覆盖" testConfidenceJsonKeySetIsStable src/dendro/confidence_render.cj "$b"
 
 # ── NC12 · M13：themes 里去掉 panel（token 表缺键）──
 b="$(md5_of src/graph/archscene.cj)"
@@ -344,9 +344,9 @@ PY
 check "NC13 L14 前导 .. 被抹掉" testNormalizePathKeepsLeadingDotDots src/util/paths.cj "$b"
 
 # ── NC14 · M3：C 前置声明又被报成空类型──
-b="$(md5_of src/graph/confidence_detect.cj)"
+b="$(md5_of src/dendro/confidence_detect.cj)"
 python3 - <<'PY'
-p = "src/graph/confidence_detect.cj"
+p = "src/dendro/confidence_detect.cj"
 s = open(p, encoding="utf-8").read()
 old = '''        if (isForwardDeclaration(n.text)) {
             continue
@@ -357,7 +357,7 @@ new = '''        if (false) {
 assert old in s, "NC14 锚点失配"
 open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
 PY
-check "NC14 M3 前置声明误报" testForwardDeclarationIsNotReportedAsEmptyType src/graph/confidence_detect.cj "$b"
+check "NC14 M3 前置声明误报" testForwardDeclarationIsNotReportedAsEmptyType src/dendro/confidence_detect.cj "$b"
 
 # ── NC15 · L11：stash 又按 \n 切行（多条目只解析第一条）──
 b="$(md5_of src/kernel/git.cj)"
@@ -430,16 +430,16 @@ check "NC18 L9 任意语言值被静默接受" testEnvLanguageOverrideRejectsUns
 # 而沙箱里要么没装 ast-grep、要么全是仓颉文件（无 tree-sitter 语法）⇒ 批次数为 0，
 # 分支根本进不去。所以判据是 __lintAstBatchFailureDegradesInsteadOfClaimingSuccess
 # （源码级保证，已在测试注释里如实标注边界）。
-b="$(md5_of src/graph/confidence_ast.cj)"
+b="$(md5_of src/dendro/confidence_ast.cj)"
 python3 - <<'PY'
-p = "src/graph/confidence_ast.cj"
+p = "src/dendro/confidence_ast.cj"
 s = open(p, encoding="utf-8").read()
 old = '''    if (totalBatches > 0 && failedBatches == totalBatches) {'''
 new = '''    if (false) {'''
 assert old in s, "NC19 锚点失配"
 open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
 PY
-check "NC19 M2 批失败不降级" __lintAstBatchFailureDegradesInsteadOfClaimingSuccess src/graph/confidence_ast.cj "$b"
+check "NC19 M2 批失败不降级" __lintAstBatchFailureDegradesInsteadOfClaimingSuccess src/dendro/confidence_ast.cj "$b"
 
 echo "== 负控结果：失败项 ${FAILS} =="
 [ "$FAILS" -eq 0 ] || exit 1

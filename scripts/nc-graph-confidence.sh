@@ -34,7 +34,7 @@ if [ -z "${DEEPGIT_HOME:-}" ]; then
 fi
 
 SB="$(mktemp -d "${TMPDIR:-/tmp}/Cambium-nc-graph.XXXXXX")"
-FILES="src/graph/confidence.cj src/graph/confidence_detect.cj src/graph/extract.cj src/graph/archhtml.cj src/graph/archscene.cj src/graph/arch.cj"
+FILES="src/dendro/confidence.cj src/dendro/confidence_detect.cj src/graph/extract.cj src/graph/archhtml.cj src/graph/archscene.cj src/graph/arch.cj"
 
 restore_all() {
   for f in $FILES; do
@@ -121,9 +121,9 @@ PY
 check "NC1 import 取首段" testImportSegmentResolution src/graph/extract.cj "$b"
 
 # ── NC2 · TODO 判定退回「出现过这个词」──
-b="$(md5_of src/graph/confidence_detect.cj)"
+b="$(md5_of src/dendro/confidence_detect.cj)"
 python3 - <<'PY'
-p = "src/graph/confidence_detect.cj"
+p = "src/dendro/confidence_detect.cj"
 s = open(p, encoding="utf-8").read()
 start = s.index("func containsTodo(line: String): Bool {")
 end = s.index("\n}\n", start) + len("\n}\n")
@@ -133,12 +133,12 @@ new = ('func containsTodo(line: String): Bool {\n'
 assert s[start:end] != new, "NC2 未改变内容"
 open(p, "w", encoding="utf-8").write(s[:start] + new + s[end:])
 PY
-check "NC2 TODO 退回子串匹配" testTodoMarkerShape src/graph/confidence_detect.cj "$b"
+check "NC2 TODO 退回子串匹配" testTodoMarkerShape src/dendro/confidence_detect.cj "$b"
 
 # ── NC3 · 排序退回「并列判等」（不确定）──
-b="$(md5_of src/graph/confidence.cj)"
+b="$(md5_of src/dendro/confidence.cj)"
 python3 - <<'PY'
-p = "src/graph/confidence.cj"
+p = "src/dendro/confidence.cj"
 s = open(p, encoding="utf-8").read()
 old = '''    let ia = flawId(a.kind)
     let ib = flawId(b.kind)
@@ -148,24 +148,24 @@ new = '''    return false'''
 assert old in s, "NC3 锚点失配"
 open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
 PY
-check "NC3 排序并列判等" testFindingsOrderIsTotalAndDeterministic src/graph/confidence.cj "$b"
+check "NC3 排序并列判等" testFindingsOrderIsTotalAndDeterministic src/dendro/confidence.cj "$b"
 
 # ── NC4 · 孤儿检测忽略「使用证据」──
-b="$(md5_of src/graph/confidence_detect.cj)"
+b="$(md5_of src/dendro/confidence_detect.cj)"
 python3 - <<'PY'
-p = "src/graph/confidence_detect.cj"
+p = "src/dendro/confidence_detect.cj"
 s = open(p, encoding="utf-8").read()
 old = "            if (graph.referencedNames.contains(s.name)) { continue }"
 new = "            if (s.name.size < 0) { continue }"
 assert old in s, "NC4 锚点失配"
 open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
 PY
-check "NC4 孤儿不用使用证据" testOrphanIsSymbolLevel src/graph/confidence_detect.cj "$b"
+check "NC4 孤儿不用使用证据" testOrphanIsSymbolLevel src/dendro/confidence_detect.cj "$b"
 
 # ── NC5 · 词法路径不再产出深嵌套 / 魔法数 ──
-b="$(md5_of src/graph/confidence_detect.cj)"
+b="$(md5_of src/dendro/confidence_detect.cj)"
 python3 - <<'PY'
-p = "src/graph/confidence_detect.cj"
+p = "src/dendro/confidence_detect.cj"
 s = open(p, encoding="utf-8").read()
 a1 = "if (maxRel > CONF_DEEP_NESTING) {"
 b1 = "if (maxRel > 999999) {"
@@ -175,12 +175,12 @@ assert a1 in s and a2 in s, "NC5 锚点失配"
 s = s.replace(a1, b1, 1).replace(a2, b2, 1)
 open(p, "w", encoding="utf-8").write(s)
 PY
-check "NC5 词法路径不报深嵌套/魔法数" testLexicalDeepNestingAndMagic src/graph/confidence_detect.cj "$b"
+check "NC5 词法路径不报深嵌套/魔法数" testLexicalDeepNestingAndMagic src/dendro/confidence_detect.cj "$b"
 
 # ── NC6 · 分数退回「与规模相关」的旧公式（100 − 惩罚/√文件数）──
-b="$(md5_of src/graph/confidence.cj)"
+b="$(md5_of src/dendro/confidence.cj)"
 python3 - <<'PY'
-p = "src/graph/confidence.cj"
+p = "src/dendro/confidence.cj"
 s = open(p, encoding="utf-8").read()
 old = '''    let density = Float64(penalty) / Float64(n)
     let s = CONF_SCORE_SCALE
@@ -193,7 +193,7 @@ new = '''    var g = Float64(n) / 2.0
 assert old in s, "NC6 锚点失配"
 open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
 PY
-check "NC6 分数退回规模相关公式" testScoreIsSizeInvariantAndMonotone src/graph/confidence.cj "$b"
+check "NC6 分数退回规模相关公式" testScoreIsSizeInvariantAndMonotone src/dendro/confidence.cj "$b"
 
 # ── NC7 · 架构图面板退回「无条件用 m.files + 幻影字面量 '》'.length」──
 b="$(md5_of src/graph/archhtml.cj)"
@@ -265,9 +265,9 @@ PY
 check "NC9 mermaid 节点 id 折叠" testArchMermaidNodeIdsAreInjective src/graph/arch.cj "$b"
 
 # ── NC10 · AST 检测退回「依赖输入顺序」（不排序）──
-b="$(md5_of src/graph/confidence_detect.cj)"
+b="$(md5_of src/dendro/confidence_detect.cj)"
 python3 - <<'PY'
-p = "src/graph/confidence_detect.cj"
+p = "src/dendro/confidence_detect.cj"
 s = open(p, encoding="utf-8").read()
 old = '''func detectFromAst(nodes: ArrayList<AstNode>, findings: ArrayList<Finding>): Unit {
     sortAstNodes(nodes)
@@ -277,7 +277,7 @@ new = '''func detectFromAst(nodes: ArrayList<AstNode>, findings: ArrayList<Findi
 assert old in s, "NC10 锚点失配"
 open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
 PY
-check "NC10 AST 检测依赖输入顺序" testAstDetectionIsOrderIndependent src/graph/confidence_detect.cj "$b"
+check "NC10 AST 检测依赖输入顺序" testAstDetectionIsOrderIndependent src/dendro/confidence_detect.cj "$b"
 
 # ── NC11 · 架构图 JS 的 MODULEW/ROOTW 退回硬编码中文（英文模式出中文）──
 b="$(md5_of src/graph/archhtml.cj)"
