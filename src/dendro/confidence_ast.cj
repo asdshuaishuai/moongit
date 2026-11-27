@@ -1,8 +1,11 @@
 // graph/confidence_ast.cj — 语法树层：调用开源 ast-grep（tree-sitter 内核）。
 //
 // 【不造轮子的落点】本引擎**不自研 parser**：语法树由外部开源工具 ast-grep
-// 提供（brew install ast-grep；tree-sitter 语法包已内置于该二进制）。
-// 可执行文件探测顺序：环境变量 → PATH 常见位置。
+// 提供（brew install ast-grep；tree-sitter 语法包已内置于该二进制；没有 root 时
+// `npm install -g @ast-grep/cli` 或 `cargo install ast-grep` 装进用户目录即可）。
+// 可执行文件探测顺序：环境变量 CAMBIUM_AST_GREP → PATH → 用户目录的常见安装位置 → 系统级固定路径。
+// 原先只查 4 个固定路径、不查 PATH（注释里却写着「PATH 常见位置」）：cargo / npm 装的 ast-grep 引擎看不到，
+// 装了也白装——本机就是这样，置信度一直跑在词法档。
 //
 // 【降级语义】找不到 ast-grep 时返回 None，由调用方降级为词法级分析并
 // **如实披露**（不许把降级说成全量）。仓颉语言没有 tree-sitter 语法包，
@@ -29,17 +32,52 @@ let tmpDirs = ArrayList<String>()
 /// 0/0 = ast-grep 未运行或无批次）
 var AST_FAILED_BATCHES: Int64 = 0
 var AST_TOTAL_BATCHES: Int64 = 0
+/// 本次运行里因 ast-grep 版本不认而被剔除的节点种类（"swift.struct_declaration"），写进 astNote。
+var AST_DROPPED_KINDS = ArrayList<String>()
+/// 本次运行里因签名不成其为签名而被丢弃的函数节点数（tree-sitter 错误恢复的产物），写进 astNote。
+var AST_DROPPED_NODES: Int64 = 0
 
-/// ast-grep 可执行文件路径（None = 不可用）。
+/// ast-grep 可执行文件路径（None = 不可用）。环境变量 → PATH → 用户目录常见位置 → 系统级固定路径。
 public func findAstGrep(): Option<String> {
     match (getVariable("CAMBIUM_AST_GREP")) {
         case Some(p) =>
             if (!p.trimAscii().isEmpty()) { return Some(p.trimAscii()) }
         case None => ()
     }
+    match (findOnPath("ast-grep")) {
+        case Some(p) => return Some(p)
+        case None => ()
+    }
+    match (getVariable("HOME")) {
+        case Some(h) =>
+            let home = h.trimAscii()
+            if (!home.isEmpty()) {
+                for (d in [".local/bin", ".cargo/bin", ".npm-global/bin", ".linuxbrew/bin"]) {
+                    let cand = home + "/" + d + "/ast-grep"
+                    if (fileExists(cand)) { return Some(cand) }
+                }
+            }
+        case None => ()
+    }
     for (cand in ["/opt/homebrew/bin/ast-grep", "/usr/local/bin/ast-grep",
         "/usr/bin/ast-grep", "/home/linuxbrew/.linuxbrew/bin/ast-grep"]) {
         if (fileExists(cand)) { return Some(cand) }
+    }
+    return None
+}
+
+/// 在 PATH 的每个目录里找 [name]：与 shell 的解析一致——按 PATH 顺序，找到的第一个为准（装了多个版本时由顺序决定）。
+/// 空目录段跳过（shell 把空段当当前目录，这里不认：cwd 上恰好有个同名文件不该被当成装了工具）。
+func findOnPath(name: String): Option<String> {
+    match (getVariable("PATH")) {
+        case Some(path) =>
+            for (seg in path.split(":")) {
+                let d = seg.trimAscii()
+                if (d.isEmpty()) { continue }
+                let cand = d + "/" + name
+                if (fileExists(cand)) { return Some(cand) }
+            }
+        case None => ()
     }
     return None
 }
@@ -150,6 +188,8 @@ func runAstGrep(graph: CodeGraph): Option<ArrayList<AstNode>> {
     // 否则同进程二次分析会读到上一次的脏值，把「语言无覆盖」误说成「批次失败」
     AST_FAILED_BATCHES = 0
     AST_TOTAL_BATCHES = 0
+    AST_DROPPED_KINDS.clear()
+    AST_DROPPED_NODES = 0
     var tmpPrepared = false
     for (f in graph.files) {
         var al = astGrepLang(f.lang)
@@ -195,7 +235,7 @@ func runAstGrep(graph: CodeGraph): Option<ArrayList<AstNode>> {
     var failedBatches: Int64 = 0
     AST_SCAN_ROOT = graph.root
     for ((al, files) in groups) {
-        let rules = rulesYamlFor(al)
+        let rules = rulesYamlFor(bin, al)
         if (rules.isEmpty()) { continue }
         // 临时规则文件
         let tmpDir = "${tempBase()}/cambium-conf-${getpid()}-${Int64(graph.files.size)}-${al}"
@@ -288,56 +328,62 @@ func tempBase(): String {
 
 /// 按语言生成规则集：函数/方法 + 类型声明 + catch 节点。
 /// 规则 id 约定：`fn` / `type` / `catch`（消费方按 id 分派语义）。
-func rulesYamlFor(astLang: String): String {
+func rulesYamlFor(bin: String, astLang: String): String {
+    let ymlLang = yamlLang(astLang)
+    if (ymlLang.isEmpty()) { return "" }
     let sb = StringBuilder()
-    let fns = fnKindsFor(astLang)
-    if (fns.size > 0) {
-        let ymlLang = yamlLang(astLang)
-        if (!ymlLang.isEmpty()) {
-            sb.append("id: fn\n")
-            sb.append("language: ${ymlLang}\n")
-            sb.append("rule:\n")
-            sb.append("  any:\n")
-            for (k in fns) {
-                sb.append("    - kind: ${k}\n")
-            }
-            sb.append("message: fn\n")
-            sb.append("severity: info\n")
-        }
-    }
-    let types = typeKindsFor(astLang)
-    if (types.size > 0) {
-        let ymlLang = yamlLang(astLang)
-        if (!ymlLang.isEmpty()) {
-            if (sb.toString().size > 0) { sb.append("---\n") }
-            sb.append("id: type\n")
-            sb.append("language: ${ymlLang}\n")
-            sb.append("rule:\n")
-            sb.append("  any:\n")
-            for (k in types) {
-                sb.append("    - kind: ${k}\n")
-            }
-            sb.append("message: type\n")
-            sb.append("severity: info\n")
-        }
-    }
-    let catches = catchKindsFor(astLang)
-    if (catches.size > 0) {
-        let ymlLang = yamlLang(astLang)
-        if (!ymlLang.isEmpty()) {
-            if (sb.toString().size > 0) { sb.append("---\n") }
-            sb.append("id: catch\n")
-            sb.append("language: ${ymlLang}\n")
-            sb.append("rule:\n")
-            sb.append("  any:\n")
-            for (k in catches) {
-                sb.append("    - kind: ${k}\n")
-            }
-            sb.append("message: catch\n")
-            sb.append("severity: info\n")
-        }
-    }
+    appendRule(sb, "fn", validKinds(bin, astLang, ymlLang, fnKindsFor(astLang)), ymlLang)
+    appendRule(sb, "type", validKinds(bin, astLang, ymlLang, typeKindsFor(astLang)), ymlLang)
+    appendRule(sb, "catch", validKinds(bin, astLang, ymlLang, catchKindsFor(astLang)), ymlLang)
     return sb.toString()
+}
+
+/// 一条规则（kind 的「任一」）；这一组没有可用种类就不写。
+func appendRule(sb: StringBuilder, rid: String, kinds: ArrayList<String>, ymlLang: String): Unit {
+    if (kinds.size == 0) { return }
+    if (sb.toString().size > 0) { sb.append("---\n") }
+    sb.append("id: ${rid}\n")
+    sb.append("language: ${ymlLang}\n")
+    sb.append("rule:\n")
+    sb.append("  any:\n")
+    for (k in kinds) {
+        sb.append("    - kind: ${k}\n")
+    }
+    sb.append("message: ${rid}\n")
+    sb.append("severity: info\n")
+}
+
+/// 规则里的每一种节点先拿 ast-grep 本人验证，不认的剔除并记进 [AST_DROPPED_KINDS]。
+///
+/// 【为什么必须有这一步】节点种类名跟着 ast-grep 内置的 tree-sitter 语法版本走，各版本会变：
+/// Swift 的 `struct_declaration` / `enum_declaration` 在 0.51 上已并入 `class_declaration`
+/// （macOS 上 brew 装的旧版两者都认，探针实测所得的那张表就是那时记下的）。
+/// 而规则是「任一命中」的一整份——混进一个不认的种类，ast-grep **整份规则拒绝**，
+/// 这一语言的语法树信号就全丢了。实测 deepDolphin：Swift 那一批整个失败，
+/// 只在 astNote 里留下一句「1/4 个批次失败」。
+/// 验证方法与正式扫描同构：单种类的规则、空的输入跑一次，退出码 0 才算认。
+func validKinds(bin: String, astLang: String, ymlLang: String, kinds: Array<String>): ArrayList<String> {
+    let out = ArrayList<String>()
+    if (kinds.size == 0) { return out }
+    let tmpDir = "${tempBase()}/cambium-conf-${getpid()}-probe-${astLang}"
+    ensureDir(tmpDir)
+    tmpDirs.add(tmpDir)
+    for (k in kinds) {
+        let probe = "${tmpDir}/probe.yml"
+        writeFileAtomic(probe, "id: probe\nlanguage: ${ymlLang}\nrule:\n  kind: ${k}\nmessage: probe\nseverity: info\n")
+        let args = ArrayList<String>()
+        args.add("scan")
+        args.add("-r")
+        args.add(probe)
+        args.add("--json=compact")
+        let r = execCapture(bin, args.toArray(), None, 20000)
+        if (r.ok()) {
+            out.add(k)
+        } else {
+            AST_DROPPED_KINDS.add("${astLang}.${k}")
+        }
+    }
+    return out
 }
 
 /// ast-grep YAML 里的语言写法（大写驼峰）
@@ -397,6 +443,11 @@ func parseOneAstNode(item: JsonValue, out: ArrayList<AstNode>): Unit {
             file = unsanitizePathName(encoded)
         }
     }
+    // 函数节点的签名必须像签名（见 plausibleSignature）：错误恢复揉出来的假节点不进任何检测器
+    if (rule == "fn" && !plausibleSignature(text)) {
+        AST_DROPPED_NODES += 1
+        return
+    }
     let rng = Json.getOr(item, "range")
     let start = Json.getOr(rng, "start")
     let end = Json.getOr(rng, "end")
@@ -404,4 +455,42 @@ func parseOneAstNode(item: JsonValue, out: ArrayList<AstNode>): Unit {
     let sl = Json.intAt(start, "line", 0) + 1
     let el = Json.intAt(end, "line", 0) + 1
     out.add(AstNode(file, sl, el, rule, text))
+}
+
+/// 函数节点的签名是否成其为签名：参数表之前（没有参数表 = 块体 `{` 之前）不得出现
+/// `{` `}` `;` `#`（字符串与注释里的不算）。Python 的体是缩进块、头里没有这些字符，原样放行。
+///
+/// 【为什么】tree-sitter 的错误恢复会把「缺分号的宏 + 后面的声明 + 函数」揉成一个
+/// function_definition：实测 SecretStore.cpp 的 `DCORE_USE_NAMESPACE` 被报成一个 884 字节的
+/// 函数（包着 namespace 头、四个常量与 schema() 本身），还和自己包住的 schema() 互报「重复体」。
+/// 这种节点的「签名」里混着别的语句，一律不是函数。
+func plausibleSignature(text: String): Bool {
+    var limit = paramListClose(text)
+    if (limit < 0) { limit = codeIndexOf(text, 0, 123) }
+    if (limit < 0) { return true }     // 表达式体 / 无体声明
+    let b = text.toArray()
+    var i: Int64 = 0
+    var state: Int64 = 0     // 0 代码；否则是当前字符串的引号字节
+    while (i < limit) {
+        let c = b[i]
+        if (state == 0) {
+            if (c == 34 || c == 39) { state = Int64(c) }
+            else if (c == 47 && i + 1 < Int64(b.size) && b[i + 1] == 47) {
+                while (i < limit && b[i] != 10) { i += 1 }
+                continue
+            } else if (c == 47 && i + 1 < Int64(b.size) && b[i + 1] == 42) {
+                i += 2
+                while (i + 1 < limit && !(b[i] == 42 && b[i + 1] == 47)) { i += 1 }
+                i += 2
+                continue
+            } else if (c == 123 || c == 125 || c == 59 || c == 35) {
+                return false
+            }
+        } else {
+            if (c == 92) { i += 2; continue }
+            if (Int64(c) == state) { state = 0 }
+        }
+        i += 1
+    }
+    return true
 }

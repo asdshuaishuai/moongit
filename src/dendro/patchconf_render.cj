@@ -188,7 +188,8 @@ public func mergePatchConfidence(algorithm: JsonValue, agent: JsonValue): Option
         match (agentMap.get(uid)) {
             case Some(a) =>
                 reviewed += 1
-                let verdict = Json.strAt(a, "verdict", "ambiguous")
+                let rawVerdict = Json.strAt(a, "verdict", "ambiguous")
+                let verdict = normalizeVerdict(rawVerdict)
                 var conf = Json.numAt(a, "confidence", 0.5)
                 if (verdict == "resolved") {
                     conf = conf * 0.9   // Agent 值打折（评审规则）
@@ -206,6 +207,10 @@ public func mergePatchConfidence(algorithm: JsonValue, agent: JsonValue): Option
                 if (verdict == "ambiguous") {
                     alerts.add(("medium", issue, "${detail} — agent 无法判定"))
                 }
+                if (verdict == "unknown") {
+                    // 认不出的裁决词永不静默：按无法判定计入，并明说词是什么
+                    alerts.add(("medium", issue, "${detail} — 未知的裁决词「${rawVerdict}」（任务书用 resolved / unresolved / ambiguous）"))
+                }
                 sum += conf
                 n += 1
             case None =>
@@ -221,6 +226,26 @@ public func mergePatchConfidence(algorithm: JsonValue, agent: JsonValue): Option
     let overall = if (n > 0) { sum / Float64(n) } else { 0.0 }
     return Some(MergedConfidence(overall, entities, alerts,
         Int64(Json.arrAt(algorithm, "entities").size), reviewed, deferred))
+}
+
+/// 裁决词归一成任务书（patchconf 的 Layer-2 提示词模板）的三态。
+/// 【为什么要归一】同一个引擎里有两套词表：模板写 resolved / unresolved / ambiguous，
+/// `cambium skill` 的配方文字写 confirm / dismiss / unsure。合并器原先只认前一套——后一套的词
+/// 落进「哪个分支都不是」：按默认 0.5 计入、不打任何警示，一个被判「确有其事」的条目
+/// 与「无法判定」同分。现在两套都认；认不出的返回 "unknown"，由调用方出警示。
+func normalizeVerdict(v: String): String {
+    let t = v.trimAscii()
+    if (t == "resolved" || t == "dismiss" || t == "dismissed" || t == "false_positive"
+        || t == "false-positive") {
+        return "resolved"
+    }
+    if (t == "unresolved" || t == "confirm" || t == "confirmed" || t == "real" || t == "bug") {
+        return "unresolved"
+    }
+    if (t == "ambiguous" || t == "unsure" || t == "uncertain" || t == "needs_review") {
+        return "ambiguous"
+    }
+    return "unknown"
 }
 
 /// final.json 渲染

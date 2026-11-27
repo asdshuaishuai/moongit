@@ -221,6 +221,10 @@ public func confidenceEmbedJson(conf: ConfidenceReport, en: Bool): JsonValue {
     // 反推会把「恰好达到阈值但未截断」误报成「超出已汇总」
     Json.set(o, "cappedTotal", Json.of(conf.cappedTotal))
     Json.set(o, "cappedKind", Json.of(conf.cappedKind))
+    // 总量与覆盖面恒发（findings 只是列出的那部分；分数由 penaltyTotal 算）
+    Json.set(o, "findingsTotal", Json.of(conf.findingsTotal))
+    Json.set(o, "penaltyTotal", Json.of(conf.penaltyTotal))
+    Json.set(o, "coverage", coverageJson(conf.coverage))
     // 按文件罚分表：引擎已按罚分降序排好（ConfidenceReport.files），
     // 原样下发，热力图与图例共用这一份口径
     let fs2 = ArrayList<JsonValue>()

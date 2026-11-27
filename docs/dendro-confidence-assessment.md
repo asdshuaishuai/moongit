@@ -256,3 +256,68 @@ cambium dendro check repo --json > repo.json
 
 注意 `cambium add` 以 **git 根**为项目根：传入子目录也会分析整仓。
 装了 `ast-grep` 之后数字会变（进入语法树档）；复现词法档请加 `--no-ast`。
+
+## 6. 落地记录（2026-11-27 · 准确性批）
+
+用户口径：「置信度开工，但是不要盲目扩张，只对算法本身进完善，让置信度的能力和准确率提升」。
+§4 阶段 0 的 1 / 2 / 4 / 5 / 6 落地，外加 §3.2 的 B1–B7、B9–B11、B14、B15。**没有新增任何检测器、没有新增任何类别。**
+每一处修复都从抽样里看到的误报出发；每一处都有一条用例和一个真红的负控
+（`src/dendro/accuracy_dendro_test.cj` 31 条、`scoring_dendro_test.cj` 4 条；负控 47 项，全部真红）。
+取舍与踩坑的通用结论在 `AGENTS.md` 不变量 160。
+
+### 6.1 两个仓的前后对照（隔离的 `DEEPGIT_HOME`，同一份数据）
+
+| | Cambium 引擎仓 | deepDolphin 整仓 |
+|---|---|---|
+| 档位 | 词法（纯仓颉） | 语法树（ast-grep 0.51.3，436 / 466 文件走 AST） |
+| 分数 · 批次开始 | 34 | 69 |
+| 分数 · 只修检测、仍按旧口径（只算列出的 400 条） | 37 | 74 |
+| 分数 · 最终（全部检出的条目都算） | **25** | **63** |
+| 检出总数 · 开始 → 最终 | 873 → 849（文件数 78 → 80，多了两份测试） | 1,746 → **938** |
+| 总罚分（原先不给） | 4,756 | 5,423 |
+
+两步的方向相反，要分开读：**检测修复让分数略升**（误报少了 25–35% 的检出量），
+**计数口径修正让分数下降**（原先没算的 449 / 538 条现在都算了）。最终读数比批次开始更低、更可信。
+
+### 6.2 逐类对照（deepDolphin 整仓，列出 / 全量）
+
+| 类别 | 开始 | 最终 | 处置 |
+|---|---|---|---|
+| `stub-body` | 104 | 1 | 表达式体 / 无体声明 / 初始化列表构造函数 / `= default` / Python 体内的 `{}` 都不是占位；剩下的 1 条是 `def log_message(self, *a): pass` |
+| `orphan` | 114 | 61 | 豁免框架入口（override / virtual / 槽 / 信号 / 回调注解 / 运算符 / 双下划线 / `*Event` / 非限定枚举 / NSApplicationDelegate）；文件名豁免改成按词判（`inspector` / `specification` / `latest` 不再被当成测试）让 +3，测试目录段 −2 |
+| `unresolved-call` | 96（权重 8） | 136（权重 3，不再进前 400） | 本文件认识的名字不报（136 条逐条看过：1 条查实——`macos/scripts/render-harness` 还在用已删除的 `CodeGraphVM`；其余全是库 / 框架 / 标准库 / 隐式接收者调用） |
+| `pointer-risk` | 6 | 0 | `return &x` 只有 x 被证得是本函数的局部变量才报（6 条全是 range-for 引用与函数内 static） |
+| `lock-imbalance` | 6 | 0 | 同一行 `lock(); defer { unlock() }` 是平的；行号原先整体偏一行 |
+| `dead-branch` | 53 | 0 | 层级 = 花括号深度 + 缩进（53 条全是「不带花括号的 `if (c)` / `return x;` 之后是下一个 if」） |
+| `deep-nesting` | 107 | 8 | 只数控制语句打开的花括号（SwiftUI / Compose 的布局容器、类型节点不算） |
+| `near-duplicate` | 17 | 0 | 与 `duplicate-body` 是同一件事，语法树可用时让位（原先同一对函数罚 8 + 5） |
+| `commented-code` | 5 | 0 | 5 条全是「讲代码的注释」（含中文）；多行字符串里内嵌的 JS / CSS 不算注释 |
+| `magic-number` | — | 136 | 字符串里的数字不算（`"#%02x%02x%02x"` 原先算 3 处） |
+| `high-complexity` | 67 | 211 | 没改口径，只是原先被截断的进了全量计数；独立复算 157 条里 137 条误差 ≤ 1，其余逐条核对是复算脚本自己的问题 |
+| `parameter-abuse` | — | 247 | 多行签名原先一律按 0 个参数；override / 运算符的签名不报；函数类型的参数不算 Bool 标志 |
+
+引擎仓（词法档）：`unresolved-call` 53 → 11（全是 `sleep` / `Mutex()` / `floor` 这类标准库）、
+`dead-branch` 39 → 0、`mixed-responsibility` 77 → 26（要「既读又写」且 ≥ 5 个决策点）、
+`commented-code` 11 → 0、`high-complexity` 的函数体改为索引记录的 `line..endLine`
+（`mcpCallTool` 原先把嵌套函数整段算进来报 267）。
+
+### 6.3 补丁置信度
+
+- 裁决词归一：`confirm / dismiss / unsure`（skill 配方曾用的词）与 `resolved / unresolved / ambiguous`（任务书模板）都认；认不出的词**必出警示**（原先落进所有分支之外，按默认 0.5 计入）。
+- S10 与 S1 同口径，不进均值（仍出现在 `signals` 里，契约不变）。
+- skill 配方的文字改成与模板同一词表。
+
+### 6.4 输出契约的增量（全部是加键）
+
+- `findingsTotal`、`penaltyTotal`、`coverage { astFiles, lexicalFiles, astBatchesTotal, astBatchesFailed, kindsDropped, nodesDropped, kindsUnavailable }`：
+  `dendro gen --json`、`dendro check --json`（`confidenceJson`）、持久化的 `confidence.json` 与内嵌 HTML 的 `confidence` 块、`dendro query` 总览——四处都有。
+- `confidence.db` 的 `meta` 多 `findings_total`、`penalty_total`。
+- `unresolved-call` 的中英文标签改为「未解析调用」；`deep-nesting` 的证据文案改为「控制流嵌套 N 层」。
+- 旧快照没有新键时 `dendro query` 给 `-1`（未知），不回落成 0。
+
+### 6.5 没做的（如实留给 §4 的后续阶段）
+
+A3 小样本不确定度、A5 阈值台阶、A6 分母与上下文（测试 / 生成物同权——引擎仓测试文件里的疑点仍与生产代码同权）、
+A7 模型版本；B8 词法回退只看顶层声明；B12 `global-mutable` 不分语言；B13 `pointer-risk` 的文件级 malloc/free 计数；
+B16–B19（S7 / parseErrors / Layer 3 总分 / 合并常数）；B21 / B22；图谱层 4,000 文件与 512 KB 上限的披露；
+ast-grep 批失败时那些文件既无 AST 信号也不补词法信号（现在至少逐类披露了）。

@@ -93,7 +93,7 @@ public func flawLabel(k: FlawKind, en: Bool): String {
             case TodoResidue => "TODO residue"
             case SuspiciousName => "Suspicious name"
             case DuplicateBody => "Duplicate body"
-            case UnresolvedCall => "Unresolved call (hallucinated API?)"
+            case UnresolvedCall => "Unresolved call (library API, typo, or hallucinated?)"
             case UnusedImport => "Unused import"
             case CommentedCode => "Commented-out code"
             case UnusedVariable => "Unused variable"
@@ -120,7 +120,7 @@ public func flawLabel(k: FlawKind, en: Bool): String {
             case TodoResidue => "TODO 残留"
             case SuspiciousName => "可疑命名"
             case DuplicateBody => "重复函数体"
-            case UnresolvedCall => "幻觉调用"
+            case UnresolvedCall => "未解析调用"
             case UnusedImport => "未使用 import"
             case CommentedCode => "注释掉的代码"
             case UnusedVariable => "未使用变量"
@@ -149,7 +149,11 @@ public func flawWeight(k: FlawKind): Int64 {
         case StubBody => 12
         case SwallowedError => 10
         case DuplicateBody => 8
-        case UnresolvedCall => 8
+        // 未解析的裸调用 = 「全仓没有该名字的定义」。实测精度接近 0（探针工程抽 20 条 0 真；
+        // 引擎仓抽 6 条 0 真；deepDolphin 152 条里没有一条查实是编造）：几乎全是库 / 框架调用。
+        // 按「提示去核对」的强度定权，不再与 duplicate-body / high-complexity 这些查实的事实同级——
+        // 原先权重 8 时它在 deepDolphin 占列出罚分的 34%，整个分数被一类零命中的疑点带着走。
+        case UnresolvedCall => 3
         case LockImbalance => 9
         case LockUnknownCall => 9
         case HighComplexity => 8
@@ -268,6 +272,13 @@ public let CONF_COMMENTED_CODE_LINES: Int64 = 3
 public let CONF_COMPLEXITY: Int64 = 10
 /// 参数个数阈值：超过即报 God 签名（API 设计缺失的信号）
 public let CONF_PARAMS: Int64 = 5
+/// 混合职责：既有文件 I/O、又至少有这么多个决策点才报
+/// （「含 for / match 就算计算逻辑」会把每个读文件的循环都报上——实测引擎仓 78 个文件报 77 条）
+public let CONF_MIXED_DECISIONS: Int64 = 5
+/// 近重复：归一化后的函数体至少这么长才比较（两行的 getter 天然相同，不是复制粘贴）
+public let CONF_NEAR_DUP_MIN_BYTES: Int64 = 120
+/// 重复体（AST 路径）：去注释 / 空白后的体至少这么长（原先是函数里的字面量 120）
+public let CONF_DUP_BODY_BYTES: Int64 = 120
 
 /// 一条疑点：类别 + 位置 + 证据。证据必须自足（人不开编辑器就能判断）。
 ///
@@ -433,6 +444,12 @@ public class ConfidenceReport {
     public let cappedKind: Bool
     /// 有 finding 因总量上限（CONF_MAX_FINDINGS）被丢弃（同上：判定点置位）。
     public let cappedTotal: Bool
+    /// 一共检出多少条（列出 + 总量截断 + 每文件每类上限丢弃）——findings.size 只是列出的那部分。
+    public let findingsTotal: Int64
+    /// 总罚分（全部检出的条目，含被上限丢弃的）；score 由它算，不由列出的条目算。
+    public let penaltyTotal: Int64
+    /// 分析覆盖面（走语法树的文件数、降级为词法的文件数、批失败、被剔除 / 丢弃的节点）。
+    public let coverage: Coverage
 
     public init(root: String, score: Int64, findings: ArrayList<Finding>,
                 astUsed: Bool, astNote: String,
@@ -440,7 +457,9 @@ public class ConfidenceReport {
                 byKind: ArrayList<(FlawKind, Int64)>,
                 files: ArrayList<(String, Int64)>,
                 dimensions: ArrayList<(ConfDimension, Int64, Int64, Int64)>,
-                cappedKind!: Bool = false, cappedTotal!: Bool = false) {
+                cappedKind!: Bool = false, cappedTotal!: Bool = false,
+                findingsTotal!: Int64 = -1, penaltyTotal!: Int64 = -1,
+                coverage!: Coverage = Coverage()) {
         this.root = root
         this.score = score
         this.findings = findings
@@ -452,7 +471,68 @@ public class ConfidenceReport {
         this.dimensions = dimensions
         this.cappedKind = cappedKind
         this.cappedTotal = cappedTotal
+        // -1 = 调用方没给（测试夹具直接构造报告）：按「列出的就是全部」理解
+        this.findingsTotal = if (findingsTotal < 0) { Int64(findings.size) } else { findingsTotal }
+        var pen: Int64 = 0
+        if (penaltyTotal < 0) {
+            for (f in findings) { pen += flawWeight(f.kind) }
+        } else {
+            pen = penaltyTotal
+        }
+        this.penaltyTotal = pen
+        this.coverage = coverage
     }
+}
+
+/// 分析覆盖面。astNote 里那段话文字版给读报告的人，这一份结构化的给程序（客户端不必解析散文）。
+/// 全部字段恒发；引擎没说清的用 -1 / 空表，**不回落成 0**（0 的含义是「确实没有」）。
+public class Coverage {
+    /// 走语法树的文件数；astUsed=false 时为 0
+    public let astFiles: Int64
+    /// 因语言没有 tree-sitter 语法而降级为词法级的文件数
+    public let lexicalFiles: Int64
+    /// ast-grep 跑了几批（0 = 没跑）
+    public let astBatchesTotal: Int64
+    /// 其中失败的批数
+    public let astBatchesFailed: Int64
+    /// 本版 ast-grep 不认、已从规则里剔除的节点种类（"swift.struct_declaration"）
+    public let kindsDropped: ArrayList<String>
+    /// 签名不成其为签名、已丢弃的函数节点数（tree-sitter 错误恢复的产物）
+    public let nodesDropped: Int64
+    /// 语法树可用时才有的信号里，本次没有产出的类别（降级时词法路径给不出的那 7 类）
+    public let kindsUnavailable: ArrayList<String>
+
+    public init(astFiles: Int64, lexicalFiles: Int64, astBatchesTotal: Int64, astBatchesFailed: Int64,
+                kindsDropped: ArrayList<String>, nodesDropped: Int64,
+                kindsUnavailable: ArrayList<String>) {
+        this.astFiles = astFiles
+        this.lexicalFiles = lexicalFiles
+        this.astBatchesTotal = astBatchesTotal
+        this.astBatchesFailed = astBatchesFailed
+        this.kindsDropped = kindsDropped
+        this.nodesDropped = nodesDropped
+        this.kindsUnavailable = kindsUnavailable
+    }
+
+    public init() {
+        this(0, 0, 0, 0, ArrayList<String>(), 0, ArrayList<String>())
+    }
+}
+
+/// 只有语法树可用时才产出的信号类别（词法路径给不出的）。降级 / 批失败时这些类别整类缺失——
+/// 原来的降级说明只提「吞错与重复体」，把另外 5 类漏掉了：读报告的人以为那些类别「没有疑点」。
+func astOnlyKindsUnavailable(partial: Bool): ArrayList<String> {
+    let out = ArrayList<String>()
+    for (k in [SwallowedError, DuplicateBody, UnusedVariable, EmptyType, GodClass, LockImbalance, LockUnknownCall]) {
+        out.add(flawId(k))
+    }
+    return out
+}
+
+func copyStrings(src: ArrayList<String>): ArrayList<String> {
+    let out = ArrayList<String>()
+    for (x in src) { out.add(x) }
+    return out
 }
 
 /// 每文件每类限流的**丢弃计数器**——ConfidenceReport.cappedKind 的唯一真值来源。
@@ -461,7 +541,27 @@ public class ConfidenceReport {
 /// （跨函数累积可变状态的既有通道先例：build.cj 的 ReferVar。）
 public class CapDropCounter {
     public var kindDrops: Int64
-    public init() { kindDrops = 0 }
+    /// 被每文件每类上限丢弃的（类别, 文件）与罚分合计——丢弃发生点逐条累计。
+    /// 【为什么要记】上限只管「列不列出」，不管「罚多少分」。原实现只记个数，
+    /// 分数在截断之后按列出的条目求和：一个文件里第 7 条孤儿起不罚分（文件越烂越不扣），
+    /// 全量 400 条之后的也全部不罚（仓库越大、疑点越多，分数反而越稳）。
+    public let droppedKinds: ArrayList<FlawKind>
+    public let droppedFiles: ArrayList<String>
+    public var droppedWeight: Int64
+    public init() {
+        kindDrops = 0
+        droppedKinds = ArrayList<FlawKind>()
+        droppedFiles = ArrayList<String>()
+        droppedWeight = 0
+    }
+
+    /// 丢弃发生点的唯一入口（所有带每文件上限的检测器都走这里）。
+    public func drop(kind: FlawKind, file: String): Unit {
+        kindDrops += 1
+        droppedKinds.add(kind)
+        droppedFiles.add(file)
+        droppedWeight += flawWeight(kind)
+    }
 }
 
 // MARK: - 主流程
@@ -472,6 +572,8 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
     var astNodes = ArrayList<AstNode>()
     var astUsed = false
     var astNote = ""
+    // 覆盖面（结构化披露，见 Coverage）
+    var cov = Coverage()
 
     if (useAst) {
         match (runAstGrep(graph)) {
@@ -501,28 +603,52 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
                 if (AST_FAILED_BATCHES > 0) {
                     astNote += "；⚠ ast-grep ${AST_FAILED_BATCHES}/${AST_TOTAL_BATCHES} 个批次失败，这些文件的 AST 信号缺失"
                 }
+                // 本版 ast-grep 不认的节点种类：已剔除（否则整份规则被拒），覆盖面少了哪几种节点要说清
+                if (AST_DROPPED_KINDS.size > 0) {
+                    astNote += "；本版 ast-grep 不认的节点种类已剔除：" + joinStrings(AST_DROPPED_KINDS.toArray(), "、")
+                }
+                // 解析异常揉出来的假函数节点：已丢弃（通常是缺分号的宏），丢弃了几条要说清
+                if (AST_DROPPED_NODES > 0) {
+                    astNote += "；${AST_DROPPED_NODES} 个签名不成其为签名的函数节点已丢弃（tree-sitter 错误恢复的产物）"
+                }
+                // 批失败 ⇒ 那些文件的 AST 独有信号整类缺失，逐类说清
+                let missing = astOnlyKindsUnavailable(AST_FAILED_BATCHES > 0)
+                if (missing.size > 0) {
+                    astNote += "；受影响的文件上这些类别的信号缺失：" + joinStrings(missing, "、")
+                }
+                cov = Coverage(astFiles, fallbackFiles, AST_TOTAL_BATCHES, AST_FAILED_BATCHES,
+                    copyStrings(AST_DROPPED_KINDS), AST_DROPPED_NODES, missing)
             case None =>
                 // 三种成因分开披露：工具没装 / 装了但语言无覆盖 / 工具跑了但
                 // 批次全败。原版把后两种混成一句「语言无语法覆盖」——全批失败
                 // （规则/环境异常）被说成覆盖边界，读者会误以为一切正常。
+                // 缺失的类别逐类列全（原先只说「吞错与重复体」，另外 5 类没提——
+                // 读报告的人会以为那些类别「没有疑点」）。
+                var degradedWhy = "未安装 ast-grep（`brew install ast-grep` 可获得 tree-sitter 级覆盖）"
                 if (findAstGrep().isSome()) {
                     if (AST_TOTAL_BATCHES > 0) {
-                        astNote = "语法树不可用：ast-grep 已运行，但全部 ${AST_TOTAL_BATCHES} 个批次失败（规则或环境异常）——"
-                            + "已降级为词法级分析；函数粒度信号改由词法路径近似（长度/嵌套/魔法数/空体），"
-                            + "吞错与重复体仍缺失"
+                        degradedWhy = "ast-grep 已运行，但全部 ${AST_TOTAL_BATCHES} 个批次失败（规则或环境异常）"
+                        cov = Coverage(0, Int64(graph.files.size), AST_TOTAL_BATCHES, AST_TOTAL_BATCHES,
+                            ArrayList<String>(), AST_DROPPED_NODES, astOnlyKindsUnavailable(true))
                     } else {
-                        astNote = "语法树不可用：ast-grep 已安装，但本次全部文件的语言都无 tree-sitter 语法（如纯仓颉仓库）——"
-                            + "已降级为词法级分析；函数粒度信号改由词法路径近似（长度/嵌套/魔法数/空体），"
-                            + "吞错与重复体仍缺失"
+                        degradedWhy = "ast-grep 已安装，但本次全部文件的语言都无 tree-sitter 语法（如纯仓颉仓库）"
+                        cov = Coverage(0, Int64(graph.files.size), 0, 0,
+                            ArrayList<String>(), 0, astOnlyKindsUnavailable(true))
                     }
                 } else {
-                    astNote = "语法树不可用：未安装 ast-grep（`brew install ast-grep` 可获得 tree-sitter 级覆盖）——"
-                        + "已降级为词法级分析；函数粒度信号改由词法路径近似（长度/嵌套/魔法数/空体），"
-                        + "吞错与重复体仍缺失"
+                    cov = Coverage(0, Int64(graph.files.size), 0, 0,
+                        ArrayList<String>(), 0, astOnlyKindsUnavailable(true))
                 }
+                astNote = "语法树不可用：" + degradedWhy + "——"
+                    + "已降级为词法级分析；函数粒度信号改由词法路径近似（长度/嵌套/魔法数/空体），"
+                    + "以下 " + cov.kindsUnavailable.size.toString() + " 类信号整类缺失："
+                    + joinStrings(cov.kindsUnavailable.toArray(), "、")
         }
     } else {
-        astNote = "按调用方要求跳过语法树（--no-ast），仅词法级分析"
+        cov = Coverage(0, Int64(graph.files.size), 0, 0, ArrayList<String>(), 0, astOnlyKindsUnavailable(true))
+        astNote = "按调用方要求跳过语法树（--no-ast），仅词法级分析；以下 "
+            + cov.kindsUnavailable.size.toString() + " 类信号整类缺失："
+            + joinStrings(cov.kindsUnavailable.toArray(), "、")
     }
 
     // ── ① 孤儿符号：定义了，全仓无引用（图数据直接支撑）──
@@ -561,7 +687,8 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
     // ── 语义层检测（圈复杂度/参数滥用/不可达代码/混合职责/近重复）──
     // ⚠️ 不放在 if (astUsed) 内——纯仓颉仓 astUsed=false，但这些检测全走词法
     try {
-        detectSemanticIssues(graph, findings, kindCap)
+        // 近重复：语法树可用时由 duplicate-body 报（同一件事不罚两次）
+        detectSemanticIssues(graph, findings, kindCap, nearDup: !astUsed)
     } catch (e: Exception) {
         Log.warn("语义层检测异常（已跳过）: ${e.message}")
     }
@@ -576,25 +703,27 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
     attachSymbolKeys(graph, findings)
     // 排序：全序（见 sortFindings），确定性 + 重要的在前
     sortFindings(findings)
-    // 总量截断（披露进 astNote，不静默）
-    var truncatedNote = ""
-    // ⚠️ cappedTotal 在**丢弃发生的位置**置位——不是拿 findings.size >= 上限反推：
-    // 恰好 400 条产出时并不发生截断，反推会把「刚好达限」误报成「已截断」。
-    var cappedTotal = false
-    if (Int64(findings.size) > CONF_MAX_FINDINGS) {
-        let extra = Int64(findings.size) - CONF_MAX_FINDINGS
-        while (Int64(findings.size) > CONF_MAX_FINDINGS) {
-            findings.remove(at: findings.size - 1)
-        }
-        truncatedNote = "；另有 ${extra} 条低权重疑点未列出（按权重截断）"
-        cappedTotal = true
+
+    // ── 总量与各聚合表：在**任何截断之前**算。上限只管「列不列出」，不管「罚多少分」——
+    // 分数、按类别 / 按文件 / 按维度的计数都吃全部检出的条目（列出的 + 总量截断掉的 +
+    // 每文件每类上限丢弃的）。原先全在截断之后算：deepDolphin 检出 1746 条只按 400 条求和，
+    // byKind 里连 low-weight 类别都看不见。
+    let all = ArrayList<Finding>()
+    for (f in findings) { all.add(f) }
+    var di: Int64 = 0
+    while (di < Int64(kindCap.droppedKinds.size)) {
+        all.add(Finding(kindCap.droppedKinds[di], kindCap.droppedFiles[di], 0, "", ""))
+        di += 1
     }
+    let findingsTotal = Int64(all.size)
+    var penaltyTotal: Int64 = 0
+    for (f in all) { penaltyTotal += flawWeight(f.kind) }
 
     // 每类计数
     // enum 作 HashMap 键需要 Hashable 派生；这里用 id 字符串当键（零依赖）
     let counts = HashMap<String, Int64>()
     let kindById = HashMap<String, FlawKind>()
-    for (f in findings) {
+    for (f in all) {
         let kid = flawId(f.kind)
         kindById[kid] = f.kind
         match (counts.get(kid)) {
@@ -622,7 +751,7 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
 
     // 按文件罚分表（「哪个文件不可信」的直接答案；罚分降序，tie 按 path）
     let byFile = HashMap<String, Int64>()
-    for (f in findings) {
+    for (f in all) {
         match (byFile.get(f.file)) {
             case Some(v) => byFile[f.file] = v + flawWeight(f.kind)
             case None => byFile[f.file] = flawWeight(f.kind)
@@ -641,7 +770,7 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
     let dimPen = HashMap<String, Int64>()
     let dimCount = HashMap<String, Int64>()
     let dimById = HashMap<String, ConfDimension>()
-    for (f in findings) {
+    for (f in all) {
         let d = flawDimension(f.kind)
         let did = dimensionId(d)
         dimById[did] = d
@@ -673,18 +802,35 @@ public func analyzeConfidence(graph: CodeGraph, useAst: Bool): ConfidenceReport 
         return dimensionId(a[0]) < dimensionId(b[0])
     })
 
+    // ── 总量截断：只影响「列不列出」，披露进 astNote，不静默
+    var truncatedNote = ""
+    // ⚠️ cappedTotal 在**丢弃发生的位置**置位——不是拿 findings.size >= 上限反推：
+    // 恰好 400 条产出时并不发生截断，反推会把「刚好达限」误报成「已截断」。
+    var cappedTotal = false
+    if (Int64(findings.size) > CONF_MAX_FINDINGS) {
+        let extra = Int64(findings.size) - CONF_MAX_FINDINGS
+        while (Int64(findings.size) > CONF_MAX_FINDINGS) {
+            findings.remove(at: findings.size - 1)
+        }
+        truncatedNote = "；共检出 ${findingsTotal} 条，另有 ${extra} 条低权重疑点未列出（按权重截断；罚分已计入总分）"
+        cappedTotal = true
+    }
+    if (kindCap.kindDrops > 0) {
+        truncatedNote += "；每文件每类上限丢弃 ${kindCap.kindDrops} 条（罚分 ${kindCap.droppedWeight}，已计入总分）"
+    }
+
     // 分数：由「惩罚总量」与「文件数」算的**密度分**（见 confidenceScore）。
     // ⚠️ 旧公式 `100 − 惩罚/√文件数` 与仓库规模相关：惩罚随文件数线性增长、
     // 而 √ 增长更慢 ⇒ 大仓库必然趋近 0（实测 276 文件的仓库、每文件仅 4.3 点却只得 28 分；
     // 而另一处每文件 15 点的仓库也是 0 —— 同一个分数说不出谁更差）。
-    var penalty: Int64 = 0
-    for (f in findings) { penalty += flawWeight(f.kind) }
     let nFiles = Int64(graph.files.size)
-    let score = confidenceScore(penalty, nFiles)
+    let score = confidenceScore(penaltyTotal, nFiles)
 
     return ConfidenceReport(graph.root, score, findings, astUsed,
                             astNote + truncatedNote, nFiles, byKind, files, dims,
-                            cappedKind: kindCap.kindDrops > 0, cappedTotal: cappedTotal)
+                            cappedKind: kindCap.kindDrops > 0, cappedTotal: cappedTotal,
+                            findingsTotal: findingsTotal, penaltyTotal: penaltyTotal,
+                            coverage: cov)
 }
 
 /// findings 的**全序**排序（`AGENTS.md` 契约：同一仓库两次运行逐字节一致）。

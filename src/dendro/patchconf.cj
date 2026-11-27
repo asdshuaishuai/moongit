@@ -515,10 +515,13 @@ public func analyzePatchConfidence(graph: CodeGraph, patchText: String): PatchCo
         signals.add(("S10", Float64(resolvedRefs) / Float64(totalRefs)))
     } else { nulls.add("S10") }
 
-    // overall = 有效信号均值
+    // overall = 有效信号均值。S10 不计入：v1 的 S10「patch 内自洽」与 S1 同口径
+    // （都是引用可解析占比，逐条相同）——计入等于给引用可解析率双倍权重，
+    // 而 S10 这一项名不副实。它照常出现在 signals 里（契约不变），只是不参与均值。
     var sum: Float64 = 0.0
     var n: Int64 = 0
-    for ((_, v) in signals) {
+    for ((id, v) in signals) {
+        if (id == "S10") { continue }
         sum += v
         n += 1
     }

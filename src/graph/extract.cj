@@ -1315,7 +1315,11 @@ let C_STOP: HashSet<String> = buildStop(["if", "for", "while", "switch", "return
     "case", "goto", "sizeof", "new", "delete", "throw", "catch", "try", "using", "namespace",
     "template", "typedef", "friend", "union", "alignof", "alignas", "decltype", "typeid",
     "static_assert", "defined", "public", "private", "protected", "operator", "class", "struct",
-    "enum", "noexcept", "virtual", "constexpr", "co_return", "co_await", "co_yield"])
+    "enum", "noexcept", "virtual", "constexpr", "co_return", "co_await", "co_yield",
+    // Qt 的信号发射 `emit changed(1);` / `Q_EMIT changed(1);`：`emit` 被当成返回类型，
+    // 发射语句被编出一个叫 changed 的函数（deepDolphin SidebarNav.cpp 实测）——
+    // 索引里多一个假符号，置信度再把它报成孤儿。
+    "emit", "Q_EMIT"])
 // ⚠️ `explicit` 不在停用词里：它只出现在构造函数声明之前（`explicit AppModel(…);`）。
 //   当成停用词会让这一行在走到「构造函数」判定**之前**就被放弃，名字 token 来不及
 //   标成「不是调用点」——头文件里每个带 explicit 的构造函数都会多出一个假调用点。
@@ -2273,6 +2277,11 @@ class Scanner {
             i += 1
             if (i < nt && tokIsCh(t, toks[i], 60)) { i = skipAngle(t, toks, i) }
         }
+        if (i >= nt) { return false }
+        // C++ 的虚函数说明符：`virtual void setTransform(double a, …);` 的 virtual 是前导修饰符。
+        // 它在 C_STOP 里 ⇒ 这一行被整个放弃，头文件里的每个虚函数原型都不进索引
+        // （CanvasSink 的 6 参 setTransform 于是找不到声明孪生，置信度把它报成「God 签名」）。
+        if (!tagType && lang == "c" && tokText(t, toks[i]) == "virtual") { i += 1 }
         if (i >= nt) { return false }
         if (tokIsCh(t, toks[i], 60)) { i = skipAngle(t, toks, i) }   // Java 泛型方法 `<T> T foo(`
         var typeSeen = tagType

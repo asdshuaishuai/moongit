@@ -2253,6 +2253,9 @@ func confidenceGenCore(p: ProjectEntry, useAst: Bool, wantDb: Bool): (JsonValue,
     Json.set(o, "selfHealedIndex", Json.of(indexHealed))
     Json.set(o, "score", Json.of(report.score))
     Json.set(o, "findings", Json.of(Int64(report.findings.size)))
+    // 总量恒发：findings 只是列出的那部分
+    Json.set(o, "findingsTotal", Json.of(report.findingsTotal))
+    Json.set(o, "penaltyTotal", Json.of(report.penaltyTotal))
     Json.set(o, "astUsed", Json.of(report.astUsed))
     // 恒发（空串 = 未写 db）：键集不随模式漂
     Json.set(o, "db", Json.of(dbPath))
@@ -2548,6 +2551,11 @@ func confidenceQueryJson(snap: JsonValue, p: ProjectEntry,
         Json.set(o, "dimensions", Json.getOr(snap, "dimensions"))
         Json.set(o, "byKind", Json.getOr(snap, "byKind"))
         Json.set(o, "penaltyByFile", Json.getOr(snap, "files"))
+        // 总量与覆盖面：findingCount 是快照里列出的条数，不是一共检出的条数。
+        // 旧快照没有这两个键时给 -1（未知），不回落成 0。
+        Json.set(o, "findingsTotal", Json.of(Json.intAt(snap, "findingsTotal", -1)))
+        Json.set(o, "penaltyTotal", Json.of(Json.intAt(snap, "penaltyTotal", -1)))
+        Json.set(o, "coverage", Json.getOr(snap, "coverage"))
     } else {
         Json.set(o, "matched", Json.of(matched))
         Json.set(o, "shown", Json.of(Int64(shown.size)))
@@ -3958,7 +3966,7 @@ func skillMarkdown(): String {
         + "（符号带「路径:行:列」定位串，可一键复制）；要自己做语义复核：dendro_gen(name, format=llm) "
         + "拿逐条复核提示词自己过一遍。回执说快照过期就先重跑 dendro_gen，不要拿旧快照下结论。\n")
     sb.append("- **提交前补丁体检（三层）**：`git diff > /tmp/p.diff` → dendro_patch_confidence(name, patch_path) "
-        + "拿 S1..S10 信号与 uncertain 清单 → 你逐条裁决（confirm/dismiss/unsure，必须引用代码原文）→ "
+        + "拿 S1..S10 信号与 uncertain 清单 → 你逐条裁决（resolved/unresolved/ambiguous，必须引用代码原文）→ "
         + "dendro_patch_merge(algorithm_json, agent_json) → final 分数与披露\n")
     sb.append("- **架构图**：arch_gen(name) 产出 arch.json 与模块摘要 → arch_query(name[, module]) 读分层/违规/环 → "
         + "render(target=arch) 出零依赖单文件交互图（关系连线/模块下钻/搜索/明暗主题全内建；CLI 是 `graph arch <项目> --format html`）——客户端与用户直接渲染该文件；"

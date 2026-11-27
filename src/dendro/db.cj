@@ -19,7 +19,7 @@ public let CONFIDENCE_DB_GENERATOR: String = "moongit confidence db v2"
 // B. 置信度报告库（cambium dendro db）
 //
 //   meta(key, value)   score / files_analyzed / ast_used / ast_note /
-//                      capped_kind / capped_total / root
+//                      capped_kind / capped_total / findings_total / penalty_total / root
 //   findings(id, kind, file, line, symbol, weight, dim, evidence, sid, qual)
 //                       sid / qual = 挂靠符号键（阶段二 A；定位不到为空串，列照样在）
 //   dimensions(dim, label, penalty, findings, score)
@@ -79,6 +79,8 @@ func confidenceDbFill(db: SqliteDb, report: ConfidenceReport): Bool {
     ok = ok && putMeta("ast_note", report.astNote)
     ok = ok && putMeta("capped_kind", boolText(report.cappedKind))
     ok = ok && putMeta("capped_total", boolText(report.cappedTotal))
+    ok = ok && putMeta("findings_total", report.findingsTotal.toString())
+    ok = ok && putMeta("penalty_total", report.penaltyTotal.toString())
     ok = ok && putMeta("root", report.root)
     stMeta.finalize()
     if (!ok) { return false }

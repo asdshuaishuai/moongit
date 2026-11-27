@@ -426,8 +426,14 @@ private func confReportFixture(astUsed: Bool, astNote: String): ConfidenceReport
 @Test
 func testConfidenceJsonKeySetIsStable(): Unit {
     let j = confidenceJson(confReportFixture(true, "ast-grep 已启用"))
-    for (k in ["root", "score", "dimensions", "penaltyByFile", "findings", "byKind", "astUsed", "astNote", "filesAnalyzed", "semantics"]) {
+    for (k in ["root", "score", "dimensions", "penaltyByFile", "findings", "byKind", "astUsed", "astNote", "filesAnalyzed", "semantics",
+        "cappedKind", "cappedTotal", "findingsTotal", "penaltyTotal", "coverage"]) {
         @Assert(Json.has(j, k))
+    }
+    // 覆盖面七键恒发（结构化版 astNote）
+    let cov = Json.getOr(j, "coverage")
+    for (k in ["astFiles", "lexicalFiles", "astBatchesTotal", "astBatchesFailed", "kindsDropped", "nodesDropped", "kindsUnavailable"]) {
+        @Assert(Json.has(cov, k))
     }
     // 罚分表必须真的在（不被 filesAnalyzed 覆盖）
     let pf = Json.arrAt(j, "penaltyByFile")
@@ -442,6 +448,86 @@ func testConfidenceJsonKeySetIsStable(): Unit {
     }
 }
 
+
+/// ast-grep 的探测顺序：环境变量 CAMBIUM_AST_GREP → PATH → 用户目录常见位置 → 系统级固定路径。
+/// 原先只查 4 个固定路径、不查 PATH：cargo / npm 装的（没有 root 时的唯一装法）引擎看不到，装了也白装。
+/// 这里把三级各自钉住；环境变量在 finally 里逐个还原，不污染同进程后续用例。
+@Test
+func testFindAstGrepSearchesPathThenHomeThenEnv(): Unit {
+    let base = "/tmp/dendro-astgrep-${nowMillis()}"
+    let bin = base + "/bin"
+    let home = base + "/home"
+    ensureDir(bin)
+    ensureDir(home + "/.local/bin")
+    writeFileAtomic(bin + "/ast-grep", "#!/bin/sh\nexit 0\n")
+    writeFileAtomic(home + "/.local/bin/ast-grep", "#!/bin/sh\nexit 0\n")
+    let savedPath = getVariable("PATH")
+    let savedHome = getVariable("HOME")
+    let savedEnv = getVariable("CAMBIUM_AST_GREP")
+    try {
+        // 环境变量空串 = 没设（不许把空串当成路径）
+        setVariable("CAMBIUM_AST_GREP", "")
+        // ① PATH：放在最前面，压过机器上可能已装的 ast-grep
+        setVariable("PATH", bin + ":" + savedPath.getOrThrow())
+        @Assert(findAstGrep() == Some(bin + "/ast-grep"))
+        // ② PATH 上没有 → 用户目录的常见安装位置
+        setVariable("PATH", base + "/no-bin")
+        setVariable("HOME", home)
+        @Assert(findAstGrep() == Some(home + "/.local/bin/ast-grep"))
+        // ③ 环境变量最优先，且两端空白去掉
+        setVariable("CAMBIUM_AST_GREP", "  " + bin + "/ast-grep ")
+        @Assert(findAstGrep() == Some(bin + "/ast-grep"))
+        // PATH 的空目录段不当当前目录：cwd 上有同名文件也不算装了
+        setVariable("CAMBIUM_AST_GREP", "")
+        setVariable("HOME", base + "/empty-home")
+        setVariable("PATH", savedPath.getOrThrow() + "::" + base + "/no-bin")
+        @Assert(findAstGrep() != Some("ast-grep"))
+    } finally {
+        // 进程里原先没设过的变量，还原成空串（std.env 没有取消设置的接口；空串一律按「没设」读）
+        setVariable("CAMBIUM_AST_GREP", savedEnv.getOrDefault { "" })
+        setVariable("HOME", savedHome.getOrDefault { "" })
+        setVariable("PATH", savedPath.getOrDefault { "" })
+        removePathIfExists(base)
+    }
+}
+
+/// 规则里的节点种类要拿 ast-grep 本人验证：各版本的 tree-sitter 语法节点名会变，
+/// 规则里混进一个不认的种类，整份规则被拒 ⇒ 这一语言的语法树信号全丢
+/// （实测：Swift 的 struct_declaration / enum_declaration 在 0.51 上不认，Swift 那一批整个失败）。
+/// 用一个「见到 struct_declaration 就拒绝」的假 ast-grep 钉住剔除与披露。
+@Test
+func testAstKindsAreValidatedAgainstTheInstalledAstGrep(): Unit {
+    let base = "/tmp/dendro-astkinds-${nowMillis()}"
+    ensureDir(base)
+    let fake = base + "/fake-sg"
+    writeFileAtomic(fake, "#!/bin/sh\n# 规则文件是第 3 个参数；含 struct_declaration 就拒绝（= 本版不认这个节点）\ngrep -qE \"struct_declaration|enum_declaration\" \"$3\" && exit 8\nexit 0\n")
+    let _ = execCapture("/bin/chmod", ["755", fake], Option<String>.None, 10000)
+    AST_DROPPED_KINDS.clear()
+    try {
+        let ok = validKinds(fake, "swift", "Swift", ["function_declaration", "struct_declaration", "class_declaration"])
+        @Assert(ok.size == 2)
+        @Assert(ok[0] == "function_declaration")
+        @Assert(ok[1] == "class_declaration")
+        @Assert(AST_DROPPED_KINDS.size == 1)
+        @Assert(AST_DROPPED_KINDS[0] == "swift.struct_declaration")
+        // 生成的规则里不再出现被剔除的种类，认得的照样在
+        AST_DROPPED_KINDS.clear()
+        let yml = rulesYamlFor(fake, "swift")
+        @Assert(!yml.contains("struct_declaration"))
+        @Assert(!yml.contains("enum_declaration"))
+        @Assert(yml.contains("kind: function_declaration"))
+        @Assert(yml.contains("kind: class_declaration"))
+        @Assert(yml.contains("kind: catch_block"))
+        @Assert(yml.contains("language: Swift"))
+        // 同一条规则里的多个种类用「任一」并列；三条规则之间用文档分隔符隔开
+        @Assert(yml.contains("  any:\n    - kind: function_declaration"))
+        @Assert(yml.split("---\n").size == 3)
+    } finally {
+        cleanupAstTmpDirs()
+        AST_DROPPED_KINDS.clear()
+        removePathIfExists(base)
+    }
+}
 
 /// M5 + M2：降级披露必须出现在**每一个**出口。
 /// 原实现 README 承诺 astNote 降级披露，却没有一条测试钉住它。

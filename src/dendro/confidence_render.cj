@@ -12,6 +12,26 @@ import cambium.graph.*
 
 // MARK: - JSON
 
+/// 覆盖面的 JSON 形态（七键恒发；confidenceJson 与内嵌 / 快照形态共用这一份）。
+public func coverageJson(c: Coverage): JsonValue {
+    let cov = Json.obj()
+    Json.set(cov, "astFiles", Json.of(c.astFiles))
+    Json.set(cov, "lexicalFiles", Json.of(c.lexicalFiles))
+    Json.set(cov, "astBatchesTotal", Json.of(c.astBatchesTotal))
+    Json.set(cov, "astBatchesFailed", Json.of(c.astBatchesFailed))
+    Json.set(cov, "kindsDropped", stringsJson(c.kindsDropped))
+    Json.set(cov, "nodesDropped", Json.of(c.nodesDropped))
+    Json.set(cov, "kindsUnavailable", stringsJson(c.kindsUnavailable))
+    return cov
+}
+
+/// 字符串数组 → JSON 数组（Json.of 只有标量重载）。
+func stringsJson(items: ArrayList<String>): JsonValue {
+    let a = ArrayList<JsonValue>()
+    for (x in items) { a.add(Json.of(x)) }
+    return JArr(a)
+}
+
 public func confidenceJson(r: ConfidenceReport): JsonValue {
     let fs = ArrayList<JsonValue>()
     for (f in r.findings) {
@@ -64,11 +84,18 @@ public func confidenceJson(r: ConfidenceReport): JsonValue {
     Json.set(o, "cappedKind", Json.of(r.cappedKind))
     Json.set(o, "cappedTotal", Json.of(r.cappedTotal))
     Json.set(o, "filesAnalyzed", Json.of(r.filesAnalyzed))
+    // 总量恒发：findings 只是列出的那部分（≤ CONF_MAX_FINDINGS）；分数由 penaltyTotal 算。
+    // 缺了这两个键，消费方只能拿 findings.length 当「一共多少条」——截断时就是把「读了 N 条」
+    // 当成「一共 N 条」。
+    Json.set(o, "findingsTotal", Json.of(r.findingsTotal))
+    Json.set(o, "penaltyTotal", Json.of(r.penaltyTotal))
+    // 覆盖面恒发（结构化版 astNote）：程序不必解析散文
+    Json.set(o, "coverage", coverageJson(r.coverage))
     // 语义边界恒发：分数是结构级度量，不是正确性证明
     Json.set(o, "semantics", Json.of(
         "score = 100·S/(S+每文件疑点权重)（S=${Int64(CONF_SCORE_SCALE)}，与仓库规模无关），"
         + "是结构性疑点的汇总（0..100），不是正确性证明；"
-        + "信号为词法+语法树级事实，不包含运行时行为与业务语义"))
+        + "按全部检出的疑点（含未列出的）计；信号为词法+语法树级事实，不包含运行时行为与业务语义"))
     return o
 }
 
@@ -76,8 +103,8 @@ public func confidenceJson(r: ConfidenceReport): JsonValue {
 
 public func confidenceText(r: ConfidenceReport): String {
     let sb = StringBuilder()
-    sb.append("代码置信度 · ${r.root}\n")
-    sb.append("  分数 ${r.score}/100 · ${Int64(r.findings.size)} 条疑点 · 分析 ${r.filesAnalyzed} 文件\n")
+    sb.append("  代码置信度 · ${r.root}\n")
+    sb.append("  分数 ${r.score}/100 · 共 ${r.findingsTotal} 条疑点（罚分 ${r.penaltyTotal}，列出 ${Int64(r.findings.size)} 条）· 分析 ${r.filesAnalyzed} 文件\n")
     sb.append("  ${r.astNote}\n")
     // 限流披露（不变量 56：每一层截断都要有自己那一句披露）——
     // 上面的「N 条疑点」是封顶后的数量，不披露就是把「读了 N 条」当「一共 N 条」

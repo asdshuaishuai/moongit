@@ -127,20 +127,58 @@ cambium dendro check <项目> --no-ast   # 跳过语法树，纯词法
 
 - **语法树来自外部开源 `ast-grep`（tree-sitter 内核）**，引擎不自研 parser；未安装时**优雅降级**
   为词法级，并在 `astNote` 里**如实披露**（区分「未安装」与「本次文件的语言都没有语法覆盖」）。
+  查找顺序：环境变量 `CAMBIUM_AST_GREP` → `PATH` 上的 `ast-grep` → 用户目录常见位置（`~/.local/bin`、
+  `~/.cargo/bin`、`~/.npm-global/bin`）→ 系统级固定路径——`npm install -g @ast-grep/cli` 或
+  `cargo install ast-grep` 装进用户目录即可，不需要 root。规则里的节点种类在运行时**逐个拿 ast-grep
+  本人验证**（单种类规则 + 空输入，退出码 0 才算认），不认的剔除并写进 `astNote`（节点名随内置的
+  tree-sitter 语法版本变：Swift 的 `struct_declaration` / `enum_declaration` 在 0.51 上已并入
+  `class_declaration`，混进规则会让**整份规则被拒、这一语言的语法树信号全丢**）。签名里混着别的语句的
+  函数节点（tree-sitter 错误恢复的产物，通常是缺分号的宏）直接丢弃，丢弃了几条同样披露。
+  覆盖面另有结构化的 `coverage`（见下）。
 - **仓颉暂无 tree-sitter 语法包**，因此词法路径被做厚到能产出**长度 / 嵌套 / 魔法数 / 空体**
   四种函数级信号——引擎对自己的代码也能给出有意义的置信度（吞错与重复体依赖 AST 节点边界，词法路径不产出）。
 - **孤儿符号是符号级判定**，使用证据是两路的并集：名字在某处（含同文件）以**非声明位置**出现过，
   或有解析后的调用点连到它（与代码索引的 `sites` 表同一批行）。只有声明没有体、而另有同名定义的
-  （头文件原型 / 接口签名）不单独报。测试入口（`@Test` / `__lint*`）与入口文件已豁免。
-  ⚠ 「被引用」仍是名字级证据（同名不同物会漏报）；框架约定的回调（Qt override / D-Bus slot / 协议方法）
-  恒报——探针工程剩余孤儿抽 10 条：6 条真死、4 条是框架回调。
+  （头文件原型 / 接口签名）不单独报。测试入口（`@Test` / `__lint*`）、入口文件（文件名里的**词**是
+  main / app / index / mod / lib / package）与测试文件（词 test / spec / demo / example…，或路径里有
+  test / tests / jvmTest / __tests__ 段）已豁免。**框架入口不报**：声明行（或它的声明孪生）带
+  `override` / `virtual` / `Q_INVOKABLE` / `Q_SLOT`、上一行是回调注解（`@Override` / `@objc` / `@OnClick`…）、
+  C++ 的声明在 `signals:` / `slots:` 段里、运算符重载、Python 的双下划线方法与 `do_*` / `log_*`、
+  Qt 的 `*Event` 成员、C/C++ 的非限定枚举（有枚举项在别处被用到）——这些由框架 / 语法 / 解释器调用，
+  「全仓没有调用点」对它们不是证据（deepDolphin 列出的 114 条里约 30 条是这一类）。
+  ⚠ 「被引用」仍是名字级证据（同名不同物会漏报）。
 - **每条疑点带符号键**（`id` / `qual`，键集恒定 10 键）：`id` 与代码索引的稳定 id 同一个键，拿去
   `index query` / `index refs` 能直接回到定义与调用点；`symbol` 是「谁有问题」（幻觉调用的名字）、
   `qual` 是「问题发生在哪」（挂靠符号的限定名）。定位不到符号的（文件级 TODO、构造函数体内）为空串。
-- **幻觉调用（`unresolved-call`）的精度有硬上限**：它只是「全仓没有该名字的裸调用」。词法级没有类型与
-  依赖信息——探针工程剩余的这一类抽 20 条，**0 条是真的编造 API**（15 条框架 / 标准库调用、
-  3 条 C++ 局部变量构造、2 条局部函数或 lambda）。agent 转述前先核对依赖里有没有这个名字，
-  不要直接说成「AI 编造了 API」。带接收者的未解析调用（`obj->m(`）不入这一类，只留在调用点表里。
+- **未解析调用（`unresolved-call`）是提示，不是罪证**：它只是「全仓没有该名字的裸调用」。词法级没有类型与
+  依赖信息——探针工程剩余的这一类抽 20 条，**0 条是真的编造 API**。2026-11-27 起按实测精度定权：
+  **权重 8 → 3**（与 unused-variable / commented-code 同级），标签改为「未解析调用」。
+  报之前先剔掉本文件里已经认识的名字：嵌套的局部函数（含 Kotlin / Python / Swift 的缩进 def / fun）、
+  绑定到 lambda 的局部变量与循环变量、`if let x = …`、函数类型的参数与 lambda 参数、枚举项
+  （`LOCATING("…")`）、显式 import 进来的名字，以及 `Type name(…)` 这种**对象的构造声明**（调用点提取
+  看着像调用）。剩下的在两个仓上抽样：引擎仓 12 条 0 条查实；deepDolphin 136 条里 1 条查实
+  （`macos/scripts/render-harness` 还在用已删除的 `CodeGraphVM`），其余全是库 / 框架 / 标准库调用。
+  agent 转述前先 `index grep` 或查依赖里有没有这个名字，不要直接说成「AI 编造了 API」。
+  带接收者的未解析调用（`obj->m(`）不入这一类，只留在调用点表里。
+- **分数按全部检出的疑点算，上限只管「列不列出」**：`findings` 最多列 400 条（每文件每类最多 6 条），
+  但分数、`byKind`、`penaltyByFile`、`dimensions` 吃的是全部检出的条目——原先在截断之后求和，
+  一个文件里第 7 条孤儿起不罚分、超过 400 条之后仓库越大分越稳。每个 JSON 出口恒发
+  `findingsTotal`（一共检出多少条）与 `penaltyTotal`（总罚分）；`astNote` 里写明「罚分已计入总分」。
+  读旧快照时这两个键缺失给 `-1`（未知），不回落成 0。
+- **`coverage` 是覆盖面的结构化版**（`confidenceJson`、内嵌 / 快照形态、`dendro query` 总览都有）：
+  `astFiles` / `lexicalFiles`（走语法树与降级为词法的文件数）、`astBatchesTotal` / `astBatchesFailed`、
+  `kindsDropped`（本版 ast-grep 不认、已剔除的节点种类）、`nodesDropped`（丢弃的假函数节点）、
+  `kindsUnavailable`（在降级文件上整类缺失的 7 类：`swallowed-error`、`duplicate-body`、`unused-variable`、
+  `empty-type`、`god-class`、`lock-imbalance`、`lock-unknown-call`）。降级说明里逐类列全，不再只提两类。
+- **几个口径（2026-11-27 准确性批）**：「占位实现」只看函数节点——表达式体 `fun f(x) = expr`、
+  无体的接口方法、带成员初始化列表的构造函数、`= default` 都不是占位；空 catch 只报 `swallowed-error`。
+  语义层的函数体 = 索引记录的 `line..endLine`（无体声明不参与）；圈复杂度按**词**数（`if(` 认、
+  `verify ` 不认）；参数只数顶层逗号，函数类型的参数不算 Bool 标志；不可达代码看花括号深度 + 缩进；
+  「深嵌套」只数 if / for / while / try 等控制语句打开的花括号（SwiftUI / Compose 的布局容器、
+  lambda、字面量不计，函数体算第 1 层）；`near-duplicate` 与 `duplicate-body` 是同一件事，语法树可用时
+  只报后者；`lock-imbalance` 认同一行的 `lock(); defer { unlock() }`，RAII 锁（Rust、C++ 的 lock_guard）
+  不判；`pointer-risk` 的 `return &x` 只有 x 被证得是本函数的局部变量才报。
+  逐条取舍与实测见 `docs/dendro-confidence-assessment.md` §6 与 `AGENTS.md` 不变量 160。
 - **`render index --confidence` 会校验快照是否过期**：置信度快照依据的索引版本与当前不一致时
   不叠加旧快照（回执如实写「置信度快照过期……先 cambium dendro gen」，`--json` 恒发
   `staleConfidence`）；页面上每个符号给出**定位串** `相对路径:行:列`（一键复制）与「复制符号 ID」。

@@ -537,6 +537,14 @@ void W::start() {
     }
     @Assert(mTimer == 1)
     @Assert(bare == 1)
+    // Qt 的 `emit changed(1);` 是信号发射，不是「返回类型为 emit 的函数 changed」
+    for (s in cpp.symbols) {
+        @Assert(s.name != "changed")
+    }
+    for (r in cpp.refs) {
+        // 发射的信号名照常是一个名字出现处（referencedNames 的来源之一）
+        @Assert(r.name != "emit")
+    }
 }
 
 /// 块注释的续行可以在行尾闭合（Javadoc/KDoc 最常见的收尾 ` * 说明 */`）。
