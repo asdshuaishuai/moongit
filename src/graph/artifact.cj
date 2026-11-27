@@ -17,7 +17,8 @@ import cambium.util.*
 ///     泳道标签用文字级颜色、窄视口命令条收成一行（2026-11-27）。
 /// 6 = 架构图铺开：嵌入时泳道横向铺到可用宽度、卡片在泳道里对称分布、连线从卡片底/顶边进出并沿
 ///     卡片之间的空档绕行（架构级与职责视图）；职责泳道行号与卡片对齐；geo 带嵌入间距（2026-11-27）。
-public let RENDER_TEMPLATE: Int64 = 6
+/// 7 = 职责视图的角色色读宿主调色板（roleCols / roleTextCols），角色名用文字级（2026-11-27）。
+public let RENDER_TEMPLATE: Int64 = 7
 
 /// 产物里自报模板版本的注释行（两份产物同一格式）。
 public func renderTemplateTag(): String {

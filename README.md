@@ -195,6 +195,8 @@ cambium dendro check <项目> --no-ast   # 跳过语法树，纯词法
   独立打开的画面不变。嵌入专用的间距是 `ARCH_EMB_*` 四个常量，经 `archJson` 的 `geo.emb*` 交给驱动；
   旧引擎写的 `arch.json`（`geo` 没带这四个键）在 `render arch` 时自愈重建一次。同批修掉职责泳道框与卡片错位
   （空角色也占行）。详见 `AGENTS.md` 不变量 162。
+  同批第二轮：职责视图的角色色改读宿主调色板（`canvas.roleCols` / `roleTextCols`，令牌派生），角色名用文字级——
+  原先浅色皮肤下标签只有 1.44–2.20:1；没有宿主值的宿主与独立打开照旧用自带色板。
   模板版本 `RENDER_TEMPLATE` 5——旧产物读回 4 就重画一次。
 - **`render index --confidence` 会校验快照是否过期**：置信度快照依据的索引版本与当前不一致时
   不叠加旧快照（回执如实写「置信度快照过期……先 cambium dendro gen」，`--json` 恒发

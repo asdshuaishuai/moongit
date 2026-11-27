@@ -134,6 +134,12 @@ func testArchEmbedSpreadsLanesAndRoutesEdges(): Unit {
         @Assert(html.contains("function ends(a, b)"))
         @Assert(html.contains("var SPREAD = false;"))
         @Assert(html.contains("return SPREAD && (isArch() || isRole());"))
+        // ⑦ 职责视图的角色色：宿主给了就用宿主的（填充级 roleCols / 文字级 roleTextCols），角色名用文字级；
+        //    没有宿主值回落到自带色板——独立版不变。原先标签直接拿泳道底那一档填充色，浅色皮肤下 1.4–2.2:1
+        @Assert(html.contains("var c = P().roleCols || ROLEPAL[dark ? 'dark' : 'light']; return c[role % c.length];"))
+        @Assert(html.contains("function roleText(role) { var t = P().roleTextCols; return t ? t[role % t.length] : roleColor(role); }"))
+        @Assert(html.contains("ctx.globalAlpha = ap; ctx.fillStyle = roleText(L.role);"))
+        @Assert(!html.contains("ctx.globalAlpha = ap; ctx.fillStyle = rc;"))   // 角色名不许再拿填充色当文字色
     } finally {
         removeTree(root)
     }

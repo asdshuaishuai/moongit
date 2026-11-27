@@ -357,7 +357,11 @@ func renderJs(en: Bool): String {
     sb.append("    dark: ['#f472b6', '#38bdf8', '#34d399', '#fbbf24', '#a78bfa', '#94a3b8', '#64748b'],\n")
     sb.append("    light: ['#db2777', '#0284c7', '#059669', '#d97706', '#7c3aed', '#64748b', '#94a3b8']\n")
     sb.append("  };\n")
-    sb.append("  function roleColor(role) { var c = ROLEPAL[dark ? 'dark' : 'light']; return c[role % c.length]; }\n")
+    // 宿主给了角色色就用宿主的（与层配色 cols / textCols 同一套做法）：自带色板是给独立版的暗 / 浅底挑的，
+    // 嵌入时页面以暗色为基座、只覆盖宿主给的键——浅色皮肤下标签是 1.4–2.2:1（文字要 4.5）。没有宿主值照旧。
+    sb.append("  function roleColor(role) { var c = P().roleCols || ROLEPAL[dark ? 'dark' : 'light']; return c[role % c.length]; }\n")
+    // 角色名是文字：有 roleTextCols（文字级）就用它；没有就还是 roleColor——独立版与老宿主不变
+    sb.append("  function roleText(role) { var t = P().roleTextCols; return t ? t[role % t.length] : roleColor(role); }\n")
     sb.append("  var view = { x: 0, y: 0, k: 1 };\n")
     sb.append("  var level = { mode: 'arch', id: '' };\n")
     sb.append("  var sel = null; var hover = null; var layersOn = {};\n")
@@ -607,7 +611,8 @@ func renderJs(en: Bool): String {
     sb.append("      ctx.globalAlpha = ap * 0.9; ctx.fillStyle = rc; ctx.globalAlpha = ap * 0.07;\n")
     sb.append("      roundRect(lx, ly, lw, lh, 14); ctx.fillStyle = rc; ctx.globalAlpha = ap * 0.07; ctx.fill();\n")
     sb.append("      ctx.globalAlpha = ap * 0.9; ctx.strokeStyle = p.border; ctx.lineWidth = 1; ctx.stroke();\n")
-    sb.append("      ctx.globalAlpha = ap; ctx.fillStyle = rc;\n")
+    // 角色名是文字：用文字级颜色，不用泳道底那一档填充色
+    sb.append("      ctx.globalAlpha = ap; ctx.fillStyle = roleText(L.role);\n")
     sb.append("      ctx.font = '700 12px -apple-system, sans-serif'; ctx.textAlign = 'left';\n")
     sb.append("      ctx.fillText(escapeHtml(L.name), lx + 14, ly + lh / 2 - 6);\n")
     sb.append("      ctx.fillStyle = p.muted; ctx.font = '11px -apple-system, sans-serif';\n")
